@@ -42,3 +42,7 @@ One special note regarding the Yasol.ini: The standard setting we selected is "i
 Setting isSimplyRestricted=1 might significantly speed up the search, but this is only allowed if the instances has special properties. If your instance does not have the demanded property this setting will
 result in wrong results. Please see our publications or feel free to contact us any time.
 
+# Other Links
+For further information please visit
+[GitHub Pages](https://yasolqipsolver.github.io/yasol.github.io/)
+or our [Homepage](http://www.q-mip.org/)
