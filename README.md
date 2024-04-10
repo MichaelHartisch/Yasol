@@ -1,7 +1,7 @@
 # Yasol
 Yasol is a search-based solver that is able to deal with multistage robust linear discrete optimization problems, with final mixed-integer recourse actions and a discrete uncertainty set, which even can be decision-dependent.
 
-# Install and Run
+# Install and Run (on Mac and Linux)
 Open the build_Yasol.bat to edit it.
 1. If neccessary change the compiler and archiver.
 2. Depending on you system (Mac or Linux) ensure the correct lines are (un)commented. 
@@ -36,6 +36,9 @@ When trying to execute Yasol you might encounter library errors. You may need to
 
 We also observed that we had to add /usr/bin/x86_64-linux-gnu to the LD_LIBRARY_PATH.
 
+# Install and Run (Windows)
+The latest version of Yasol is not supported on Windows. However, older version of our solver exist, that can run on Windows. Please see the instructions on the [GitHub Pages](https://yasolqipsolver.github.io/yasol.github.io/)
+or our [Homepage](http://www.q-mip.org/). 
 # Yasol.ini
 The Yasol.ini file can be used to change some high level settings of the solver. We recommend that you change them only if you really know what is going to happen. Always feel free to reach out to us.
 One special note regarding the Yasol.ini: The standard setting we selected is "isSimplyRestricted=0". This makes the search rather slow and careful when there is a universal constraint system. 
@@ -45,4 +48,4 @@ result in wrong results. Please see our publications or feel free to contact us 
 # Other Links
 For further information please visit
 [GitHub Pages](https://yasolqipsolver.github.io/yasol.github.io/)
-or our [Homepage](http://www.q-mip.org/)
+or our [Homepage](http://www.q-mip.org/).
