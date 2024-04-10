@@ -1,0 +1,15 @@
+FLAGS =$(YASOL_COMPILER_OPTION) -DLINUX -static -std=c++0x -fPIC -Wno-writable-strings -Wno-deprecated-register $(YASOL_USED_SOLVER) $(YASOL_USE_CGL)
+ 
+.cpp.o:
+	$(YASOL_CC) -c -I./src_ll -I./src -I../Solver/include $(YASOL_PATHS_SOLVER) $(YASOL_PATHS_CGL) $(FLAGS) $<
+
+#.c.o:
+#	$(YASOL_CC) -c $(YASOL_PATHS_SOLVER) $(YASOL_PATHS_CGL) $(FLAGS) $<
+
+OBJS= src/Utilities/ExternCode/QLPReader.o src/Utilities/Parser.o src/Utilities/QlpRelaxer.o src/Utilities/QlpStageRelaxer.o $(YASOL_OBJECT_SOLVER) $(YASOL_OBJECT_CGL) src/Utilities/Log.o src/Utilities/QlpConverter.o src/Utilities/QlpSplitter.o src/Utilities/QlpStageSolver.o src/MemoryManagement/MemoryManager.o src/ExternSolvers/QpExtSolCplexC.o src/Datastructures/numbers/QpDouble.o src/Datastructures/numbers/QpRational.o src/Datastructures/qlp/Constraint.o src/Datastructures/qlp/Qlp.o src/Datastructures/qlp/QlpMatCoeff.o src/Datastructures/components/QpObjFunc.o src/Datastructures/components/QpRhs.o src/Datastructures/components/QpVar.o src/Algorithms/qlp2lp/Qlp2Lp.o src/Algorithms/nd/NbdStageSolver.o src/Algorithms/nd/NbdMaster.o
+
+all: JSOL 
+
+JSOL:$(OBJS)
+	$(YASOL_AR) -rcs Solver.a *.o
+

@@ -1,0 +1,25 @@
+MINIMIZE
+x1 -2x2 +2x3 +x4
+SUBJECT TO
+x1 -2x2 +x3 -x4 <=1
+x1 +x2 +x3 -x4<=2
+x5+x6<=1
+UNCERTAINTY SUBJECT TO
+x1 +x2 +x3 <=2
+-x1+x4+x5<=0
+BOUNDS
+0 <= x1 <= 1
+0 <= x2 <= 1
+0 <= x3 <= 1
+0 <= x4 <= 1
+0 <= x5 <= 1
+0 <= x6 <= 1
+BINARIES
+x1 x2 x3 x4 x5 x6
+EXISTS
+x1 x2 x4 x6 
+ALL
+x3 x5
+ORDER
+x1 x2 x3 x4 x5 x6
+END
