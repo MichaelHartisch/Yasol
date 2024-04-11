@@ -11,7 +11,7 @@ export YASOL_CLP_PATH=/opt/tools/coinor_tools\
 export YASOL_CPLEX_PATH=/opt/ibm/ILOG/CPLEX_Studio1261/cplex\
 or\
 export YASOL_CLP_PATH=/nethome/user/CbcClp\
-export YASOL_CPLEX_PATH=/Applications/CPLEX_Studio221/cplex \
+export YASOL_CPLEX_PATH=/Applications/CPLEX_Studio221/cplex\
 
 Start the script by typing "./build_Yasol.bat"
 You can use the following options
