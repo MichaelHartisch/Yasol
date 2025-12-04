@@ -35,36 +35,37 @@
 #define NO_DEBUG 1
 	#define PRINT_PROP 0
 
-void QBPSolver::WriteSolutionFile(coef_t value, double time, string status){ 
+void QBPSolver::WriteSolutionFile(coef_t value, double time, string status, string filename, bool removeDummy){ 
   if(!getWriteOutputFile()) return;
   double gap=0;
-  if(abs(value)==abs(n_infinity))
-    status="INFEASIBLE";// (universal player can force violation of existential constraint system)";
-  else if (abs(value)==(AllInfeasible)) status="OPTIMAL";//FEASIBLE (existential player can force violation of universal constraint system)";
-  else{
-    if (status.compare("OPTIMAL")==0) gap = 0.0;
-    else{
-      gap = abs(100.0*(-global_dual_bound - value) / (abs(value)+1e-10) );
-      status="INCUMBENT";
-    }
-  }
+  if(value==n_infinity || value==-n_infinity) return;
+    //status="INFEASIBLE";// (universal player can force violation of existential constraint system)";
+   if(objInverted) gap = abs(100.0*(+global_dual_bound - incumbentBest) / (abs(incumbentBest)+1e-10) );
+   else gap = abs(100.0*(-global_dual_bound + incumbentBest) / (abs(incumbentBest)+1e-10) );  
+   //if(objInverted) gap = abs(100.0*(+global_dual_bound - value) / (abs(value)+1e-10) );
+   //else gap = abs(100.0*(-global_dual_bound + value) / (abs(value)+1e-10) );
+
   if(objInverted) value*=-1;
 
   CommPrint Sol;
-  string Final(getInputFileName()+".sol");
+  string Final="";
+  if (filename == "") Final = getInputFileName()+".sol";
+  else Final = filename;
   const char *Start=Final.c_str();
   ifstream myfile (Start);
   int Counter=0;
+  string TmpA=Final;
   while (myfile.is_open()){
     myfile.close();       
     Counter++;
-    string TmpA(getInputFileName()+".sol");
-    Final=TmpA+std::to_string(Counter);
-    const char *tmp=Final.c_str();
+    
+    TmpA=Final+std::to_string(Counter);
+    const char *tmp=TmpA.c_str();
     myfile.open(tmp);
     if(myfile.is_open()) continue;
   }
-  if(1||getShowInfo()) cerr << "Info: solution file written to " << Final << endl;
+  Final=TmpA;
+  if(getShowAnything()) cerr << "solution file written to " << Final << endl;
   //toWrite is a string that is appended to the solution file
   //this string is written in (pseudo)XML
   //the write stage is divided in stages for header+quality, linearConstraints and variables
@@ -75,16 +76,21 @@ void QBPSolver::WriteSolutionFile(coef_t value, double time, string status){
   toWrite += " <header\n";
   toWrite += "   ProblemName=\""+ getInputFileName()+ "\"\n";
   toWrite += "   SolutionName=\""+Final+"\"\n";
-  toWrite += "   ObjectiveValue=\""+std::to_string((double)value)+"\"\n";
+  if (status.compare("FEASIBLE")!=0)
+    toWrite += "   ObjectiveValue=\""+std::to_string((double)value)+"\"\n";
   //toWrite += " ObjectiveOffset=\""+std::to_string(finalOffset)+"\"\n";
   //toWrite += " solutionStatusString=\""+Status+"\"\n";
   toWrite += "   Runtime=\""+(time==-1?"TIMEOUT":(std::to_string(time).substr(0,std::to_string(time).find(".") + 4)+" seconds"))+"\"\n";
   toWrite += "   DecisionNodes=\""+std::to_string((int)getNumberOfDecisions())+"\"\n";
   toWrite += "   PropagationSteps=\""+std::to_string((int)getNumberOfPropagationSteps())+"\"\n";
   toWrite += "   LearntConstraints=\""+std::to_string((int)getNumberOfLearntConstraints())+"\"/>\n";
-  toWrite += " <quality\n";
+  toWrite += " <quality>\n";
   toWrite += "   SolutionStatus=\""+status+"\"\n";
-  toWrite += "   Gap=\""+std::to_string(gap)+"\"/>\n";
+  if (status.compare("FEASIBLE")!=0){
+    toWrite += "   Gap=\""+std::to_string(gap)+"\"\n";
+  	toWrite += "   Dual=\""+std::to_string(objInverted?global_dual_bound:-global_dual_bound)+"\"\n";
+  }
+  toWrite += " </quality>\n";
   Sol.solprint(toWrite,Final.c_str());
 
   //reset toWrite because method solprint is in append mode
@@ -92,7 +98,7 @@ void QBPSolver::WriteSolutionFile(coef_t value, double time, string status){
   toWrite += " </linearConstraints>\n";
   Sol.solprint(toWrite,Final.c_str());
   toWrite = " <variables>\n";
-  for(int i=0; i<nVars(); i++){
+  for(int i=0; i<nVars()-removeDummy; i++){
     if (((yInterface*)yIF)->integers[i].bitcnt > 1) {
       //get real name without underscore from binarized variables
       //create char array from name string
@@ -283,6 +289,7 @@ void QBPSolver::WriteSolutionFile(coef_t value, double time, string status){
 }*/
 
 void QBPSolver::BuildLegalScenario(){	//Only for Polyhedral Uncertainty Set; NO INTERDEPENDENCE, since best case should no longer be consdidered for existential variables in universal constraints
+	//cerr << "Call Build Scenario" <<endl;
 	if(!UniversalConstraintsExist) return;
 	for(int AllStage=0;AllStage<PermutationOfAllStages.size();AllStage++){
 		  	for(int in=0;in<PermutationOfAllStages[AllStage].size();in++){
@@ -311,7 +318,11 @@ void QBPSolver::BuildLegalScenario(){	//Only for Polyhedral Uncertainty Set; NO 
                 */
             }
             AllSolver->solve();
-            assert(AllSolver->getSolutionStatus()==extSol::QpExternSolver::QpExtSolSolutionStatus::OPTIMAL);
+            //assert(AllSolver->getSolutionStatus()==extSol::QpExternSolver::QpExtSolSolutionStatus::OPTIMAL);
+            if(AllSolver->getSolutionStatus()!=extSol::QpExternSolver::QpExtSolSolutionStatus::OPTIMAL){
+		if(getShowWarning()) cerr << "Warning: IP of universal constraint System is infeasible when trying to find a valid scenario" <<endl;
+		return;
+            }
             std::vector<data::QpNum> AllSol;
 	    AllSolver->getValues(AllSol);
 	    for (int i=0;i<nVars();i++)
@@ -409,11 +420,14 @@ void QBPSolver::BuildLegalScenario(){	//Only for Polyhedral Uncertainty Set; NO 
 				}
 			  	//else if(assigns[va]!=extbool_Undef)  SparseScenario[va]=assigns[va];
 				else if(assigns[va]!=extbool_Undef){
+			  		//cerr << "Is set x_" << va <<"="<<(int) assigns[va] << endl;
 			  		SparseScenario[va]=assigns[va];
 			  		ScenarioProp[va]=extbool_Undef;	
 					PropOK=PropagateForScenario(va,assigns[va]);
 			  	} 				  	
 				else{
+		                            //cerr << "Is propped x_" << va <<"="<<(int) ScenarioProp[va] << endl;
+
 			  		//If already propageted in "PropagateForScenario"  
 			  		SparseScenario[va]=ScenarioProp[va];
 			  		ScenarioProp[va]=extbool_Undef;
@@ -440,7 +454,8 @@ void QBPSolver::AdaptConstraint( ca_vec<CoeVar>& ps,bool ClearIt, bool Print){
 if(ClearIt){ps.clear();
 return;
 }
-//return;
+
+//if(!UniversalConstraintsExist || UniversalPolytope) return;
     if(!UniversalConstraintsExist || !UniversalMultiBlockConstraints) return;
     bool Debug =false;//true;//Print;
 
@@ -517,8 +532,8 @@ return;
 			    AllConstraintsSeen.push(cr);
         		    Constraint &c = ALLconstraintallocator[cr];
 		            int sig = sign(c[VarsInAllConstraints[var(ps[i])][j].pos]);
-			    if(sig!=assigns[var(ps[i])] && assigns[var(ps[i])]!=extbool_Undef) continue;
-			    if(assigns[var(ps[i])]==extbool_Undef) continue;
+			    if(sig!=assigns[var(ps[i])] && assigns[var(ps[i])]!=extbool_Undef) continue; //LOOKHERE
+		//	    if(assigns[var(ps[i])]==extbool_Undef) continue;                             //LOOKHERE
 			    // Add information of the universal constraint into the learntConstraint
 			    for (int k=0;k<c.size();k++){
 				if(eas[var(c[k])]!=UNIV||block[var(c[k])] <= MaxBlockE /*?*/ /* ||assigns[var(c[k])]!=extbool_Undef*/ ){
@@ -627,7 +642,7 @@ bool QBPSolver::PropagateForScenario(int va, extbool val){
         //massert(ConstraintIsWellFormed(c));
         coef_t coef = c[pos].coef;
         massert(coef >= (coef_t)0);
-        if (1||!c.header.isSat) {
+        if (/*1||!c.header.isSat*/ assigns[va]==extbool_Undef) {
             if (sign(c[pos])) {
                 if (val==1)  c.header.localbest -= coef;
             } else {
@@ -642,17 +657,25 @@ bool QBPSolver::PropagateForScenario(int va, extbool val){
             //if (c.header.btch1.best <= c.header.rhs-LP_EPS) continue;
             int l=c.header.largest;
             while (l < c.size() && c.header.localbest - c[l].coef < c.header.rhs) {
-                if ( var(c[l]) != va &&assigns[ var(c[l]) ] == extbool_Undef && type[var(c[l])] == BINARY &&SparseScenario[var(c[l]) ]==extbool_Undef) {
-                	//cerr <<"Propagate x_" << var(c[l]) <<"="<<1-(c[l].x&1)<<endl;
-                	//cerr <<(int)SparseScenario[var(c[l]) ] << " and "<<  (int)ScenarioProp[var(c[l]) ]<<endl;
-                	if(!(ScenarioProp[var(c[l]) ]==extbool_Undef || ScenarioProp[var(c[l]) ]==1-(c[l].x&1))){/*cerr << "Ret1"<<endl;*/ return false;}
-                	if(!(SparseScenario[var(c[l]) ]==extbool_Undef || SparseScenario[var(c[l]) ]==1-(c[l].x&1))){/*cerr <<"Ret2"<<endl;*/ return false;}
+                    /*    cerr << "l"<<l<<endl;
+                        cerr << "var(c[l])="<<var(c[l])<<endl;
+                        cerr << "ScenarioProp[var(c[l])]="<<(int)ScenarioProp[var(c[l])]<<endl;
+                        cerr << "1-(c[l].x&1)="<<(int)1-(c[l].x&1)<<endl;*/
+                    if ( var(c[l]) != va &&assigns[ var(c[l]) ] == extbool_Undef && type[var(c[l])] == BINARY &&SparseScenario[var(c[l]) ]==extbool_Undef) {
+             	    //cerr <<"Propagate x_" << var(c[l]) <<"="<<1-(c[l].x&1)<<endl;
+                    //cerr <<(int)SparseScenario[var(c[l]) ] << " and "<<  (int)ScenarioProp[var(c[l]) ]<<endl;
+                    if(!(ScenarioProp[var(c[l]) ]==extbool_Undef || ScenarioProp[var(c[l]) ]==1-(c[l].x&1))){/*cerr << "Ret1"<<endl;*/ return false;}
+                    if(!(SparseScenario[var(c[l]) ]==extbool_Undef || SparseScenario[var(c[l]) ]==1-(c[l].x&1))){/*cerr <<"Ret2"<<endl;*/ return false;}
                     if (SparseScenario[var(c[l]) ]==extbool_Undef &&  ScenarioProp[var(c[l]) ]==extbool_Undef){
 			ScenarioProp[var(c[l]) ]=1-(c[l].x&1);
                     	//cerr << "Added in SparseSce setting "<< var(c[l]) << " to " << (1-(c[l].x&1))<< endl;
                     	//if(!PropagateForScenario(var(c[l]), (1-(c[l].x&1)))){cerr << "deep Prop Failed: x_"<<var(c[l])<<"="<<(int)(1-(c[l].x&1) <<endl;  return false;}
 		    }
 		    else if ( ScenarioProp[var(c[l]) ] != extbool_Undef &&  ScenarioProp[var(c[l]) ]!=1-(c[l].x&1)){
+		/*	cerr << "l"<<l<<endl;
+			cerr << "var(c[l])="<<var(c[l])<<endl;
+			cerr << "ScenarioProp[var(c[l])]="<<(int)ScenarioProp[var(c[l])]<<endl;
+			cerr << "1-(c[l].x&1)="<<(int)1-(c[l].x&1)<<endl;*/
 		    	if(getShowWarning()) cerr <<"WARNING: Propgation for finding a scenario failed; will return" <<endl;
 			return false;
 		    }
@@ -984,12 +1007,13 @@ bool QBPSolver::PropagateForScenario(int va, extbool val){
 
     void QBPSolver::moveDown(int d, int decvar, int decpol, int pick,string where) {
     	return;
-    	cerr << "DOWN: x_" <<decvar <<" = " << decpol <<  " pick= " <<pick  << " from " << where<< endl;
+//    	cerr << "DOWN: x_" <<decvar <<" = " << decpol <<  " pick= " <<pick  << " from " << where<< endl;
 	for(int i=0;i<trail.size();i++) cerr <<"x_"<<trail[i]<<"="<<(int)assigns[trail[i]] << " L:"<<vardata[trail[i]].level << " F:"<<isFixed(trail[i])<<" FL:"<<fixdata[trail[i]].level << endl;   
 	//cerr <<"Stack Status: " <<search_stack.stack[search_stack.stack_pt].status << endl;
     	int8_t *val;
-    	val = &stack_val[(d-1)<<1];
-    	int8_t &val_ix = stack_val_ix[(d-1)];
+	stack_container &STACKz = search_stack.stack[d-2];
+    	val = STACKz.val;//&stack_val[(d-1)<<1];
+    	int8_t &val_ix = STACKz.val_ix;//stack_val_ix[(d-1)];
 
     	//cerr << "Val_ix: "<<(int)val_ix << "  val[0]: " << (int)val[0] << " val[1]: " <<(int)val[1] << endl;
 
@@ -1016,7 +1040,7 @@ stack_container &STACK = search_stack.stack[search_stack.stack_pt-1];
     	//cerr <<"Stack_Pick.size()"<<stack_pick.size() << endl;
     	int DecLeva = getLastDecisionLevel();
     	//cerr << "Stack pick " <<STACK.pick << endl;
-    	int DecVara = stack_pick[DecLeva];
+    	int DecVara = search_stack.stack[DecLeva-1].pick;
     	//cerr << "Dec Var : " << DecVara << endl;
     	int DecPola=assigns[DecVara];
 
@@ -1043,7 +1067,7 @@ stack_container &STACK = search_stack.stack[search_stack.stack_pt-1];
 
 
     	int DecLev = getLastDecisionLevel();
-    	int DecVar = stack_pick[DecLev];//
+    	int DecVar = search_stack.stack[DecLev-1].pick;//
     	int DecPol=assigns[DecVar];
 
     	if(nVars()==trail.size()){    	//If at a leaf:
@@ -1103,9 +1127,10 @@ stack_container &STACK = search_stack.stack[search_stack.stack_pt-1];
     	//((yInterface*)yIF)->moveUp(v, b, status);
     	if (MPrint){
     		std::cerr <<"MOVE UP " << v << " " << b << " " << status << ": " << DecVar << " set to " << (int)assigns[DecVar] << " at Level "<<DecLev << std::endl;
+		stack_container &STACKz = search_stack.stack[decisionLevel()-2];
         	int8_t *val;
-        		    val = &stack_val[(decisionLevel()-1)<<1];
-        		    int8_t &val_ix = stack_val_ix[(decisionLevel()-1)];
+		val = STACKz.val;//&stack_val[(decisionLevel()-1)<<1];
+		int8_t &val_ix = STACKz.val_ix;//stack_val_ix[(decisionLevel()-1)];
 
         	cerr << (int)val_ix << " " << (int)val[0] << " " <<(int)val[1] << endl;
     	}
@@ -1217,7 +1242,7 @@ bool QBPSolver::AllConstraintsStillSatisfiable(int va,double val){
         //if (c.header.isSat && c.header.btch1.watch1 == -2) continue;
         massert(!c.header.deleted);
         c.header.isSat=false;
-        if (c.saveInfeas(pos, val, va, assigns, eas)) {
+        if (c.saveInfeas(pos, val, /*getFixed(va),*/ va, assigns, eas)) {
             /*cout <<"ASSIGN GIBT " << VarsInAllConstraints[va][i].cr << endl;
             cerr << c.header.btch1.best << " is best" << endl;
             c.print(c,assigns,false);
@@ -1479,6 +1504,7 @@ int QBPSolver::PropagateUniversals(){
 	//return 0, if existential system fails
 	//reutrn 1, if both systems ok
 	//return 2, if universal system fails
+        float alpha=(float)global_score;
 
 	if(!UniversalPolytope){
 //		cerr << " No Universal Propagation" << endl;
@@ -1505,7 +1531,7 @@ int QBPSolver::PropagateUniversals(){
                         continue;
                     }
                 }
-		if((!getIsSimplyRestricted() /*||UniversalMultiBlockConstraints*/)&&block[stack_pick[getLastDecisionLevel()]]!=block[var]){ 
+		if((!getIsSimplyRestricted() /*||UniversalMultiBlockConstraints*/)&&block[search_stack.stack[getLastDecisionLevel()-1].pick]!=block[var]){ 
 			while(AllPropQStore.size()<max(maxBlock,block[var])){
 				std::vector<std::pair<int,bool>> NewVec;
 				AllPropQStore.push_back(NewVec);
@@ -1518,15 +1544,15 @@ int QBPSolver::PropagateUniversals(){
 			AllPropQStore[block[var]-1].push_back( make_pair(var, val));
 			if(PRINT_PROP){
 				cerr << "Omitted Propagation of Later Variable"<<endl;
-				cerr << block[stack_pick[getLastDecisionLevel()]] << " " << block[var] << endl;
+				cerr << block[search_stack.stack[getLastDecisionLevel()-1].pick] << " " << block[var] << endl;
 				cerr << getLastDecisionLevel() << " " << var << " to " << val << endl;
 			}
 			//EmptyAllPropQ();
 	 		//return true;
 			if(AllVarsProppedDueTo.size()<nVars())     AllVarsProppedDueTo= vector<vector<int>>(nVars(), vector<int>(0));
-			AllVarsProppedDueTo[stack_pick[getLastDecisionLevel()]].push_back((var<<1)|(1-val));
-			if(PRINT_PROP) cerr << "Remembered, that x_" << var << "=" << val << " is propagated due to " << stack_pick[getLastDecisionLevel()] << endl;
-			AllpropQlimiter[(var<<1)|(1-val)]=-stack_pick[getLastDecisionLevel()]-1;
+			AllVarsProppedDueTo[search_stack.stack[getLastDecisionLevel()-1].pick].push_back((var<<1)|(1-val));
+			if(PRINT_PROP) cerr << "Remembered, that x_" << var << "=" << val << " is propagated due to " << search_stack.stack[getLastDecisionLevel()-1].pick << endl;
+			AllpropQlimiter[(var<<1)|(1-val)]=-search_stack.stack[getLastDecisionLevel()-1].pick-1;
 			 // Will be forced, due to Variable as indicated negative in AllpropQlimiter
  			continue;
 		}
@@ -1538,7 +1564,7 @@ int QBPSolver::PropagateUniversals(){
 		} 
       	int ix1, ix2;
       	bool conflict=false;
-      	int oob = assign(var,val,trail.size(),CRef_Undef, conflict, ix1, ix2, false);
+      	int oob = assign(alpha, var,val,trail.size(),CRef_Undef, conflict, ix1, ix2, false);
       	//int oob = assign(var, val,trail.size(),CRef_Undef,true);
       	//increaseDecisionLevel();
       	if(PRINT_PROP)cerr << "Propagated Universal Variable x_" << var<<"="<<val << endl;
@@ -1554,7 +1580,7 @@ int QBPSolver::PropagateUniversals(){
       }
           	    		NumAllProps++;
       if(oob!=ASSIGN_OK){
-	 if(getShowWarning()) cerr <<"WARNING: Universal Propagation led to contradiction" << endl;
+	//if(getShowWarning()) cerr <<"WARNING: Universal Propagation led to contradiction" << endl;
       	EmptyAllPropQ();
 	//HIER GEÄNDERT
 	EmptyPropQ();
@@ -2568,6 +2594,15 @@ int QBPSolver::GenerateReformulationCut( extSol::QpExternSolver& externSolver, v
 				for(int k=0;k<((yInterface*)yIF)->integers[Row[i].index].bitcnt;k++){
 					// Assert that all binaries corresponding to the single integer variable are present
 					// Because otherwise not clear yet what to do
+					  if(i+k>=Row.size()||(Row[i].index+k>=nVars()) || (Row[i+k].index!=Row[i].index+k) ||
+					    ((yInterface*)yIF)->integers[Row[i].index].pt2leader!=
+					    ((yInterface*)yIF)->integers[Row[i+k].index].pt2leader){
+					    //cerr << "Warning: Binarized Var of Integer appear not grouped" << endl;
+					    //break;
+					    AsBool=true;
+					    break;
+					    //return false;
+					  }
 					if(k>0 && abs(Row[i+k-1].value.asDouble()-2*Row[i+k].value.asDouble())>eps){
 						//cerr <<"Ups. Found binarized integer variable with wacky coefficients." << endl;
 						AsBool=true;
@@ -2599,9 +2634,16 @@ int QBPSolver::GenerateReformulationCut( extSol::QpExternSolver& externSolver, v
 					else TSet.push_back(Info);
 				}
 				else{	//Interpret this Int as Bool
-					for(int k=0;k<((yInterface*)yIF)->integers[Row[i].index].bitcnt;k++){
-						if(i+k>=Row.size() || ((yInterface*)yIF)->integers[Row[i].index].pt2leader!=((yInterface*)yIF)->integers[Row[i+k].index].pt2leader) break;
-						if(Row[i+k].value.asDouble()>0){
+				            for(int k=0;k<((yInterface*)yIF)->integers[Row[i].index].bitcnt;k++){
+					        if(i+k>=Row.size()||(Row[i].index+k>=nVars()) || (Row[i+k].index!=Row[i].index+k) ||
+						   ((yInterface*)yIF)->integers[Row[i].index].pt2leader!=
+						   ((yInterface*)yIF)->integers[Row[i+k].index].pt2leader){
+						  //cerr << "Warning: Binarized Var of Integer appear not grouped" << endl;                  
+						  //break;                                                                                   
+						  return false;
+					        }
+						//if(i+k>=Row.size() || ((yInterface*)yIF)->integers[Row[i].index].pt2leader!=((yInterface*)yIF)->integers[Row[i+k].index].pt2leader) break;
+						if(1||Row[i+k].value.asDouble()>0){
 							OrgInfo NewInfo;
 							NewInfo.Bound = 1;
 							NewInfo.Coef=Row[i+k].value.asDouble();
@@ -3670,12 +3712,41 @@ int QBPSolver::GenerateReformulationCut( extSol::QpExternSolver& externSolver, v
 
 			}
 
-			listOfCutsLhs.reserve( cuts.size()+listOfCutsLhs.size() );
-			listOfCutsRhs.reserve( cuts.size()+listOfCutsLhs.size() );
+	for( unsigned int i = 0; i < cuts.size(); ++i ){
+	  vector< pair<unsigned int, double> >& cut = cuts.at( i ).first;
+	  vector< data::IndexedElement > addcut;
+
+	  if (1){
+	    double max_c = 0.0;
+	    for( unsigned int j = 0; j < cut.size(); ++j ){
+	      if( fabs( cut.at( j ).second ) > max_c ){
+		max_c = fabs( cut.at( j ).second );
+	      }
+	    }
+	    if (cut.size() > 0 && max_c > 1e-9) {
+	      //std::cerr << "cut before: ";
+	      double scale = 2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0;
+	      double unscale=0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5;
+	      for( unsigned int j = 0; j < cut.size(); ++j ){
+		cut[j].second = ceil(cut[j].second / max_c * scale) * unscale;
+	      }
+	      cuts[i].second = floor(cuts[i].second / max_c * scale) * unscale;
+	    }
+	  }
+	  
+	  /*for (int j=0;j<cut.size();j++)
+	    addcut.push_back( data::IndexedElement( cut.at( j ).first, data::QpNum( cut.at( j ).second ) ) );
+	  double rhs = cuts[i].second;
+	  listOfCutsLhs.push_back(addcut);
+	  listOfCutsRhs.push_back(rhs);
+	  */
+	}
+	listOfCutsLhs.reserve( cuts.size()+listOfCutsLhs.size() );
+	listOfCutsRhs.reserve( cuts.size()+listOfCutsLhs.size() );
 
 			if (info_level > 2) cerr << "CUTS OUT " << endl;
 			//cerr <<"Info: Created " << cuts.size() << " c-MIR cuts"<< endl;
-			for( unsigned int i = 0; i < cuts.size(); ++i ){
+			if(1)for( unsigned int i = 0; i < cuts.size(); ++i ){
 				vector< data::IndexedElement > addcut;
 				addcut.clear();
 				int j =0;

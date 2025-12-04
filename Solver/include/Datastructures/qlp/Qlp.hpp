@@ -97,6 +97,8 @@ public:
 	const data::QpNum& getObjectiveFunctionElement(unsigned int) const;
 
 	void setObjectiveFunctionElement(unsigned int, const data::QpNum&);
+	void setObjectiveFunctionElement(const std::string& descr, const data::QpNum& coeff);
+	void setObjectiveFunctionElement(const data::QpVar& var, const data::QpNum& coeff);
 
 	const std::vector<QpNum>& getObjectiveFunctionValues() const;
 
@@ -114,8 +116,13 @@ public:
 
 	QpVar& createVariable(const data::QpVar&);
 
+	QpVar& createVariable(const std::string& descr, QpVar::NumberSystem n, const data::QpNum& lb, const data::QpNum& ub, QpVar::Quantifier q, const data::QpNum& objCoef=0);
+
+	std::vector<QpVar> createVariables(const std::string& descr, const int amount, QpVar::NumberSystem n, const data::QpNum& lb, const data::QpNum& ub, QpVar::Quantifier q, const data::QpNum& objCoef=0);
+
+
 	QpVar& createVariable(const std::string&, const int, QpVar::Quantifier =
-			QpVar::exists);
+			QpVar::exists, const data::QpNum& objCoef=0);
 
 	QpVar& createVariable(const std::string&, const int, QpVar::Quantifier,
 			QpVar::NumberSystem, const data::QpNum&, const data::QpNum&);
@@ -140,6 +147,10 @@ public:
 	Constraint& createRhsConstraint(QpRhs::RatioSign, const data::QpNum&, int resp);
 	Constraint& createRhsConstraint(const data::QpRhs& rhs);
 	Constraint& createConstraint(const data::Constraint& c);
+    
+    void addConstraintElement(data::Constraint& c, const data::QpVar&, const data::QpNum&);
+    void addConstraintElement(data::Constraint& c, const int, const data::QpNum&);
+    void addConstraintElement(data::Constraint& c, const std::string&, const data::QpNum&);
 
 	std::list<Constraint*> getConstraints() const;
 	std::vector<Constraint*> getConstraintVec();
@@ -199,6 +210,8 @@ public:
 	void getQlpParts(data::QpObjFunc& obj, std::vector<data::QpVar>& vars, data::QpSparseMatrix& matrix, std::vector<data::QpRhs>& rhs)const;
 
 	void deleteAllRows();
+	void deleteAllColumns();
+	void deleteColumnByIndex(unsigned int);
 
 protected:
 
@@ -283,8 +296,6 @@ protected:
 //		return lastColumnsRowPointer[index];
 //	}
 
-	void deleteAllColumns();
-	void deleteColumnByIndex(unsigned int);
 
 	void copyQlpContent(const data::Qlp&);
 

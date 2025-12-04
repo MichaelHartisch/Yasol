@@ -355,6 +355,28 @@ void Qlp::setObjectiveFunctionElement(unsigned int index, const data::QpNum& coe
 	this->objFunc.setObjElement(index, coeff);
 }
 
+void Qlp::setObjectiveFunctionElement(const std::string& descr, const data::QpNum& coeff) {
+	this->objFunc.setObjElement(getVariableByName(descr).getIndex(), coeff);
+}
+
+void Qlp::setObjectiveFunctionElement(const data::QpVar& var, const data::QpNum& coeff) {
+	this->objFunc.setObjElement(var.getIndex(), coeff);
+}
+
+void Qlp::addConstraintElement(data::Constraint& c, const data::QpVar& var, const data::QpNum& coeff){
+	addConstraintElement(c,var.getIndex(), coeff);
+}
+
+void Qlp::addConstraintElement(data::Constraint& c, const int index, const data::QpNum& coeff){
+	c.createConstraintElement(index, coeff);
+
+}
+
+void Qlp::addConstraintElement(data::Constraint& c, const std::string& descr, const data::QpNum& coeff){
+		addConstraintElement(c,getVariableByName(descr).getIndex(), coeff);
+}
+
+
 const std::vector<QpNum>& Qlp::getObjectiveFunctionValues() const {
 	return this->objFunc.getObjectiveElementsDense();
 }
@@ -448,7 +470,7 @@ QpVar& Qlp::createVariable(const data::QpVar& var) {
 	return c;
 }
 
-QpVar& Qlp::createVariable(const std::string& descr, int index, QpVar::Quantifier q) {
+QpVar& Qlp::createVariable(const std::string& descr, int index, QpVar::Quantifier q, const data::QpNum& objCoef) {
 
 	if (nameToVariableIndex.count(descr)) {
 		utils::Logger::globalLog(utils::LOG_INSANE, LOG_TAG, "Qlp: " + this->toString());
@@ -465,10 +487,28 @@ QpVar& Qlp::createVariable(const std::string& descr, int index, QpVar::Quantifie
 	firstColumnsRowPointer.push_back(NULL);
 	lastColumnsRowPointer.push_back(NULL);
 	this->objFunc.setSize(this->objFunc.getSize() + 1); //TODO
+	this->setObjectiveFunctionElement(index,objCoef);
 	if (LOG_QLP)
 		utils::Logger::globalLog(utils::LOG_INSANE, LOG_TAG, "Column " + descr + "added with index " + utils::ToolBox::convertToString(index));
 	return *v;
 }
+
+QpVar& Qlp::createVariable(const std::string& descr, QpVar::NumberSystem n, const data::QpNum& lb, const data::QpNum& ub, QpVar::Quantifier q, const data::QpNum& objCoef) {
+	QpVar& c = createVariable(descr, variables.size(), q, objCoef);
+	c.setNumberType(n);
+	c.setLowerBound(lb);
+	c.setUpperBound(ub);
+	return c;
+}
+
+std::vector<QpVar> Qlp::createVariables(const std::string& descr, const int amount, QpVar::NumberSystem n, const data::QpNum& lb, const data::QpNum& ub, QpVar::Quantifier q, const data::QpNum& objCoef){
+    std::vector<QpVar> varVec(amount);
+    for(int i = 0; i < amount; i++){
+    	varVec[i]=createVariable(descr+"_"+std::to_string(i), n, lb, ub, q, objCoef);
+    }
+    return varVec;
+}
+
 
 QpVar& Qlp::createVariable(const std::string& descr, int index, QpVar::Quantifier q, QpVar::NumberSystem n, const data::QpNum& lb, const data::QpNum& ub) {
 	QpVar& c = createVariable(descr, index, q);

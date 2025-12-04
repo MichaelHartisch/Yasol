@@ -507,7 +507,7 @@ bool QlpStageSolver::getBendersCut(unsigned int stage, std::vector<data::Indexed
 			d -= ray[i] * mVars[j].getUpperBound();
 		}
 
-		if (d>=-0.00001/*d >= 0.001*/) {
+		if (d>=1e-8/*-0.00001*//*d >= 0.001*/) {
 		  //std::cerr << "Error d>0.001:   d = " << d.asDouble() <<  std::endl;
 			lhs.clear();
 			sign = data::QpRhs::greaterThanOrEqual;
@@ -693,13 +693,13 @@ bool QlpStageSolver::checkCut(unsigned int stage, std::vector<data::IndexedEleme
 		return false;
 	}
 	*/
-	if (1||fixedRhs >= rhs) {
+	if (fixedRhs >= rhs) {
 		if (fixedRhs >= rhs) {
-		  std::cout << std::endl;
-		  std::cout << "CUT  : " << data::indexedElementVecToString(lhs) << data::QpRhs::ratioSignString(sign) << rhs.toString() << std::endl;
+		  //std::cout << std::endl;
+		  //std::cout << "CUT  : " << data::indexedElementVecToString(lhs) << data::QpRhs::ratioSignString(sign) << rhs.toString() << std::endl;
 		}
 		if (fixedRhs >= rhs) {
-		  std::cout << "ERROR at stage: " << stage << "Current Solution NOT cut by Benders-Cut: " << bestCutLhs.toString() << " NOT " << data::QpRhs::ratioSignString(sign) << rhs.toString() << std::endl;
+		  //std::cout << "ERROR at stage: " << stage << "Current Solution NOT cut by Benders-Cut: " << bestCutLhs.toString() << " NOT " << data::QpRhs::ratioSignString(sign) << rhs.toString() << std::endl;
 		  return false;
 		} else {
 		  //std::cout << "PERFECT at stage: " << stage << ": " << bestCutLhs.toString() << " is " << data::QpRhs::ratioSignString(sign) << rhs.toString() << std::endl;

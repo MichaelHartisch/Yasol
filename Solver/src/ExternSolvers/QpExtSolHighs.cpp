@@ -150,7 +150,9 @@ namespace extSol {
     for (unsigned int i = 0; i < nCols; i++) {
       model.lp_.col_cost_[i] = obj[i].asDouble();
       model.lp_.col_lower_[i] = vars[i].getLowerBound().asDouble();
+      if (model.lp_.col_lower_[i] <= -1e15) model.lp_.col_lower_[i] = -kHighsInf;
       model.lp_.col_upper_[i] = vars[i].getUpperBound().asDouble();
+      if (model.lp_.col_upper_[i] >= 1e15) model.lp_.col_upper_[i] = kHighsInf;
       //std::string s("");
       //tmpColNameCl[i] = (char*) s.c_str();
       if (cntIntegers) {
@@ -200,7 +202,14 @@ namespace extSol {
     }
     model.lp_.a_matrix_.start_[nRows] = rmatBeg;
     return_status = highs.passModel(model);
-    assert(return_status!=HighsStatus::kError);
+    if (return_status == HighsStatus::kError) {
+      const HighsLp& lp = highs.getLp();
+      //this->writeToFile("/tmp/","test.lp");
+#ifdef SHOW_EXTERN_SOLVER_WARNINGS
+      std::cerr << "Error: highs gives an error at passModel." << std::endl;
+#endif
+    }
+    //assert(return_status!=HighsStatus::kError);
 #ifdef SHOW_EXTERN_SOLVER_WARNINGS
     if (return_status!=HighsStatus::kOk)
       std::cerr << "Warning: highs gives a warning at passModel." << std::endl;
@@ -258,10 +267,8 @@ namespace extSol {
     HighsStatus rc =
       frmps.writeModelToFile(highs.getOptions(), fullname, highs.getModel());
 
-#ifdef SHOW_EXTERN_SOLVER_WARNINGS
     if (rc != HighsStatus::kOk)
       std::cerr << "Creating MPS file failed" << std::endl;
-#endif
   }
 
   void QpExtSolHighs::getBase(extSol::QpExternSolver::QpExtSolBase& base) const {
@@ -361,7 +368,7 @@ namespace extSol {
       }
     }
 
-    assert(base.constraints.size() == this->getRowCount());
+    assert(base.constraints.size() <= this->getRowCount());
     assert(base.variables.size() == this->getVariableCount());
     HighsBasis basis;
     if (0&&inStrongB)
@@ -404,7 +411,8 @@ namespace extSol {
 	} else if (base.constraints[i] == extSol::QpExternSolver::NotABasicStatus) {
 	  basis.row_status[i] = HighsBasisStatus::kNonbasic;
 	} else {
-	  throw utils::ExternSolverException(" QpExtSolHighs::getBase(...) --> Unsupported Status in base.constraints: " + utils::ToolBox::convertToString(base.variables[i]));
+	  basis.row_status[i] = HighsBasisStatus::kNonbasic;	  
+	  //throw utils::ExternSolverException(" QpExtSolHighs::getBase(...) --> Unsupported Status in base.constraints: " + utils::ToolBox::convertToString(base.variables[i]));
 	}
       }
     }
@@ -412,7 +420,9 @@ namespace extSol {
   }
 
   void QpExtSolHighs::setRayGuess(const std::vector<data::QpNum>& rayGuess) {
-
+#ifdef SHOW_EXTERN_SOLVER_WARNINGS
+    std::cerr << "info: my LP solver is based upon HiGHS." << std::endl;
+#endif
   }
 
   void QpExtSolHighs::adaptToSolverMode(QpExtSolSolverMode m) {
@@ -431,7 +441,7 @@ namespace extSol {
     HighsOptions options = opt;
     //std::cerr << "Option. dualTol=" << options.dual_feasibility_tolerance << " priTol=" << options.primal_feasibility_tolerance << std::endl;
     //std::cerr << "Threads==" << options.threads << " simpMinCo=" << options.simplex_min_concurrency << " simpMaxCo=" << options.simplex_max_concurrency << std::endl;
-    options.dual_feasibility_tolerance = 1e-9;
+    options.dual_feasibility_tolerance = 1e-6;
     options.primal_feasibility_tolerance = 1e-6;//10.0 * options.primal_feasibility_tolerance;
     options.threads = 1;
     options.allow_unbounded_or_infeasible = true;
@@ -541,6 +551,8 @@ namespace extSol {
 #ifdef SHOW_EXTERN_SOLVER_WARNINGS
       std::cerr << "Warning: Highs status unknown" << std::endl;
 #endif
+	char a;
+	//std::cin >> a;
       if (info.basis_validity == kBasisValidityInvalid) return extSol::QpExternSolver::ERROR;
 
     default:
@@ -555,12 +567,39 @@ namespace extSol {
     }
   }
 
+  /*
+  enum class HighsModelStatus {
+  // NB Add new status values to the end so that int cast of status
+  // values is unchanged, since enums are not preserved in some
+  // interfaces
+  kNotset = 0,
+  kLoadError,
+  kModelError,
+  kPresolveError,
+  kSolveError,
+  kPostsolveError,
+  kModelEmpty,
+  kOptimal,
+  kInfeasible,
+  kUnboundedOrInfeasible,
+  kUnbounded,
+  kObjectiveBound,
+  kObjectiveTarget,
+  kTimeLimit,
+  kIterationLimit,
+  kUnknown,
+  kMin = kNotset,
+  kMax = kUnknown
+};
+  */
+
   extSol::QpExternSolver::QpExtSolSolutionStatus QpExtSolHighs::solve(unsigned int action, unsigned int timeLimit) {
     //writeToFile("./","bug.lp");
     const HighsOptions& opt = highs.getOptions();
     HighsOptions remOptions = opt;
     HighsOptions options = opt;
-
+    bool showSolveProgress=false;//true;//false;
+	
     //writeToFile("./","bug.lp");
     static double /*unsigned long long*/ sum_its=0;
     static double /*int*/ num_its=1;
@@ -574,14 +613,25 @@ namespace extSol {
       return this->getSolutionStatus();
     }
 
-    highs.setOptionValue("simplex_iteration_limit", (HighsInt)itLimit);
-    highs.setOptionValue("time_limit", (double)timeLimit);
-    highs.setOptionValue("presolve","off");
-    
-    static bool y = false;
-    inStrongB = false;
+    //highs.setOptionValue("simplex_scale_strategy", 0); 
+    if (SolveParameters.decLevel == -20) {
+      highs.setOptionValue("solver", kSimplexString);
+      highs.setOptionValue("simplex_strategy", kSimplexStrategyDual);
+      return_status = highs.run();
+      if (/*highs.getModelStatus()==HighsModelStatus::kUnknown*/this->getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
+#ifdef SHOW_EXTERN_SOLVER_WARNINGS
+	std::cerr << "Warning: Highs status unknown in strb" << std::endl;
+#endif
+	highs.setBasis();
+	return_status = highs.run();
+      }
 
-    if (SolveParameters.decLevel < -100 && onlySomeIts) {
+      highs.passOptions(remOptions);
+      return this->getSolutionStatus();
+    }
+
+    
+    if (SolveParameters.decLevel < -100 && onlySomeIts && 0) {
       inStrongB = true;
       highs.setOptionValue("simplex_iteration_limit", -(SolveParameters.decLevel + 100));
       //highs.setOptionValue("simplex_iteration_limit",(HighsInt)kHighsIInf);
@@ -604,9 +654,137 @@ namespace extSol {
       highs.passOptions(remOptions);
       return this->getSolutionStatus();
     }
+    if (SolveParameters.decLevel < -100) {
+      SolveParameters.decLevel = 10;
+    }
+
+    {
+      highs.setOptionValue("solver", "choose");
+      highs.setOptionValue("time_limit", highs.getRunTime()+(double)(10.0+60.0*getVariableCount()/10000));
+      highs.setOptionValue("presolve","off");
+      return_status = highs.run();
+      HighsStatus H2RS;
+      HighsModelStatus model_status = highs.getModelStatus();
+
+      if (return_status == HighsStatus::kOk  )
+	if (model_status == HighsModelStatus::kOptimal || model_status == HighsModelStatus::kInfeasible)
+      //if ((int)model_status!=0 && model_status != HighsModelStatus::kUnknown && (int)model_status != 15) 
+	return this->getSolutionStatus();
+      highs.setBasis();
+      //std::cerr << "highs: setBasis:" << SolveParameters.decLevel << std::endl;
+      if (1||SolveParameters.decLevel<12) {
+	if (0) {
+	  highs.setOptionValue("time_limit", highs.getRunTime()+max((double)(10.0+60.0*getVariableCount()/10000),highs.getRunTime()+180.0));
+	  highs.setOptionValue("presolve","on");
+	  return_status = highs.run();
+	  HighsModelStatus model_status = highs.getModelStatus();
+	  
+	  if (return_status != HighsStatus::kError  ) {
+	    //std::cerr << "at least no error" << std::endl;
+	    if (model_status == HighsModelStatus::kOptimal || model_status == HighsModelStatus::kInfeasible)
+	      //if ((int)model_status!=0 && model_status != HighsModelStatus::kUnknown && (int)model_status != 15) 
+	      return this->getSolutionStatus();
+	    //else std::cerr << "modelstaus is neither opt nor inf: " << (int)model_status << std::endl;
+	  }
+	}
+	int looper = 0;
+	while(1) {
+	  looper++;
+	  const HighsInfo& info = highs.getInfo();
+	  if (showSolveProgress) std::cerr << "Warning: last hope ipm. param:" << SolveParameters.decLevel << std::endl;
+	  highs.setOptionValue("time_limit", highs.getRunTime()+180000.0);
+	  highs.setOptionValue("presolve","off");
+	  highs.setOptionValue("solver", kSimplexString);
+	  highs.setOptionValue("simplex_strategy", kSimplexStrategyDual);
+	  Highs ipm;
+	  Highs H2;
+	  ipm.setOptionValue("output_flag", false);
+	  H2.setOptionValue("output_flag", false);
+	  ipm.setOptionValue("solver", "ipm"/*kComplicationsString*/);
+	  H2.setOptionValue("solver", kSimplexString);
+	  ipm.setOptionValue("ipm_iteration_limit", 200);
+	  ipm.passModel(highs.getLp());
+	  H2.passModel(highs.getLp());
+
+	  //HighsLp *lpp = (HighsLp *)(&(highs.getLp()));
+	  //lpp->clear();
+	  highs.clear();
+	  highs.passModel(H2.getLp());
+	  highs.setOptionValue("output_flag", false);
+	  ipm.setOptionValue("simplex_iteration_limit",
+			     10000*info.simplex_iteration_count);
+	  ipm.setBasis();
+	  //H2.setBasis();
+	  highs.setBasis();
+	  time_t T0=time(NULL);
+	  HighsStatus ipm_ret_stat = ipm.run();
+	  highs.setBasis(ipm.getBasis(), "HighsLpRelaxation::run IPM basis");
+	  highs.setOptionValue("time_limit",highs.getRunTime()+(double)(180*looper));
+	  //H2RS = H2.run();
+	  return_status = highs.run();
+	  //highs.resetGlobalScheduler();
+	  time_t T1=time(NULL);
+	  {
+	    HighsModelStatus H2MS = H2.getModelStatus();
+	    if (showSolveProgress) std::cerr << "Warning: ipm research took " << (int)(T1-T0) << "secs. limit: " << (double)(180*looper) << " retStat:" << (int)return_status << " ipmRS=" << (int)ipm_ret_stat << " retS=" << (int)return_status << " H2MS:" << (int)H2RS<< " H2MS:" << (int)H2MS<< std::endl;
+	  }
+	  if (return_status != HighsStatus::kError  ) {
+	    HighsModelStatus model_status = highs.getModelStatus();
+	    if (showSolveProgress) std::cerr << "Warning: at least no error model_status=" << (int)model_status << std::endl;
+	    if (model_status == HighsModelStatus::kOptimal || model_status == HighsModelStatus::kInfeasible)
+	      //if ((int)model_status!=0 && model_status != HighsModelStatus::kUnknown && (int)model_status != 15) 
+	      return this->getSolutionStatus();
+	    else {
+	      if (showSolveProgress) std::cerr << "not optima and not inf" << (int)model_status << std::endl;
+	      if (model_status==HighsModelStatus::kUnbounded)
+		return this->getSolutionStatus();
+	      if ((int)model_status == 13) {
+		if (showSolveProgress) std::cerr << "timeout in simplex. Time: " << (int)(T1-T0) << " limit: " << (double)(180*looper) << std::endl;
+		if ((int)return_status < 0) {
+		  return extSol::QpExternSolver::ERROR; 
+		} else if (180*looper > 500 && (int)return_status != 0) {
+		  return extSol::QpExternSolver::ABORT_TIME_LIM; 
+		} else if (180*looper > 300) {
+		  highs.setBasis();
+		}
+		highs.setBasis();
+		looper = looper*looper;
+		continue;
+	      }
+	      if (showSolveProgress) std::cerr << "model status is neither opt nor inf nor 13: " << (int)model_status << std::endl;
+	    }
+	  } else {
+	    if (showSolveProgress) std::cerr << "Error: not much hope ipm. param:" << SolveParameters.decLevel << std::endl;
+	    if (looper < 5) {
+	      highs.setBasis();
+	      continue;
+	    }
+	  }
+	  break;
+	} 
+	
+      }
+      highs.setBasis();
+      highs.setOptionValue("time_limit", (double)(10.0+60.0*getVariableCount()/10000));
+      highs.setOptionValue("presolve","off");
+      //highs.invalidate();
+      //highs.invalidateModelStatus();
+    }
+
+    highs.setOptionValue("simplex_iteration_limit", (HighsInt)itLimit);
+    highs.setOptionValue("time_limit", (double)timeLimit);
+    highs.setOptionValue("presolve","off");
+    
+    static bool y = false;
+    inStrongB = false;
 
     if (SolveParameters.decLevel < 0) SolveParameters.decLevel = 10;
 
+    if (showSolveProgress) {
+      HighsModelStatus model_status = highs.getModelStatus();
+      std::cerr << "Error: Correction mode. param:" << SolveParameters.decLevel << " last status:" << (int)model_status << std::endl;
+    }
+    
     if (y==false || action==1|| SolveParameters.decLevel <= 2) {
       highs.setOptionValue("presolve","on");
       if (getVariableCount() > 40000 && getRowCount() > 40000)
@@ -839,7 +1017,7 @@ namespace extSol {
 	const bool has_basis2 = info.basis_validity;
 #ifdef SHOW_EXTERN_SOLVER_WARNINGS
 	std::cerr << "Warning near error" << (int)return_status << " " << (int)highs.getModelStatus() << " " << has_basis2 << std::endl;
-#endif
+#endif	
 	//assert(0);
 	highs.passOptions(remOptions);
 	if (return_status != HighsStatus::kOk || highs.getModelStatus()==HighsModelStatus::kNotset) { 
@@ -851,22 +1029,24 @@ namespace extSol {
 	  highs.setOptionValue("simplex_strategy", kSimplexStrategyDual);
 	  Highs ipm;
 	  ipm.setOptionValue("output_flag", false);
-	  ipm.setOptionValue("solver", /*"ipm"*/kComplicationsString);
+	  ipm.setOptionValue("solver", "ipm"/*kComplicationsString*/);
 	  ipm.setOptionValue("ipm_iteration_limit", 200);
 	  ipm.passModel(highs.getLp());
 	  ipm.setOptionValue("simplex_iteration_limit",
-			     info.simplex_iteration_count);
+			     10000*info.simplex_iteration_count);
 	  ipm.writeModel("debug2.mps");
 	  ipm.setBasis();
 	  ipm.run();
 	  highs.setBasis(ipm.getBasis(), "HighsLpRelaxation::run IPM basis");
 	  highs.writeModel("debug3.mps");
 	  return_status = highs.run();
+	  if (return_status != HighsStatus::kOk || highs.getModelStatus()==HighsModelStatus::kNotset) { 
 #ifdef SHOW_EXTERN_SOLVER_WARNINGS
-	  std::cerr << "Error: Final resolve status ERROR, not ok. param:" << SolveParameters.decLevel << std::endl;
+	    std::cerr << "Error: Final resolve status ERROR, not ok. param:" << SolveParameters.decLevel << std::endl;
 #endif
-	  highs.passOptions(remOptions);
-	  return extSol::QpExternSolver::UNSOLVED;
+	    highs.passOptions(remOptions);
+	    return extSol::QpExternSolver::UNSOLVED;
+	  }
 	}
       } else {
 	highs.passOptions(remOptions);
@@ -966,7 +1146,7 @@ namespace extSol {
 	HighsOptions options = opt;
 	options.simplex_strategy = kSimplexStrategyDual;
 	options.dual_feasibility_tolerance = 1.0 * options.dual_feasibility_tolerance;
-	options.primal_feasibility_tolerance = 0.001 * options.primal_feasibility_tolerance;
+	options.primal_feasibility_tolerance = 0.01 * options.primal_feasibility_tolerance;
 	options.primal_simplex_bound_perturbation_multiplier = 1e-5 * (double)loops;
 	options.dual_simplex_cost_perturbation_multiplier = 1e-5 * (double)loops;
 	options.simplex_scale_strategy = kSimplexScaleStrategyMaxValue015;
@@ -1539,6 +1719,54 @@ namespace extSol {
       data::QpRhs org_rhs = *rhsVec[i];
       std::vector<data::IndexedElement> org_lhs = conVec[i]->getElements();
 	  
+	  // split in leq-manner
+	  data::QpNum multiplier = 1.0;
+	  if (org_rhs.getRatioSign() == data::QpRhs::RatioSign::greaterThanOrEqual)
+	    multiplier = -1.0;
+	  std::vector<data::IndexedElement> negSummands;
+	  std::vector<data::IndexedElement> posSummands;
+	  std::vector<data::IndexedElement> indifferentSummands;
+	  for (int j=0; j < org_lhs.size();j++) {
+	    data::QpNum coef = org_lhs[j].value * multiplier;
+	    data::QpNum lb = varVec[org_lhs[j].index]->getLowerBound();
+	    data::QpNum ub = varVec[org_lhs[j].index]->getUpperBound();
+	    if (coef >= 0.0 && lb >= 0.0)
+	      posSummands.push_back(org_lhs[j]);
+	    else if (coef <= 0.0 && ub <= 0.0)
+	      posSummands.push_back(org_lhs[j]);
+	    else if (coef <= 0.0 && lb >= 0.0)
+	      negSummands.push_back(org_lhs[j]);
+	    else if (coef >= 0.0 && ub <= 0.0)
+	      negSummands.push_back(org_lhs[j]);
+	    else indifferentSummands.push_back(org_lhs[j]);
+	  }
+	  data::QpNum sumPosCoefs = 0.0;
+	  data::QpNum sumNegCoefs = 0.0;
+	  for (int j=0;j<negSummands.size();j++)
+	    sumNegCoefs = sumNegCoefs + fabs(negSummands[j].value.asDouble());
+	  for (int j=0;j<posSummands.size();j++)
+	    sumPosCoefs = sumPosCoefs + fabs(posSummands[j].value.asDouble());
+	  if (indifferentSummands.size() == 0) {
+	    if (negSummands.size() == 1 && posSummands.size() > 1 && varVec[negSummands[0].index]->getNumberSystem()==data::QpVar::binaries && org_rhs.getValue() < 1e-8 && org_rhs.getValue() > -1e-8) { // disaggregate
+	      data::QpNum gegSummand0 = (negSummands[0].value >= 0 ? negSummands[0].value : data::QpNum(-1.0)*negSummands[0].value);
+	      if ( gegSummand0 >= sumPosCoefs-1e-8 ) {
+		std::cerr << "disaggregate!" << std::endl;
+		for (int j=0;j<posSummands.size();j++) {
+		  std::vector<data::IndexedElement> dummy_lhs(1);
+		  dummy_lhs[0] = posSummands[j];
+		  data::QpRhs dummy_rhs;
+		  dummy_rhs.setRatioSign(data::QpRhs::RatioSign::smallerThanOrEqual);
+		  dummy_rhs.setValue(0.0);
+		  LHSs.push_back(dummy_lhs);
+		  RHSs.push_back(dummy_rhs);
+		  lazyRowIndicator.push_back(true);
+		  lazyRows.push_back(RHSs.size()-1);
+		  setStatus(RHSs.size()-1, computeStatus(dummy_lhs, dummy_rhs) );
+		}
+	      }
+	    }
+	  }
+
       LHSs.push_back(org_lhs);
       RHSs.push_back(org_rhs);
       lazyRowIndicator.push_back(true);
@@ -1708,6 +1936,17 @@ namespace extSol {
       if (bigX) {
 	//lazyRowIndicator[ri] = false;
 	//std::cerr << "X";
+	/*
+	if (RHSs[ri].getRatioSign() == data::QpRhs::RatioSign::greaterThanOrEqual) {
+	  if (lhs < RHSs[ri].getValue().asDouble()-2*eps )
+	    lR.push_back(ri);
+	} else if (RHSs[ri].getRatioSign() == data::QpRhs::RatioSign::smallerThanOrEqual) {
+	  if (lhs > RHSs[ri].getValue().asDouble()-2*eps )
+	    lR.push_back(ri);
+	} else {
+	  if (fabs(lhs-RHSs[ri].getValue().asDouble()) > 1e-8+0.0) lR.push_back(ri);
+	}
+	*/
 	continue;
       }
       if (RHSs[ri].getRatioSign() == data::QpRhs::RatioSign::greaterThanOrEqual) {
@@ -1749,6 +1988,8 @@ namespace extSol {
 #ifdef SHOW_EXTERN_SOLVER_WARNINGS
       std::cerr << "Error: lazyRowIndicator.size() = " << lazyRowIndicator.size() << " but i=" << i << std::endl;
 #endif
+      char a;
+      //std::cin >> a;
       return;
     }
     if (lazyRowIndicator[i] == false && s == true)
@@ -1928,197 +2169,56 @@ namespace extSol {
 
   }
 
-  void QpExtSolHighs::getBinvArow(unsigned int rowIndex, std::vector<data::QpNum>& binvArow) {
-    //#define REMEM_WITHSORT
-#ifndef REMEM_WITHSORT
+  void QpExtSolHighs::getBinvArow(unsigned int basisRowIndex, std::vector<data::QpNum>& binvArow) {
     const HighsLp& lp = highs.getLp();
-    const HighsInfo& info = highs.getInfo();
-    const unsigned int m = getRowCount();
-    const unsigned int n = getVariableCount();
-    HighsInt row_num_nz=0;
-    assert (lp.a_matrix_.format_ == MatrixFormat::kColwise);
-    assert (n == lp.a_matrix_.num_col_);
-    assert (n <= binvArow.size());
-    assert (m == lp.a_matrix_.num_row_);
-    assert(highs.hasInvert());
+    const int m = lp.num_row_;
+    const int n = lp.num_col_;
 
-    std::vector<double> SimplexRow(n/* + m*/, 0);
-    highs.getReducedRow(rowIndex, SimplexRow.data());
-    //binvArow.resize(n+m);
-    for (int i=0; i < n/*+m*/;i++)
-      binvArow[i] = -SimplexRow[i];
-    return;
-	
-    binvArow.resize(n+m);
-    for (unsigned int i = 0; i < n+m; i++) {  binvArow[i] = 0.0; }
+    // --- 1) Hole RHS in EXTERNER Darstellung ------------------------------
+    std::vector<data::QpRhs> rhsVec;
+    getRhs(rhsVec);                  // liefert size m, passend zu getRowLhs
 
-    std::vector<double> binvrow(m);
-    HighsStatus status = highs.getBasisInverseRow(rowIndex, binvrow.data(), &row_num_nz,NULL);
-    assert(status == HighsStatus::kOk);
-	
-    for (int iCol = 0; iCol < n;iCol++) {
-      std::vector<double> targetEntryVec; 
-      double targetEntry = 0.0;
-      for (int j = lp.a_matrix_.start_[iCol]; j < lp.a_matrix_.start_[lp.a_matrix_.start_.size()-1] && j < lp.a_matrix_.start_[iCol+1];j++) {
-	assert(j<lp.a_matrix_.value_.size());
-	assert(j<lp.a_matrix_.index_.size());
-	assert(lp.a_matrix_.index_[j]<m);
-	targetEntryVec.push_back(lp.a_matrix_.value_[j] * binvrow[lp.a_matrix_.index_[j]]);
-	//targetEntry = targetEntry + lp.a_matrix_.value_[j] * binvrow[lp.a_matrix_.index_[j]];
-      }
-      std::sort(targetEntryVec.begin(),targetEntryVec.end(),[](double p1, double p2){
-							    double p1abs = (p1 < 0.0 ? -p1 : p1);
-							    double p2abs = (p2 < 0.0 ? -p2 : p2);
-							    assert(p1abs >= 0.0 && p1abs < 1e200);
-							    assert(p2abs >= 0.0 && p2abs < 1e200);
-							    return p1abs < p2abs;
-							  });
-      targetEntry = 0.0;                                                                                               
-      for (int zz = 0; zz < targetEntryVec.size();zz++)
-	targetEntry = targetEntry + targetEntryVec[zz];
-      binvArow[iCol] = targetEntry;
+    // Sicherheitschecks
+    assert((int)rhsVec.size() == m);
+    assert((int)basisRowIndex < m);
+
+    // --- 2) Hole B^{-1}-Zeile aus HiGHS -----------------------------------
+    std::vector<double> BInvRow(m);
+    HighsInt row_num_nz = 0;
+
+    HighsStatus status = highs.getBasisInverseRow( (HighsInt)basisRowIndex, BInvRow.data(), &row_num_nz, nullptr);
+    if (status != HighsStatus::kOk) {
+        throw utils::ExternSolverException(
+            "HiGHS getBasisInverseRow failed in getBinvArow");
     }
-  }
-#else
-  const HighsLp& lp = highs.getLp();
-  const HighsInfo& info = highs.getInfo();
-  const unsigned int m = getRowCount();
-  const unsigned int n = getVariableCount();
-  HighsInt row_num_nz=0;
-  assert (lp.a_matrix_.format_ == MatrixFormat::kColwise);
-  assert (n == lp.a_matrix_.num_col_);
-  assert (n <= binvArow.size());
-  assert (m == lp.a_matrix_.num_row_);
 
-  std::vector<double> binvrow(m);
-  binvArow.resize(n+m);
-  highs.getBasisInverseRow(rowIndex, binvrow.data(), &row_num_nz,NULL);
-  for (unsigned int i = 0; i < n+m; i++) {
-    binvArow[i] = 0.0;
-  }
+    // --- 3) Initialisiere Ausgabe: Länge n+m, alles Null -------------------
+    binvArow.assign(n + m, data::QpNum(0.0));
 
-  for (int iCol = 0; iCol < n;iCol++) {
-    std::vector<double> targetEntryVec; 
-    double targetEntry = 0.0;
-    for (int j = lp.a_matrix_.start_[iCol]; j < lp.a_matrix_.start_[lp.a_matrix_.start_.size()-1] && j < lp.a_matrix_.start_[iCol+1];j++) {
-      assert(j<lp.a_matrix_.value_.size());
-      assert(j<lp.a_matrix_.index_.size());
-      assert(lp.a_matrix_.index_[j]<m);
-      //targetEntry = targetEntry + lp.a_matrix_.value_[j] * binvrow[lp.a_matrix_.index_[j]];
-      targetEntryVec.push_back(lp.a_matrix_.value_[j] * binvrow[lp.a_matrix_.index_[j]]);
+    // --- 4) Rekonstruiere A_B^{-1}A und A_B^{-1}I --------------------------
+    std::vector<data::IndexedElement> lhs;
+    lhs.reserve(32);
+
+    for (int r = 0; r < m; ++r) {
+        double f = BInvRow[r];
+        if (std::fabs(f) <= 1e-14)
+            continue;   // Zeile r trägt nicht zur Tableauzeile bei
+
+        // 4a) Hole EXTERNE A-Zeile r
+        lhs.clear();
+        getRowLhs(r, lhs); 
+
+        // 4b) Füge Beitrag f * A(r, j) zu allen Primalspalten hinzu
+        for (const auto& e : lhs) {
+            int col = (int)e.index;        // 0..n-1
+            double a_rj = e.value.asDouble();
+            binvArow[col] += data::QpNum(f * a_rj);
+        }
+
+        // 4c) Slackspalte n+r erhält den Koeffizienten f
+        binvArow[n + r] += data::QpNum(f);
     }
-    std::sort(targetEntryVec.begin(),targetEntryVec.end(),[](double p1, double p2){
-							    double p1abs = (p1 < 0.0 ? -p1 : p1);
-							    double p2abs = (p2 < 0.0 ? -p2 : p2);
-							    assert(p1abs >= 0.0 && p1abs < 1e200);
-							    assert(p2abs >= 0.0 && p2abs < 1e200);
-							    return p1abs < p2abs;
-							  });
-    targetEntry = 0.0;                                                                                               
-    for (int zz = 0; zz < targetEntryVec.size();zz++)
-      targetEntry = targetEntry + targetEntryVec[zz];
-    binvArow[iCol] = targetEntry;
-  }
 }
-#endif
-#ifdef REMEM_MUELL
-  const HighsLp& lp = highs.getLp();
-  const HighsInfo& info = highs.getInfo();
-  const unsigned int m = getRowCount();
-  const unsigned int n = getVariableCount();
-
-  std::vector<double> binvrow(m);
-  binvArow.resize(n+m);
-  //HighsInt row_num_nz=m+n;
-  /*
-    HVector row_ep;
-    row_ep.setup(m);
-    highs.getBasisInverseRowSparse(cIndex, row_ep);
-    for (int i=0;i<m;i++) {
-    binvrow[i] = 0.0;
-    }
-    if(0) if (row_ep.index.size()!=row_ep.count) {
-    std::cerr << "row_ep.index.size()=" << row_ep.index.size() << " row_ep.count=" << row_ep.count << " row_ep.size" << row_ep.count << " row_ep_buffer.array.size()=" << row_ep.array.size() << std::endl;
-    }
-	
-    //assert(row_ep.index.size()==row_ep.count);
-    for (int i=0; i < row_ep.count;i++) {
-    assert(row_ep.index[i]<m);
-    binvrow[row_ep.index[i]] = row_ep.array[row_ep.index[i]];
-    }
-  */
-  /*for (int i=0;i<m;i++)
-    std::cerr << binvrow[i] << "x" << i << " ";
-    std::cerr << std::endl;*/
-  ////highs.getBasisInverseRow(cIndex, binvrow.data(), &row_num_nz,NULL);
-  //for (int i=0;i<m;i++) {
-  //  binvrow[i] = -binvrow[i];
-  //}
-
-  /*for (int i=0;i<m;i++)
-    std::cerr << binvrow[i] << "x" << i << " ";
-    std::cerr << std::endl;
-    std::cerr << "m=" << m << " row_num_nz=" << row_num_nz << std::endl;
-  */
-  for (unsigned int i = 0; i < n; i++) {
-    binvArow[i] = 0.0;
-  }
-
-  binvrow[i] = 0.0;
-}
-binvrow[cIndex]=1.0;
-assert (lp.a_matrix_.format_ == MatrixFormat::kColwise);
-assert (n == lp.a_matrix_.num_col_);
-assert (n <= binvArow.size());
-assert (m == lp.a_matrix_.num_row_);
-
-for (int iCol = 0; iCol < n;iCol++) {
-  double targetEntry = 0.0;
-  //targetEntryVec.clear();
-  /*int finlen=0;
-    for (int j = lp.a_matrix_.start_[iCol]; j < lp.a_matrix_.start_[lp.a_matrix_.start_.size()-1] && j < lp.a_matrix_.start_[iCol+1];j++) {
-    finlen++;
-    }*/
-  //std::vector<double> targetEntryVec;
-  /*
-    if(0)for (int z=0;z<finlen;z++)
-    targetEntryVec.push_back(z+7.0);
-  */
-  for (int j = lp.a_matrix_.start_[iCol]; j < lp.a_matrix_.start_[lp.a_matrix_.start_.size()-1] && j < lp.a_matrix_.start_[iCol+1];j++) {
-    //assert(lp.a_matrix_.index_[j] < binvrow.size());
-    //assert(j-lp.a_matrix_.start_[iCol]<finlen);
-    assert(j<lp.a_matrix_.value_.size());
-    assert(j<lp.a_matrix_.index_.size());
-    assert(lp.a_matrix_.index_[j]<m);
-    //double entry = lp.a_matrix_.value_[j] * 1.0;//binvrow[lp.a_matrix_.index_[j]];
-    targetEntry = targetEntry + lp.a_matrix_.value_[j] * binvrow[lp.a_matrix_.index_[j]];
-    //targetEntryVec.push_back(entry);
-    //targetEntryVec[index]=entry;
-  }
-  //if(0)for (int zz = 0; zz < targetEntryVec.size();zz++)
-  // targetEntry = targetEntry + targetEntryVec[zz];
-  //binvArow[iCol] = targetEntry;
-  //assert(targetEntryVec.size()==finlen);
-	  
-  /*std::sort(targetEntryVec.begin(),targetEntryVec.end(),[](double p1, double p2){
-    double p1abs = (p1 < 0.0 ? -p1 : p1);
-    double p2abs = (p2 < 0.0 ? -p2 : p2);
-    assert(p1abs >= 0.0 && p1abs < 1e200);
-    assert(p2abs >= 0.0 && p2abs < 1e200);
-    return p1abs < p2abs;
-    });*/
-  /*targetEntry = 0.0;
-    for (int zz = 0; zz < targetEntryVec.size();zz++)
-    targetEntry = targetEntry + targetEntryVec[zz];
-    if(0)for (int j = 0; j < targetEntryVec.size();j++)
-    targetEntry = targetEntry + targetEntryVec[j];
-  */
-  binvArow[iCol] = targetEntry;
-	  
- }
-
-}
-#endif
 
 //----------------------------- sortiere die Variablen nach decision-level ------------------------------->
 struct VarData { uint32_t reason; int level; };
@@ -2256,9 +2356,11 @@ bool QpExtSolHighs::getBendersCut(unsigned int stage, std::vector<data::IndexedE
     //#define rtrtr
 #ifdef rtrtr
     for (int j = mVars.size()-1; j >= 0; j--) {
+#ifdef SHOW_EXTERN_SOLVER_WARNINGS
       if (ray[mRhs.size()+mVars.size()+j] > 0) std::cerr << "ray 1 > 0"
 							 << std::endl;
       if (ray[mRhs.size()+j] < 0) std::cerr << "ray 2 < 0" << std::endl;
+#endif
       if (mVars[j].getUpperBound().isZero()) {
 	if (d - ray[mRhs.size()+mVars.size()+j] <
 	    0/*ray[mRhs.size()+mVars.size()+j].isZero()*/) {

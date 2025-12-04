@@ -1,0 +1,21 @@
+MINIMIZE
+SUBJECT TO
+2 x - y - 10000 z <= -1
+ - x - y + 10000 z <= 6998
+BOUNDS
+0 <= x <= 3000
+0 <= y <= 2001
+0 <= z <= 1
+GENERALS
+x y
+BINARIES
+z
+EXISTS
+y z
+ALL
+x
+ORDER
+x
+y
+z
+END

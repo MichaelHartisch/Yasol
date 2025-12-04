@@ -661,10 +661,12 @@ bool QBPSolver::analyze4All(CRef conf, int conf_var, ca_vec<CoeVar>& out_learnt,
     // Generate conflict clause:
     //
     //if (!useRestarts) return false;
+  std::vector<CoeVar> save_conf_var;
     if (conf == CRef_Undef) {
         cerr << "UNDEFA;";
         return false;
     }
+    
     int crit_block = block[conf_var];
  ANA4ALL_START:;
     out_target_dec_level = decisionLevel()+1;
@@ -733,7 +735,9 @@ bool QBPSolver::analyze4All(CRef conf, int conf_var, ca_vec<CoeVar>& out_learnt,
    	bool StoreSign=false;
 	for (int i=0;i<c1.size();i++){
             if(var(c1[i])==conf_var){
-        	StoreSign = sign(c1[i]);
+	      //out_learnt.push(c1[i]);
+		//cerr << "put to c: x" << (int)var(c1[i]) << endl;
+        	save_conf_var.push_back(c1[i]);//StoreSign = sign(c1[i]);
 	    	break;
 	    }
          }
@@ -773,7 +777,7 @@ bool QBPSolver::analyze4All(CRef conf, int conf_var, ca_vec<CoeVar>& out_learnt,
 <    	} 
 < 
 */
-	if(1){//Turn this off, if the causing universal variable should not be added to the cut
+	if(0){//Turn this off, if the causing universal variable should not be added to the cut
 	CoeVar q = mkCoeVar(conf_var, 1.0, StoreSign);
 	q.coef=1.0;
 	out_learnt.push(q);
@@ -934,7 +938,7 @@ bool QBPSolver::analyze4All(CRef conf, int conf_var, ca_vec<CoeVar>& out_learnt,
             //return false;
         }
     AdaptConstraint( out_learnt,false,false);
-    if( UniversalConstraintsExist && VarsInAllConstraints[conf_var].size()>0 && assigns[conf_var]==extbool_Undef){
+    if( 0&&UniversalConstraintsExist && VarsInAllConstraints[conf_var].size()>0 && assigns[conf_var]==extbool_Undef){
       assert(var(out_learnt[0])==conf_var);
       out_learnt[0]=out_learnt.last();
       out_learnt.pop();
@@ -1017,8 +1021,33 @@ bool QBPSolver::analyze4All(CRef conf, int conf_var, ca_vec<CoeVar>& out_learnt,
     fprintf(fpst,"\n");
     fclose(fpst);
 #endif
+    for (int i=0;i<save_conf_var.size();i++){
+      int LocInOut=-1;
+      bool isInou=false;
+     // cerr << "add to c: x" << save_conf_var[i].x / 2 << endl;
+      for (int j=0;j<out_learnt.size();j++){
+	if (out_learnt[j].x / 2 == save_conf_var[i].x / 2) {
+	  isInou=true;
+	  LocInOut=j;
+	  break;
+	}
+      }
+      if (!isInou) {
+	out_learnt.push(save_conf_var[i]);
+        LocInOut=out_learnt.size()-1;
+	if (save_conf_var[i].x & 1)
+	  negcs++;
+      }
+      AdaptConstraint( out_learnt,false,false);
+      if(UniversalConstraintsExist && VarsInAllConstraints[conf_var].size()>0 && assigns[conf_var]==extbool_Undef){
+        assert(var(out_learnt[LocInOut])==conf_var || save_conf_var.size()>1);
+        out_learnt[LocInOut]=out_learnt.last();
+        out_learnt.pop();
+      }
+    }
+
     if (max_learnts > constraints.size()) {
-        if (!addLearnConstraint(out_learnt, 1.0-negcs, conf_var)) {
+      if (!addLearnConstraint(out_learnt, 1.0-negcs, conf_var)) {
             // e.g. if not enough memory
             //if (info_level > 0) cout << "unsinnige Constraint in all gelernt" << endl;
             return false;
@@ -1325,7 +1354,7 @@ bool QBPSolver::analyze4All(CRef conf, int conf_var, ca_vec<CoeVar>& out_learnt,
     
 }
 
-bool QBPSolver::deriveCombBC(ca_vec<CoeVar>& in_learnt, int conf_var, ca_vec<CoeVar>& out_learnt) {
+bool QBPSolver::deriveCombBC(ca_vec<CoeVar>& in_learnt, int conf_var, ca_vec<CoeVar>& out_learnt, float MaxAlpha) {
     //return false;
     // Generate conflict clause:
     //
@@ -2291,13 +2320,14 @@ bool QBPSolver::analyzeBendersFeasCut(CRef conf, int conf_var, ca_vec<CoeVar>& o
             }
             //cerr << "fix " << (out_vcp.v>>1) << " backLev=" << out_target_dec_level;
             if (0&&the_block < block[pick] && eas[the_block_var]==UNIV) {
-                int8_t *val;
+	      /*int8_t *val;
                 val = &stack_val[vardata[out_vcp.v>>1].level<<1];
                 int8_t &vx = stack_val_ix[vardata[out_vcp.v>>1].level];
                 cerr << "M1";
                 if (vardata[the_block_var].level > 0)
                     BackJumpInfo[vardata[the_block_var].level].AddInfo(out_vcp.v, vx, val[vx], out_target_dec_level, vardata[the_block_var].level, decisionLevel(), eas[the_block_var], n_infinity, out_vcp.cr);
                 out_target_dec_level = vardata[the_block_var].level;
+	      */
             }
             //cerr << " to be solved in level " << out_target_dec_level << " go back until " << vardata[out_vcp.v>>1].level-1 << endl;
             
@@ -2354,6 +2384,10 @@ bool QBPSolver::fastBendersAnalysis(coef_t value, coef_t rhs, ca_vec<CoeVar>& in
     //ana_seen_stack.clear();
     out_target_dec_level = decisionLevel()+1;
     //return false;
+    if (!(learnClause == false || value <= constraintallocator[constraints[0]].header.rhs)) { 
+      if (getShowWarning()) cerr << "Warning, was assertion. not learnClause == false || value <= constraintallocator[constraints[0]].header.rhs" << endl;
+      return false;
+    }
     assert(learnClause == false || value <= constraintallocator[constraints[0]].header.rhs);
     int negcs = 0, poscs = 0;
     int lokal_dl=-1;
@@ -3478,7 +3512,7 @@ bool QBPSolver::fastBendersAnalysis(coef_t value, coef_t rhs, ca_vec<CoeVar>& in
             
             //assert(vardata[out_vcp.v>>1].reason == CRef_Undef);
             if (vardata[out_vcp.v>>1].reason != CRef_Undef) {
-                cerr << "Error in fbA: reason not CRef_Undef" << endl;
+                if(getShowError()) cerr << "Error in fbA: reason not CRef_Undef" << endl;
                 out_target_dec_level = decisionLevel();
                 out_vcp.cr = CRef_Undef;
                 out_vcp.v = -1;
@@ -3486,11 +3520,22 @@ bool QBPSolver::fastBendersAnalysis(coef_t value, coef_t rhs, ca_vec<CoeVar>& in
             }
             
             if (out_target_dec_level < retUnt && value > constraintallocator[constraints[0]].header.rhs && eas[the_block_var]==UNIV) {
-                int8_t *val;
-                val = &stack_val[vardata[out_vcp.v>>1].level<<1];
-                int8_t &vx = stack_val_ix[vardata[out_vcp.v>>1].level];
+		stack_container &STACKz = search_stack.stack[(vardata[out_vcp.v>>1].level)-1];
+		stack_container &STACKbj = search_stack.stack[(vardata[the_block_var].level)-1];
+		if(getShowWarning()) cerr << "Warning: Correct back level?" << endl;
+		//int8_t *valII = &stack_valII[(vardata[out_vcp.v>>1].level)<<1];
+		//int8_t &val_ixII = stack_val_ixII[vardata[out_vcp.v>>1].level];
+		int8_t *val = STACKz.val;
+		int8_t &vx = STACKz.val_ix;
+		//assert(stack_val_ixII[vardata[out_vcp.v>>1].level] == STACKz.val_ix);
+		//assert(val[0]==valII[0]);
+		//assert(val[1]==valII[1]);      
+		
                 assert(retUnt==vardata[the_block_var].level);
-                if (vardata[the_block_var].level > 0) BackJumpInfo[vardata[the_block_var].level].AddInfo(out_vcp.v, vx, val[vx], 0, vardata[the_block_var].level, decisionLevel(), eas[the_block_var], value, out_vcp.cr);
+                if (vardata[the_block_var].level > 0) {
+		  STACKbj.BackJumpInfo.AddInfo(out_vcp.v, vx, val[vx], 0, vardata[the_block_var].level, decisionLevel(), eas[the_block_var], value, out_vcp.cr);
+		  BackJumpInfoII[vardata[the_block_var].level].AddInfo(out_vcp.v, vx, val[vx], 0, vardata[the_block_var].level, decisionLevel(), eas[the_block_var], value, out_vcp.cr);
+		}
                 //out_target_dec_level = vardata[the_block_var].level;
             }
             if (0&&/*useLearnFix &&*/ value == n_infinity && !isFixed(out_vcp.v>>1) && (vardata[out_vcp.v>>1].level > retUnt /*|| eas[trail[trail_lim[retUnt]-1]] == EXIST*/)) {
@@ -3727,12 +3772,23 @@ bool QBPSolver::fastBendersAnalysis(coef_t value, coef_t rhs, ca_vec<CoeVar>& in
             
             if (assigns[out_vcp.v>>1] != extbool_Undef) {
                 if (out_target_dec_level < retUnt /*vardata[the_block_var].level && the_block < block[pick]*/ && value > /*n_infinity*/ constraintallocator[constraints[0]].header.rhs && eas[the_block_var]==UNIV) {
-                    int8_t *val;
-                    val = &stack_val[vardata[out_vcp.v>>1].level<<1];
-                    int8_t &vx = stack_val_ix[vardata[out_vcp.v>>1].level];
+		    cerr << "Warning II Correct level?" << endl;
+		    stack_container &STACKz = search_stack.stack[(vardata[out_vcp.v>>1].level)-1];
+		    stack_container &STACKbj = search_stack.stack[(vardata[the_block_var].level)-1];
+		    //int8_t *valII = &stack_valII[(vardata[out_vcp.v>>1].level)<<1];
+		    //int8_t &val_ixII = stack_val_ixII[vardata[out_vcp.v>>1].level];
+		    int8_t *val = STACKz.val;
+		    int8_t &vx = STACKz.val_ix;
+		    //assert(stack_val_ixII[vardata[out_vcp.v>>1].level] == STACKz.val_ix);
+		    //assert(val[0]==valII[0]);
+		    //assert(val[1]==valII[1]);      
+
                     assert(retUnt==vardata[the_block_var].level);
                     assert(assigns[the_block_var] != extbool_Undef);
-                    if (vardata[the_block_var].level > 0) BackJumpInfo[vardata[the_block_var].level].AddInfo(out_vcp.v, vx, val[vx], out_target_dec_level, vardata[the_block_var].level, decisionLevel(), eas[the_block_var], value, out_vcp.cr);
+                    if (vardata[the_block_var].level > 0) {
+		      STACKbj.BackJumpInfo/*[vardata[the_block_var].level]*/.AddInfo(out_vcp.v, vx, val[vx], out_target_dec_level, vardata[the_block_var].level, decisionLevel(), eas[the_block_var], value, out_vcp.cr);		      
+		      BackJumpInfoII[vardata[the_block_var].level].AddInfo(out_vcp.v, vx, val[vx], out_target_dec_level, vardata[the_block_var].level, decisionLevel(), eas[the_block_var], value, out_vcp.cr);
+		    }
                 }
                 if (0&&/*useLearnFix &&*/ value == n_infinity && (vardata[out_vcp.v>>1].level > retUnt && eas[trail[trail_lim[retUnt]-1]] == EXIST) && !isFixed(out_vcp.v>>1)) {
                     setFixed(out_vcp.v>>1, 1-(out_vcp.v & 1)/*, max(retUnt,0), out_vcp.cr*/);
@@ -3763,12 +3819,22 @@ bool QBPSolver::fastBendersAnalysis(coef_t value, coef_t rhs, ca_vec<CoeVar>& in
                 if (info_level >= 2) cerr << "Warning: doch im seltenen Ast" << endl;
                 assert(isFixed(out_vcp.v>>1) );
                 if (out_target_dec_level < retUnt /*vardata[the_block_var].level && the_block < block[pick]*/ && value > /*n_infinity*/ constraintallocator[constraints[0]].header.rhs && eas[the_block_var]==UNIV) {
-                    int8_t *val;
-                    val = &stack_val[fixdata[out_vcp.v>>1].level<<1];
-                    int8_t &vx = stack_val_ix[fixdata[out_vcp.v>>1].level];
+		    stack_container &STACKz = search_stack.stack[fixdata[out_vcp.v>>1].level-1];
+		    stack_container &STACKbj = search_stack.stack[(vardata[the_block_var].level)-1];
+		    //int8_t *valII = &stack_valII[(fixdata[out_vcp.v>>1].level)<<1];
+		    //int8_t &val_ixII = stack_val_ixII[fixdata[out_vcp.v>>1].level];
+		    int8_t *val = STACKz.val;
+		    int8_t &vx = STACKz.val_ix;
+		    //assert(stack_val_ixII[fixdata[out_vcp.v>>1].level] == STACKz.val_ix);
+		    //assert(val[0]==valII[0]);
+		    //assert(val[1]==valII[1]);      
+
                     if (retUnt!=fixdata[the_block_var].level) cerr << "Warning: unclear evolution." << endl;;
                     assert(assigns[the_block_var] != extbool_Undef);
-                    if (vardata[the_block_var].level > 0) BackJumpInfo[vardata[the_block_var].level].AddInfo(out_vcp.v, vx, val[vx], out_target_dec_level, vardata[the_block_var].level, decisionLevel(), eas[the_block_var], value, out_vcp.cr);
+                    if (vardata[the_block_var].level > 0) {
+		      STACKbj.BackJumpInfo/*[vardata[the_block_var].level]*/.AddInfo(out_vcp.v, vx, val[vx], out_target_dec_level, vardata[the_block_var].level, decisionLevel(), eas[the_block_var], value, out_vcp.cr);
+		      BackJumpInfoII[vardata[the_block_var].level].AddInfo(out_vcp.v, vx, val[vx], out_target_dec_level, vardata[the_block_var].level, decisionLevel(), eas[the_block_var], value, out_vcp.cr);
+		    }
                 }
                 if (0&&/*useLearnFix &&*/ value == n_infinity && (fixdata[out_vcp.v>>1].level > retUnt && eas[trail[trail_lim[retUnt]-1]] == EXIST) && !isFixed(out_vcp.v>>1)) {
                     setFixed(out_vcp.v>>1, 1-(out_vcp.v & 1)/*, max(retUnt,0), out_vcp.cr*/);
@@ -3932,11 +3998,21 @@ SearchResult QBPSolver::computeLocalBackjump(coef_t a, int pick, coef_t &b, coef
                             if (block[trail[zz]] < block[pick] || vardata[trail[zz]].level <= out_target_dec_level) break;
                         }
                         if (the_block < block[pick] && eas[the_block_var]==UNIV) {
-                            int8_t *val;
-                            val = &stack_val[vardata[out_vcp.v>>1].level<<1];
-                            int8_t &vx = stack_val_ix[vardata[out_vcp.v>>1].level];
+			    stack_container &STACKz = search_stack.stack[vardata[out_vcp.v>>1].level-1];
+			    stack_container &STACKbj = search_stack.stack[(vardata[the_block_var].level)-1];
+			    //int8_t *valII = &stack_valII[(vardata[out_vcp.v>>1].level)<<1];
+			    //int8_t &val_ixII = stack_val_ixII[vardata[out_vcp.v>>1].level];
+			    int8_t *val = STACKz.val;
+			    int8_t &vx = STACKz.val_ix;
+			    //assert(stack_val_ixII[vardata[out_vcp.v>>1].level] == STACKz.val_ix);
+			    //assert(val[0]==valII[0]);
+			    //assert(val[1]==valII[1]);      
+
                             cerr << "M4";
-                            if (vardata[the_block_var].level > 0) BackJumpInfo[vardata[the_block_var].level].AddInfo(out_vcp.v, vx, val[vx], out_target_dec_level, vardata[the_block_var].level, decisionLevel(), eas[the_block_var],a, out_vcp.cr);
+                            if (vardata[the_block_var].level > 0) {
+			      STACKbj.BackJumpInfo/*[vardata[the_block_var].level]*/.AddInfo(out_vcp.v, vx, val[vx], out_target_dec_level, vardata[the_block_var].level, decisionLevel(), eas[the_block_var],a, out_vcp.cr);
+			      BackJumpInfoII[vardata[the_block_var].level].AddInfo(out_vcp.v, vx, val[vx], out_target_dec_level, vardata[the_block_var].level, decisionLevel(), eas[the_block_var],a, out_vcp.cr);
+			    }
                             out_target_dec_level = vardata[the_block_var].level;
                         } else {
                             if (useFULLimpl || propQlimiter[out_vcp.v] <= 0) {
@@ -4062,11 +4138,21 @@ SearchResult QBPSolver::computeLocalBackjump(coef_t a, int pick, coef_t &b, coef
                     if (1||!doNotFillImplQ) {
                         //cerr << "M5";
                         if ((out_target_dec_level < decisionLevel()-SEARCH_LEARN_TRADEOFF || out_target_dec_level==0)&&retUnt > out_target_dec_level /*the_block < block[pick]*/ && eas[the_block_var]==UNIV) {
-                            int8_t *val;
-                            val = &stack_val[vardata[out_vcp.v>>1].level<<1];
-                            int8_t &vx = stack_val_ix[vardata[out_vcp.v>>1].level];
+			    stack_container &STACKz = search_stack.stack[vardata[out_vcp.v>>1].level-1];
+			    stack_container &STACKbj = search_stack.stack[(vardata[the_block_var].level)-1];
+			    //int8_t *valII = &stack_valII[(vardata[out_vcp.v>>1].level)<<1];
+			    //int8_t &val_ixII = stack_val_ixII[vardata[out_vcp.v>>1].level];
+			    int8_t *val = STACKz.val;
+			    int8_t &vx = STACKz.val_ix;
+			    //assert(stack_val_ixII[vardata[out_vcp.v>>1].level] == STACKz.val_ix);
+			    //assert(val[0]==valII[0]);
+			    //assert(val[1]==valII[1]);      
+
                             cerr << "M+";
-                            if (vardata[the_block_var].level > 0) BackJumpInfo[vardata[the_block_var].level].AddInfo(out_vcp.v, vx, val[vx], rem_outlev, vardata[the_block_var].level, decisionLevel(), eas[the_block_var],a, out_vcp.cr);
+                            if (vardata[the_block_var].level > 0) {
+			      STACKbj.BackJumpInfo/*[vardata[the_block_var].level]*/.AddInfo(out_vcp.v, vx, val[vx], rem_outlev, vardata[the_block_var].level, decisionLevel(), eas[the_block_var],a, out_vcp.cr);
+			      BackJumpInfoII[vardata[the_block_var].level].AddInfo(out_vcp.v, vx, val[vx], rem_outlev, vardata[the_block_var].level, decisionLevel(), eas[the_block_var],a, out_vcp.cr);
+			    }
                             out_target_dec_level = vardata[the_block_var].level;
                             
                             bd_lhs.clear();
@@ -4179,81 +4265,10 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
     int64_t oob;
     int cnt0=0;
     bool conflict = false;
+    int rem_trailSize=trail.size();
     
     if (!feasPhase || probemode) max_props = PROPQ_LIMITER+PROPQ_LIMITER/2;
-    
-    if (0&&feasPhase == false && decisionLevel() < sqrt(binVars())/*&& !probemode*/) {
-        ca_vec<CoeVar> preQ;
-        //cerr << "t" << propQ.size();
-        if (decisionLevel() < 10 /*(int)sqrt((double)nVars())*/)
-            for (int z = 0;z < propQ.size();z++) {
-                CM.extractImplis(preQ, propQ[z].v >> 1, 1-(propQ[z].v & 1), nVars(),assigns);
-                //cerr << "f" << preQ.size();
-                for (int zz=0;zz < preQ.size();zz++) {
-                    if (type[preQ[zz].x>>1] != BINARY) continue;
-                    if (assigns[preQ[zz].x>>1] == extbool_Undef && !isFixed(preQ[zz].x>>1) && block[preQ[zz].x>>1] == block[propQ[z].v >> 1] /*&& block[preQ[zz].x>>1]==1*/) {
-                        // TODO TODO nicht klar ist, ob es reicht, zu fordern, dass die gefolgerte Variable im gleichen Block liegt.
-                        sv = preQ[zz].x^1;
-                        cr = CRef_Undef;
-                        if (decisionLevel() >= 3 /*sqrt(binVars())*/) {
-                            if (assigns[propQ[z].v>>1] != extbool_Undef && vardata[propQ[z].v>>1].reason != CRef_Undef) {
-                                setFixed(sv >> 1, 1-(sv&1), vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,vardata[propQ[z].v>>1].reason);
-                                addFixed(vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
-                                cerr << "C1";
-                            } else if (isFixed(propQ[z].v>>1) && fixdata[propQ[z].v>>1].reason != CRef_Undef){
-                                setFixed(sv >> 1, 1-(sv&1), fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/, fixdata[propQ[z].v>>1].reason);
-                                addFixed(fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
-                                cerr << "C2";
-                            }
-                        } else if (decisionLevel() < sqrt(binVars())) {
-                            int ix1, ix2;
-                            sv = preQ[zz].x^1;
-                            cr = CRef_Undef;
-                            oob = assign(sv>>1, 1-(sv&1),trail.size(),CRef_Undef, conflict, ix1, ix2, false);
-                            //PROPQ_PUSH(ValueConstraintPair(CRef_Undef,preQ[zz].x,-1));
-                            //assert(0);
-                            if (oob == ASSIGN_OK) {
-                                if (decisionLevel() <= 1) {
-                                    vardata[sv>>1].level = 0;
-                                    vardata[sv>>1].reason = CRef_Undef;
-                                    settime[sv>>1] = 0;
-                                } else {
-                                    if (assigns[propQ[z].v>>1] != extbool_Undef && vardata[propQ[z].v>>1].reason != CRef_Undef) {
-                                        setFixed(sv >> 1, 1-(sv&1), vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,vardata[propQ[z].v>>1].reason);
-                                        addFixed(vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
-                                        cerr << "C3";
-                                    } else if (isFixed(propQ[z].v>>1)  && fixdata[propQ[z].v>>1].reason != CRef_Undef){
-                                        setFixed(sv >> 1, 1-(sv&1), fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/,fixdata[propQ[z].v>>1].reason);
-                                        addFixed(fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
-                                        cerr << "C4";
-                                    }
-                                }
-                            } else {
-                                EmptyPropQ();
-                                confl = cr;
-                                confl_var = (sv>>1);
-                                confl_partner = oob;
-                                if (!probemode) num_conflicts++;
-                                if (useRestarts && useDeep &&num_conflicts > next_check) {
-                                    if (num_learnts > 0) {
-                                        break_from_outside = true;
-                                        for (int l=1;l<decisionLevel();l++) {
-					  //if (info_level & 2) cerr << (int)stack_val_ix[l];
-                                            stack_restart_ready[l] = true;
-                                            stack_save_val_ix[l] = stack_val_ix[l];
-                                        }
-                                    }
-                                    next_check = next_check + next_level_inc;
-                                }
-                                
-                                return false;
-                            }
-                        }
-                    }
-                }
-            }
-    }
-    
+
     while (propQ.size() > 0) {
         sv = propQ[propQ.size()-1].v;
         cr = propQ[propQ.size()-1].cr;
@@ -4361,9 +4376,16 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
                 if (num_learnts > 0) {
                     break_from_outside = true;
                     for (int l=1;l<decisionLevel();l++) {
-		      //if (info_level & 2) cerr << (int)stack_val_ix[l];
-                        stack_restart_ready[l] = true;
-                        stack_save_val_ix[l] = stack_val_ix[l];
+		      stack_container &STACKz = search_stack.stack[l-1];
+		      //int8_t *valII = &stack_valII[(l)<<1];
+		      //int8_t &val_ixII = stack_val_ixII[l];
+		      int8_t *val = STACKz.val;
+		      int8_t &val_ix = STACKz.val_ix;
+		      //assert(stack_val_ixII[l] == STACKz.val_ix);
+		      //assert(val[0]==valII[0]);
+		      //assert(val[1]==valII[1]);      
+		      stack_restart_ready[l] = true;
+		      stack_save_val_ix[l] = val_ix;
                     }
                 }
                 next_check = next_check + next_level_inc;
@@ -4458,9 +4480,16 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
                     if (num_learnts > 0) {
                         break_from_outside = true;
                         for (int l=1;l<decisionLevel();l++) {
-			  //if (info_level & 2) cerr << (int)stack_val_ix[l];
-                            stack_restart_ready[l] = true;
-                            stack_save_val_ix[l] = stack_val_ix[l];
+			  stack_container &STACKz = search_stack.stack[l-1];
+			  //int8_t *valII = &stack_valII[(l)<<1];
+			  //int8_t &val_ixII = stack_val_ixII[l];
+			  int8_t *val = STACKz.val;
+			  int8_t &val_ix = STACKz.val_ix;
+			  //assert(stack_val_ixII[l] == STACKz.val_ix);
+			  //assert(val[0]==valII[0]);
+			  //assert(val[1]==valII[1]);      
+			  stack_restart_ready[l] = true;
+			  stack_save_val_ix[l] = val_ix;
                         }
                     }
                     next_check = next_check + next_level_inc;
@@ -4574,11 +4603,452 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
             massert(eas[sv>>1] == EXIST);
         }
     }
+    int ASSI = 1;
+ LloopSim:;
+    
+    if (rem_trailSize < trail.size()+ASSI/*feasPhase == false*/ && decisionLevel() < sqrt(binVars())/*&& !probemode*/) {
+      ASSI = 0;
+        ca_vec<CoeVar> preQ;
+	propQ.clear();
+        //cerr << "t" << propQ.size();
+        if (1||decisionLevel() < 10 /*(int)sqrt((double)nVars())*/)
+	  for (int z = rem_trailSize>0?rem_trailSize-1:0;z < trail.size();z++) {
+	    if (vardata[trail[z]].reason == CRef_Undef) continue;
+	    CM.extractImplis(preQ, trail[z], assigns[trail[z]], nVars(),assigns, true);
+                //cerr << "f" << preQ.size() << " inDL=" << decisionLevel() << " ";
+                for (int zz=0;zz < preQ.size();zz++) {
+                    if (type[preQ[zz].x>>1] != BINARY) continue;
+                    if (assigns[preQ[zz].x>>1] == extbool_Undef && !isFixed(preQ[zz].x>>1) && block[preQ[zz].x>>1] >= block[trail[z] ] /*&& block[preQ[zz].x>>1]==1*/) {
+                        // TODO TODO nicht klar ist, ob es reicht, zu fordern, dass die gefolgerte Variable im gleichen Block liegt.
+		      ValueConstraintPair out_vcp;
+		      out_vcp.v = preQ[zz].x;
+		      out_vcp.cr = vardata[trail[z]].reason;
+		      sv = preQ[zz].x;
+		      cr = CRef_Undef;
+		      if (propQlimiter[out_vcp.v] <= 0) {
+			propQ.push(out_vcp);
+			propQlimiter[out_vcp.v] = propQ.size();
+		      } else propQ[propQlimiter[out_vcp.v]-1] = out_vcp;
+
+		      //-- PROPQ_PUSH(out_vcp);
+			
+		      continue;
+		      
+
+			
+			
+                        if (decisionLevel() >= 3 /*sqrt(binVars())*/) {
+                            if (assigns[propQ[z].v>>1] != extbool_Undef && vardata[propQ[z].v>>1].reason != CRef_Undef) {
+                                setFixed(sv >> 1, 1-(sv&1), vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,vardata[propQ[z].v>>1].reason);
+                                addFixed(vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
+                                cerr << "C1";
+                            } else if (isFixed(propQ[z].v>>1) && fixdata[propQ[z].v>>1].reason != CRef_Undef){
+                                setFixed(sv >> 1, 1-(sv&1), fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/, fixdata[propQ[z].v>>1].reason);
+                                addFixed(fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
+                                cerr << "C2";
+                            }
+                        } else if (decisionLevel() < sqrt(binVars())) {
+                            int ix1, ix2;
+                            sv = preQ[zz].x;
+                            cr = CRef_Undef;
+                            oob = assign(sv>>1, 1-(sv&1),trail.size(),CRef_Undef, conflict, ix1, ix2, false);
+                            //PROPQ_PUSH(ValueConstraintPair(CRef_Undef,preQ[zz].x,-1));
+                            //assert(0);
+                            if (oob == ASSIGN_OK) {
+                                if (decisionLevel() <= 1) {
+				  cerr << "set in DL 1: x" << sv/2 << " to " << 1-(sv&1) << endl;
+                                    vardata[sv>>1].level = 0;
+                                    vardata[sv>>1].reason = CRef_Undef;
+                                    settime[sv>>1] = 0;
+                                } else {
+                                    if (assigns[propQ[z].v>>1] != extbool_Undef && vardata[propQ[z].v>>1].reason != CRef_Undef) {
+                                        setFixed(sv >> 1, 1-(sv&1), vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,vardata[propQ[z].v>>1].reason);
+                                        addFixed(vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
+                                        cerr << "C3";
+                                    } else if (isFixed(propQ[z].v>>1)  && fixdata[propQ[z].v>>1].reason != CRef_Undef){
+                                        setFixed(sv >> 1, 1-(sv&1), fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/,fixdata[propQ[z].v>>1].reason);
+                                        addFixed(fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
+                                        cerr << "C4";
+                                    }
+                                }
+                            } else if(0){
+                                EmptyPropQ();
+                                confl = cr;
+                                confl_var = (sv>>1);
+                                confl_partner = oob;
+                                if (!probemode) num_conflicts++;
+                                if (useRestarts && useDeep &&num_conflicts > next_check) {
+                                    if (num_learnts > 0) {
+                                        break_from_outside = true;
+                                        for (int l=1;l<decisionLevel();l++) {
+					  stack_container &STACKz = search_stack.stack[l-1];
+					  //int8_t *valII = &stack_valII[(l)<<1];
+					  //int8_t &val_ixII = stack_val_ixII[l];
+					  int8_t *val = STACKz.val;
+					  int8_t &val_ix = STACKz.val_ix;
+					  //assert(stack_val_ixII[l] == STACKz.val_ix);
+					  //assert(val[0]==valII[0]);
+					  //assert(val[1]==valII[1]);      
+					  stack_restart_ready[l] = true;
+					  stack_save_val_ix[l] = val_ix;
+                                        }
+                                    }
+                                    next_check = next_check + next_level_inc;
+                                }
+                                
+                                //return false;
+                            }
+                        }
+                    }
+                }
+            }
+    } else
+	  return true;	  
+
+    rem_trailSize=trail.size();
+    while (propQ.size() > 0) {
+        sv = propQ[propQ.size()-1].v;
+        cr = propQ[propQ.size()-1].cr;
+        if (cr == CRef_Undef) {
+            if (info_level >= 2) cerr << "Error cr undef" << endl;
+            //tooMuchUndef++;
+            //continue;
+            //int r = trivCut(sv>>1,1-(sv&1));
+            if (1/*r < 0*/) {
+                if (info_level >= 2) cerr << "Error cr undef II" << endl;
+                EmptyPropQ(true);
+                continue;
+            }
+            //cr = constraints[r];
+        }
+        if(0)for (int l=1; l < 5 && l < propQ.size();l++) {
+            int sv_activity, last_activity;
+            if ((sv&1) == 1) sv_activity = n_activity[sv>>1];
+            else sv_activity = p_activity[sv>>1];
+            if ((propQ[propQ.size()-1].v&1) == 1) last_activity = n_activity[propQ[propQ.size()-1].v>>1];
+            else last_activity = p_activity[propQ[propQ.size()-1].v>>1];
+            if (sv_activity > last_activity) {
+                ValueConstraintPair cvp = propQ[propQ.size()-1];
+                propQ[propQ.size()-1] = propQ[propQ.size()-1-l];
+                propQ[propQ.size()-1-l] = cvp;
+                sv = propQ[propQ.size()-1].v;
+                cr = propQ[propQ.size()-1].cr;
+            }
+        }
+        if (type[sv>>1] != BINARY) {
+            cerr << "Error:" << (int)(sv>>1) << " T:" << (int)type[sv>>1] << endl;
+            //continue;
+        }
+        assert(type[sv>>1] == BINARY);
+        //if (cr!= CRef_Undef) constraintBumpActivity (constraintallocator[cr]); // SEE 4
+        EmptyPropQ(true);
+        //If there are universal constraints and setting the problematic universal variable
+        //the other way is prohibiten by the universal system it is ok here
+        if( (!getIsSimplyRestricted() || (eas[sv>>1] != EXIST&& VarsInAllConstraints[sv>>1].size()>0)) &&UniversalConstraintsExist&&!UniversalPolytope&&block[getLastDecisionLevel()]!=block[sv>>1]) continue;
+        if(eas[sv>>1] != EXIST&&UniversalConstraintsExist&&!CheckAllFeasibility((sv>>1), sv&1)){
+            /* if (assigns[sv>>1] == extbool_Undef) {
+             assert(getFixed(sv>>1) == extbool_Undef || getFixed(sv>>1) == 1-(sv&1) );
+             
+             int ix1, ix2;
+             oob = assign(sv>>1, 1-(sv&1),trail.size(),cr, conflict, ix1, ix2, false);
+             cerr << "Propagated Universal Variable x_" << (sv>>1)<<"="<<(1-(sv&1)) << endl;
+             assert(oob!=ASSIGN_UNIV_FAIL);*/
+            continue;
+        }
+        if(eas[sv>>1] != EXIST&&UniversalConstraintsExist&&UniversalMultiBlockConstraints){
+                /*cerr << "Variable x_" << (sv>>1) << " is propagated to be " << (1-(sv&1))<<endl;
+                Constraint &c=constraintallocator[cr];
+                for (int k=0;k<c.size();k++) {
+                        cerr<<(sign(c[k])?" -":" +") << c[k].coef << "x_"<<var(c[k]);
+                        cerr <<"(" <<(int) assigns[var(c[k])] << ","<<getFixed(var(c[k]))<<")";
+                }
+                cerr << ">=" << c.header.rhs<<endl;
+                if(VarsInAllConstraints[sv>>1].size()>0){
+                    for (int k=0; k < VarsInAllConstraints[sv>>1].size();k++) {
+                 cerr << "AllConstraints: " <<k << endl;
+                    CRef cr1 = VarsInAllConstraints[sv>>1][k].cr;
+                    Constraint &c1=ALLconstraintallocator[cr1];
+                        for (int k=0;k<c1.size();k++) {
+                        cerr<<(sign(c1[k])?" -":" +") << c1[k].coef << "x_"<<var(c1[k]);
+                        cerr <<"(" <<(int) assigns[var(c1[k])] << ","<<getFixed(var(c1[k]))<<")";
+                        }
+                         cerr << ">=" << c1.header.rhs<<endl;
+                    }
+                }*/
+                if(AllpropQlimiter[sv]<0){
+                    cerr << "Variable x_" << (sv>>1) << " is propagated to be " << (1-(sv&1)) << " but this is fine " << endl;
+                    continue;
+                }
+        }
+
+        //if (constraintallocator[cr].header.deleted) continue;
+        if (eas[sv>>1] != EXIST && !exist_relax_mode) {
+            EmptyPropQ();
+            confl = cr;
+            confl_var = (sv>>1);
+            num_conflicts++;
+            if (0&&assigns[sv>>1] != extbool_Undef && assigns[sv>>1] == 1-(sv&1)) {
+                cerr << "Warning: Univ. Var. is implied,but ok" << endl;
+                continue;
+            }
+            return false;
+        }
+        if (assigns[sv>>1] == extbool_Undef && isFixed(sv>>1) && getFixed(sv>>1) != 1-(sv&1) && fixdata[sv>>1].reason != CRef_Undef
+            && constraintallocator[fixdata[sv>>1].reason].header.isSat) {
+            EmptyPropQ();
+            Constraint &c=constraintallocator[cr];
+            for (int k=0;0&&k<c.size();k++) {
+                if (assigns[var(c[k])] == extbool_Undef && var(c[k]) != (sv>>1)) {
+                    c.print(c,assigns,false);
+                    break;
+                }
+            }
+            confl = cr;
+            confl_var = (sv>>1);
+            confl_partner = fixdata[sv>>1].reason;
+            if (info_level >= 2) cerr << "!";
+            if (eas[sv>>1] == UNIV) cerr << "A";
+            if (!probemode) num_conflicts++;
+            if (useRestarts && useDeep &&num_conflicts > next_check) {
+                if (num_learnts > 0) {
+                    break_from_outside = true;
+                    for (int l=1;l<decisionLevel();l++) {
+		      stack_container &STACKz = search_stack.stack[l-1];
+		      //int8_t *valII = &stack_valII[(l)<<1];
+		      //int8_t &val_ixII = stack_val_ixII[l];
+		      int8_t *val = STACKz.val;
+		      int8_t &val_ix = STACKz.val_ix;
+		      //assert(stack_val_ixII[l] == STACKz.val_ix);
+		      //assert(val[0]==valII[0]);
+		      //assert(val[1]==valII[1]);      
+		      stack_restart_ready[l] = true;
+		      stack_save_val_ix[l] = val_ix;
+                    }
+                }
+                next_check = next_check + next_level_inc;
+            }
+            return false;
+        } else if (assigns[sv>>1] == extbool_Undef && (getFixed(sv>>1) == extbool_Undef || getFixed(sv>>1) == 1-(sv&1) /*|| (fixdata[sv>>1].level > -10 && fixdata[sv>>1].reason == CRef_Undef)*/)  ) {
+            int ix1, ix2;
+            oob = assign(sv>>1, 1-(sv&1),trail.size(),cr, conflict, ix1, ix2, false);
+            if (0&&conflict) {
+                confl = propQ[ix1].cr;
+                confl_var = (propQ[ix1].v>>1);
+                confl_partner = propQ[ix2].cr;
+                //cerr << "C:" << confl << " " << confl_partner << " " << confl_var << endl;
+                EmptyPropQ();
+                
+                num_conflicts++;
+                return false;
+            }
+            max_props--;
+            /*if (sv>>1==80) {
+             cout << "setze x80 auf " << 1-(sv&1) << "OK=" << (oob==ASSIGN_OK) << endl;
+             Constraint &c = constraintallocator[cr];
+             c.print(c,assigns);
+             cout << "prop ende" << endl;
+             }*/
+            
+            if (decisionLevel() <= 1) {
+                cnt0++;
+                //if (info_level > 0) cout << "folgere x" << (int)(sv>>1) << " = " << (int)(1-(sv&1)) << "(" << cnt0 << ")" << endl;
+                if (oob == ASSIGN_OK) {
+                    vardata[sv>>1].level = 0;
+                    vardata[sv>>1].reason = CRef_Undef;
+                    settime[sv>>1] = 0;
+                }
+            }
+            massert(eas[sv>>1] == EXIST);
+            if (oob == ASSIGN_OK) {
+                if (max_props <= 0) {
+                    EmptyPropQ();
+                }
+                num_props++;
+                
+                if (((num_props+num_decs) & 0x3fffff) == 0) {
+                    int num_unassigned=0;
+                    int64_t cntconstraints=0;
+                    for (int i=0; i < nVars();i++) {
+                        if (assigns[i] == extbool_Undef) {
+                            num_unassigned++;
+                            cntconstraints += VarsInConstraints[i].size();
+                        }
+                    }
+                    if (info_level & 2) {
+                        if (probemode) cout << " -P- ";
+                        int j = 0;
+                        for (int i = 0; i < trail.size();i++) {
+                            if (vardata[trail[i]].level < 1) continue;
+                            cout << (int)(assigns[trail[i]]);
+                            if (j++ > 100) { cout << " ... " ; break; }
+                        }
+                        cout << " " << num_props << " "  << num_decs << " " << num_learnts << " " << (cntconstraints / (num_unassigned+1))<< " " << num_coevars << endl;
+                        j = 0;
+                        cout << "conflicts: ";
+                        for (int i = 0; i < nVars();i++) {
+                            cout << (int)(num_conflicts_per_level[i]) << " ";
+                            if (j++ > 100) { cout << " ... " ; break; }
+                        }
+                        cout << decisionLevel() << endl;
+                        j = 0;
+                        cout << "leaves: ";
+                        for (int i = 0; i < nVars();i++) {
+                            cout << (int)(num_leaves[i]) << " ";
+                            if (j++ > 100) { cout << " ... " ; break; }
+                        }
+                        cout << endl;
+                        j=0;
+                        cout << "scenario: ";
+                        for (int i = 0; i < scenario.size();i++) {
+                            cout << (int)(assigns[scenario[i]]);
+                            if (j++ > 100) { cout << " ... " ; break; }
+                        }
+                        cout << endl;
+                    }
+                }
+            } else {
+                massert(oob != ASSIGN_OK);
+                EmptyPropQ();
+                confl = cr;
+                confl_var = (sv>>1);
+                confl_partner = oob;
+                if (!probemode) num_conflicts++;
+                if (useRestarts && useDeep &&num_conflicts > next_check) {
+                    if (num_learnts > 0) {
+                        break_from_outside = true;
+                        for (int l=1;l<decisionLevel();l++) {
+			  stack_container &STACKz = search_stack.stack[l-1];
+			  //int8_t *valII = &stack_valII[(l)<<1];
+			  //int8_t &val_ixII = stack_val_ixII[l];
+			  int8_t *val = STACKz.val;
+			  int8_t &val_ix = STACKz.val_ix;
+			  //assert(stack_val_ixII[l] == STACKz.val_ix);
+			  //assert(val[0]==valII[0]);
+			  //assert(val[1]==valII[1]);      
+			  stack_restart_ready[l] = true;
+			  stack_save_val_ix[l] = val_ix;
+                        }
+                    }
+                    next_check = next_check + next_level_inc;
+                }
+                return false;
+            }
+        } else {
+            if(eas[sv>>1] != EXIST) if (info_level > 0) cout << "setze nicht die allvariable "  << (int)sv << " " << (int)(sv>>1)<< endl;
+            //if(eas[sv>>1] != EXIST) if (info_level > 0) cout << "setze nicht die extvariable "  << (int)sv << " " << (int)(sv>>1)<< endl;
+            int v = sv>>1;
+            int s = sv&1;
+            if (assigns[v] == extbool_Undef && isFixed(v) && fixdata[v].reason == CRef_Undef) {
+                ca_vec<CoeVar> cbc;
+                //if (fixdata[pick].level <= 0) cerr << "W";
+                //if (isFixed(pick)) cerr << decisionLevel()-fixdata[pick].level << "|" << fixdata[pick].reason << "," << oob << ",";
+                Constraint &c = constraintallocator[cr];
+#ifdef FIND_BUG
+                if (1) {
+                    cbc.clear();
+                    in_learnt.clear();
+                    for (int i = 0; i < c.size();i++) {
+                        in_learnt.push(mkCoeVar(var(c[i]),c[i].coef,sign(c[i])));
+                        //cerr << (sign(c[i]) ? "-" : "") << c[i].coef << "x" << var(c[i]) << "=" << (int)assigns[var(c[i])]<< "(" << (int)vardata[var(c[i])].level<< ")" << " + ";
+                    }
+                    //cerr << endl;
+                    bool dCBC = deriveCombBC(in_learnt, v, cbc);
+                    //cerr << "B" << dCBC;
+                    if (dCBC) {
+                        int high_1 = -1;
+                        int high_2 = -1;
+                        int pickpos = -1;
+                        PurgeTrail(trail.size()-1,decisionLevel());
+                        //cerr << "Sq4-" << decisionLevel();
+                        for (int i = 0; i < cbc.size();i++) {
+                            if (var(cbc[i]) == v) {
+                                pickpos = i;
+                                assert(assigns[v]==extbool_Undef);
+                            }
+                            int real_level = vardata[var(cbc[i])].level;
+                            if (vardata[var(cbc[i])].reason != CRef_Undef) real_level--;
+                            if (high_1 == -1) {
+                                high_1 = real_level;
+                            } else {
+                                if (real_level > high_1) {
+                                    high_2 = high_1;
+                                    high_1 = real_level;
+                                } else {
+                                    if (high_2 == -1 || real_level > high_2) {
+                                        high_2 = real_level;
+                                    }
+                                }
+                            }
+                            //cerr << (sign(cbc[i]) ? "-" : "") << cbc[i].coef << "x" << var(cbc[i]) << "=" << (int)assigns[var(cbc[i])]<< "(" << (int)vardata[var(cbc[i])].level<< ")" << " + ";
+                        }
+                        returnUntil(fmax(high_1+1,fixdata[v].level));
+                        PurgeTrail(trail.size()-1,decisionLevel());
+                    }
+                }
+                
+#endif
+                
+                if (0)if (fixdata[v].level <= 0) {
+                    //cerr << "KONFLIKT MIT FIXDATA" << endl;
+                    //break_from_outside = true;
+                    static int old_cr;
+                    static int old_v = -1;
+                    static int old_nl;
+                    static int old_s;
+                    if (v == old_v && old_cr == cr && old_nl == num_learnts) {
+                        old_v = -1;
+                        break_from_outside = true;
+                        cerr << "Loop Avoider 1";
+                    } else {
+                        discoveredNews += 20;
+                        old_v = v;
+                        old_s = s;
+                        old_nl = num_learnts;
+                        old_cr = cr;
+                        if (discoveredNews > 2000) {
+                            cerr << "Loop Avoider 2";
+                            break_from_outside = true;
+                        }
+                    }
+                } //else cerr << "Lois";
+                //assign(sv>>1, 1-(sv&1),trail.size(),cr, conflict, ix1, ix2, false);
+            } else if (assigns[v] != extbool_Undef && vardata[v].level > 0 &&  assigns[v] != 1-s) {  // TODO dies ist neu. Stimmt das so???
+                //assert(assigns[v] != extbool_Undef);
+                // f�hrte in u.a. mitre.qip (BP) zu Fehler. Warum???
+                if (USE_TRACKER) cerr << "K " << " assign=" << (int)assigns[v] << " " << vardata[v].level << " " << vardata[v].reason << "," << getFixed(v) << " " << fixdata[v].level  << " " << fixdata[v].reason << endl;
+                /*confl = cr;
+                 confl_partner = vardata[v].reason;
+                 confl_var = v;
+                 if (!probemode) num_conflicts++;
+                 if (useDeep &&num_conflicts > next_check) {
+                 if (num_learnts > 0) break_from_outside = true;
+                 next_check = next_check + next_level_inc;
+                 }*/
+                /* Vermutung, weshalb man diesen Codeblock nicht zu brauchen scheint. vardata[v].reason
+                 * ist vermutlich falsch. Das ist der Grund f�r den anderen Wert von v.
+                 * Aber: Konflikt tritt etas sp�ter wieder auf und deshalb muss er hier nicht abgefangen
+                 * werden. ???
+                 */
+                //return false;
+            } else {
+                if (assigns[v] != extbool_Undef && 1-s == assigns[v])
+                    ;
+                else {
+                    if (USE_TRACKER) cerr << "N " << " assign=" << (int)assigns[v] << " " << vardata[v].level << " " << vardata[v].reason << "," << getFixed(v) << " " << fixdata[v].level  << " " << fixdata[v].reason << "," << 1-s << endl;
+                }
+            }
+            massert(eas[sv>>1] == EXIST);
+        }
+    }
+    if (trail.size() > rem_trailSize) {
+      //cerr << "goto LloopSim" << endl;
+      goto LloopSim;
+    }
     return true;
 }
 
 
-bool QBPSolver::hs_propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool probemode, bool exist_relax_mode, int max_props=1000000) {
+bool QBPSolver::hs_propagate(float alpha, CRef& confl, int& confl_var, CRef &confl_partner, bool probemode, bool exist_relax_mode, int max_props=1000000) {
     CRef cr;
     int sv;
     int64_t oob;
@@ -4632,7 +5102,7 @@ bool QBPSolver::hs_propagate(CRef& confl, int& confl_var, CRef &confl_partner, b
             return false;
         }
         if (assigns[sv>>1] == extbool_Undef  && (getFixed(sv>>1) == extbool_Undef  || getFixed(sv>>1) == 1-(sv&1))) {
-            oob = hs_assign(sv>>1, 1-(sv&1),trail.size(),cr, conflict);
+	  oob = hs_assign(alpha, sv>>1, 1-(sv&1),trail.size(),cr, conflict);
             //cerr << "hs assign" << endl;
             max_props--;
             
@@ -4666,30 +5136,31 @@ bool QBPSolver::hs_propagate(CRef& confl, int& confl_var, CRef &confl_partner, b
     return true;
 }
 
+#define V_4_2_2_10
+#ifdef V3_10_3
 
-bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastProbe)
+#endif
+#ifdef V_4_2_2_10
+
+bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastProbe, bool oneVar, int theVar, std::vector<int>* implisOn0, std::vector<int> * implisOn1)
 {
     //max_progress_var = -1;
     //return false;
+    //fastProbe = false;
     static int procn=0;
     max_progress_var = -1;
     
+    if (!oneVar) {
     if (procn%(int)sqrt(nVars())!=0 && procn > 8) {
         procn++;
         return false;
     } else procn++;
+    }
     
-    /*static int oldTrailLen=0;
-     static int64_t oldCsize=0;
-     if (oldTrailLen==0 || trail.size()>oldTrailLen || oldCsize<num_learnts-10000) {
-     oldTrailLen = trail.size();
-     oldCsize=num_learnts;
-     } else {
-     return false;
-     }*/
     int64_t oob;
     int ea;
     int cnt=1;
+    float alpha = (float)global_score;
     int old_trailsize = trail.size();
     int64_t nodes=num_props;
     int max_progress=0;
@@ -4716,16 +5187,6 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
             minblock = block[i];
             minblock_var = i;
         }
-    }
-    //cerr << "minblock=" << minblock << " D:" << decisionLevel() << endl;
-    if (minblock_var > -1 && eas[minblock_var] == UNIV) {
-        max_progress_var = -1;
-        for (int K = 0; K < inspectedVars.size();K++) {
-            insertVarOrder(inspectedVars[K]);
-        }
-        inspectedVars.clear();
-        ObjProbeMode = false;
-        return true;
     }
     
     for (int gh=0;gh<trail.size();gh++)
@@ -4756,13 +5217,22 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
     int last_found = 0;
     int jjjjj = 0;
     do {
+        if (oneVar && runs > 0) break;
         for (int K = 0; K < inspectedVars.size();K++) {
             insertVarOrder(inspectedVars[K]);
         }
         inspectedVars.clear();
         runs++;
         //if (runs >= 2) break;
-        if (time(NULL) - time_start > (10+nVars()/100)/(decisionLevel()+1)) break;
+	if (!oneVar) {
+        if (/*fastProbe &&*/ time(NULL) - time_start > (10+nVars()/100)/(decisionLevel()+1)) break;
+	if (1||fastProbe) {
+	  if (/*!feasPhase &&*/ jjjjj - last_found > (int)log2((double)nVars()) && jjjjj - last_found > nVars() / 100) {
+	    break;
+	  }
+	}
+	}
+
         implications.clear();
         for (int i = 0; i < nVars(); i++) propQlimiter[2*i] = propQlimiter[2*i+1] = 0;
         max_progress_var=-1;
@@ -4784,17 +5254,22 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
         //for (int i = 0; i < nVars();i++) { //TODO hier ist nvars kritisch, wenn i nicht vorkommt?
         int presNVars = order_heap.size();
         for (int ji = 0; !order_heap.empty() && ji < nVars(); ji++) {
+	    if (oneVar && ji > 0) break;
             int i;
+	    if (oneVar) {
+	      i = theVar;
+	    } else {
             if (!fastProbe) {
                 i = ji;
             } else {
                 i = extractPick();
                 inspectedVars.push(i);
             }
+	    }
             //if (litInClique[i+i].size()>0 && constraintallocator[constraints[litInClique[i+i][0]]].size() > (int)sqrt((double)nVars())) continue;
             //if (litInClique[i+i+1].size()>0 && constraintallocator[constraints[litInClique[i+i+1][0]]].size() > (int)sqrt((double)nVars())) continue;
             //if (block[i] > minblock) continue;
-            if (time(NULL) - time_start > (10+nVars()/100)/(decisionLevel()+1)) break;
+            if (fastProbe && time(NULL) - time_start > (10+nVars()/100)/(decisionLevel()+1)) break;
             if (fastProbe) {
                 if (/*!feasPhase &&*/ jjjjj - last_found > (int)log2((double)nVars()) && jjjjj - last_found > nVars() / 100/* &&
                                                                                                                             !(decisionLevel() == 1 && clio)*/) {
@@ -4809,7 +5284,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
             }
             ea = getEA(i);
             //if (time(NULL) - time_start > 100) break;
-            if ((info_level & 2) && hasObjective && /*i*/jjjjj % 1000 == 50) cerr << "Probe: " << i << " with trailsize=" << trail.size() << endl;
+            if (getShowInfo() && (info_level & 2) && hasObjective && /*i*/jjjjj % 1000 == 50) cerr << "Info: Probe: " << i << " with trailsize=" << trail.size() << endl;
             ////while (implications.size() > 0 ) implications.pop();
             //nodes = num_props;
             if (assigns[i] == extbool_Undef && type[i] == BINARY) {
@@ -4824,6 +5299,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                       continue;
                     }
                     if (seenProbe[i+i+j]) continue;
+		    EmptyPropQ(false,false,true);
                     seenProbe[i+i+j] = 1; // TODO ist das besser so??
                     varbuf.push(i+i+j);   // TODO ist das besser so??
                     if (litInClique[i+i+j].size()>0 && constraintallocator[constraints[litInClique[i+i+j][0]]].size() > max((int)sqrt((double)nVars()) , 1500)) {
@@ -4836,15 +5312,18 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                     }
                     if (isFixed(i) && getFixed(i) != j) {
                         oob = -3;
-                    } else oob = assign(i,j, trail.size(),CRef_Undef, false);
+                    } else oob = assign(/*alpha,*/ i,j, trail.size(),CRef_Undef, false);
                     if (oob != ASSIGN_OK) {
                         if(oob==ASSIGN_UNIV_FAIL){
                             if(getShowWarning()) std::cerr << "WARNING: UNIV_FAIL in Probing"<<std::endl;
                             continue;
                         }
+
                         massert(assigns[i] == extbool_Undef);
                         if (j == 0) tot0 = true;
                         if (j == 1) tot1 = true;
+			if (0)
+			  cerr << "setze für x"  << i << (j==0?" tot0" : "tot1") << endl;
                         if (ea==UNIV) {
                             max_progress_var = i;
                             max_progress_pol = j;
@@ -4860,13 +5339,17 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                             return false/*max_progress_var, max_progress_pol*/;
                         }
                     } else {
+		      //cerr << "have set x" << i << " to " << j << " pQ.size=" << propQ.size() << endl;
+		      //if (propQ.size() > 0) cerr << " propQ0:" << propQ[0].v << endl;
+		      //if (propQ[0].v == 12) assert(0);
                         increaseDecisionLevel(); //starts with decision level 1 in depth 0
-                        if (block[i] > minblock) {
-                            for (int kk=0;kk< nVars();kk++)
+                        if (block[i] >= minblock) {
+			  //cerr << "have set x" << i << " to " << j << " pQ.size=" << propQ.size() << endl;
+			  for (int kk=0;kk< nVars();kk++)
                                 eas[kk] = EXIST;
                         }
                         int zz0=trail.size();
-                        if (propagate(confl, confl_var, confl_partner, true, block[i]>minblock/*, 1000*/)) {
+                        if (propagate(/*alpha,*/ confl, confl_var, confl_partner, true, block[i]>minblock/*, 1000*/)) {
                             if (num_props-nodes > 0) varBumpActivity(i, 1/(double)(num_props-nodes)/*(double)(num_props-nodes)/(double)nVars()*/, j,0);
                             if (max_progress < num_props-nodes && block[i] == minblock) {
                                 max_progress = num_props-nodes;
@@ -4874,14 +5357,27 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                                 max_progress_pol = j;
                             }
                             
+			    if (oneVar) {
+			      if (j==0) {
+                                for (int zz = zz0-1/*inclusive the assigned variable theVar*/;zz<trail.size();zz++) {
+				  implisOn0->push_back(trail[zz]+trail[zz]+(1-assigns[i])); /*sign(..) logic*/
+				}
+			      } else {
+                                for (int zz = zz0-1;zz<trail.size();zz++) {
+				  implisOn1->push_back(trail[zz]+trail[zz]+(1-assigns[i]));
+				}
+			      }
+			    }
                             if (j==0) {
 			        n_implis[i] = trail.size()-zz0;
-                                if(1)for (int zz = zz0/*+1*/;zz<trail.size();zz++) {
+                                for (int zz = zz0/*+1*/;zz<trail.size();zz++) {
                                     rem_implics[trail[zz]] = assigns[trail[zz]];
                                     rem_implics_sparse.push_back(trail[zz]);
                                 }
                             } else {
 			        p_implis[i] = trail.size()-zz0;
+				//for (int zzz=0;zzz < nVars();zzz++)
+				//  rem_implics[zzz] = 2;
                                 for (int zz = zz0/*+1*/;zz<trail.size();zz++) {
 				  if (decisionLevel() <= 2 &&/*!feasPhase &&*/ rem_implics[trail[zz]] == 1-assigns[trail[zz]] && assigns[trail[zz]] != extbool_Undef) {
 				      std::vector<data::IndexedElement> in_cut4Hash;
@@ -4917,7 +5413,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
 					      if (type[r.x/2] != BINARY || type[q.x/2] != BINARY) {
                                                 if(getShowWarning()) cerr << "Warning: prevented entering a conti variable to conflict graph" << endl;
 					      } else {
-                                                CM.AddEdge(q.x^1,r.x^1); //cerr << ":" << q.x << " " << r.x << endl;
+                                                CM_AddEdge(q.x^1,r.x^1); //cerr << ":" << q.x << " " << r.x << endl;
                                                 assert(CM.checkTheGraph(optSol));
 					      }
 					    }
@@ -4933,7 +5429,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
 					      if (type[r.x/2] != BINARY || type[q.x/2] != BINARY) {
                                                 if(getShowWarning()) cerr << "Warning: prevented entering a conti variable to conflict graph" << endl;
 					      } else {
-                                                CM.AddEdge(q.x^1,r.x^1); //cerr << ":" << q.x << " " << r.x << endl;
+                                                CM_AddEdge(q.x^1,r.x^1); //cerr << ":" << q.x << " " << r.x << endl;
                                                 assert(CM.checkTheGraph(optSol));
 					      }
 					    }
@@ -4979,7 +5475,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
 					      if (type[r.x/2] != BINARY || type[q.x/2] != BINARY) {
                                                 if(getShowWarning())cerr << "Warning: prevented entering a conti variable to conflict graph" << endl;
 					      } else {
-                                                CM.AddEdge(q.x^1,r.x^1); //cerr << ":" << q.x << " " << r.x << endl;
+                                                CM_AddEdge(q.x^1,r.x^1); //cerr << ":" << q.x << " " << r.x << endl;
                                                 assert(CM.checkTheGraph(optSol));
 					      }
 					    }
@@ -4995,7 +5491,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
 					      if (type[r.x/2] != BINARY || type[q.x/2] != BINARY) {
                                                 if(getShowWarning())cerr << "Warning: prevented entering a conti variable to conflict graph" << endl;
 					      } else {
-                                                CM.AddEdge(q.x^1,r.x^1); //cerr << ":" << q.x << " " << r.x << endl;
+                                                CM_AddEdge(q.x^1,r.x^1); //cerr << ":" << q.x << " " << r.x << endl;
                                                 assert(CM.checkTheGraph(optSol));
 					      }
 					    }
@@ -5030,8 +5526,10 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                                         VarFixed = true;
                                         if (0&&decisionLevel() <= 1) {
                                         } else if (1||decisionLevel() <= 1 /*block[i] <= minblock*/){
-					  if (info_level>-8) cerr << "if x" << i << "=0|1 => x" <<  trail[zz] << "=" << (int)assigns[trail[zz]] << " in DL:" << decisionLevel() << endl;
+					  if (1||info_level>-8) cerr << "if x" << i << "=0|1 => x" <<  trail[zz] << "=" << (int)assigns[trail[zz]] << " in DL:" << decisionLevel() << endl;
                                             if (eas[(vcp.v>>1)] != UNIV) {
+					      //assert((vcp.v>>1) != 53 || 1-(vcp.v&1) == 1);
+					      //cerr << "1) fix var x" << (vcp.v>>1) << endl;
                                                 implications.push(vcp);
 						if (decisionLevel()<=2)
 						  setFixed(vcp.v>>1,1-(vcp.v&1),0);
@@ -5094,7 +5592,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                                             if (type[r.x/2] != BINARY || type[q.x/2] != BINARY) {
                                                 cerr << "Warning2: prevented entering a continuous variable into conflict graph" << endl;
                                             } else {
-                                                CM.AddEdge(q.x,r.x); //cerr << ":" << q.x << " " << r.x << endl;
+                                                CM_AddEdge(q.x,r.x); //cerr << ":" << q.x << " " << r.x << endl;
                                                 ////CM.AddEdge(r.x,q.x); //cerr << ":" << q.x << " " << r.x << endl;
                                                 assert(CM.checkTheGraph(optSol));
                                                 //CM.AddEdge(r.x,q.x); cerr << ":" << r.x << " " << q.x << endl;
@@ -5108,7 +5606,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                                             if (type[r.x/2] != BINARY || type[q.x/2] != BINARY) {
                                                 cerr << "Warning2: prevented entering a continuous variable into conflict graph" << endl;
                                             } else {
-                                                CM.AddEdge(r.x,q.x); //cerr << ":" << r.x << " " << q.x << endl;
+                                                CM_AddEdge(r.x,q.x); //cerr << ":" << r.x << " " << q.x << endl;
                                                 ////CM.AddEdge(q.x,r.x); //cerr << ":" << r.x << " " << q.x << endl;
                                                 assert(CM.checkTheGraph(optSol));
                                                 //CM.AddEdge(q.x,r.x); cerr << ":" << q.x << " " << r.x << endl;
@@ -5139,12 +5637,12 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                                 max_progress_pol = j;
                             }
                             if (ea != UNIV) {
-                                if (block[i] == minblock) {
-                                    if (j == 0) tot0 = true;
-                                    if (j == 1) tot1 = true;
+                                if (1||block[i] == minblock) {
+				  if (j == 0) { tot0 = true; if(0)cerr << "I) set tot0 für x" << i << endl; }
+				  if (j == 1) { tot1 = true; if(0)cerr << "I) set tot1 für x" << i << endl; }
                                 }
                                 continue;
-                            } else {
+                            } else if(0){
                                 while(varbuf.size()>0) { seenProbe[varbuf.last()] = 0; varbuf.pop(); }
                                 while (implications.size() > 0) implications.pop();
                                 //while (propQ.size() > 0) propQ.pop();
@@ -5156,12 +5654,17 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                                 }
                                 inspectedVars.clear();
                                 ObjProbeMode = false;
-                                return false/*max_progress_var, max_progress_pol*/;
+                                return true;//false/*max_progress_var, max_progress_pol*/;
                             }
                         }
                         massert(assigns[i] == extbool_Undef);
                     }
-                }
+		    while (rem_implics_sparse.size() > 0) {
+		      rem_implics[rem_implics_sparse[rem_implics_sparse.size()-1]] = extbool_Undef;
+		      rem_implics_sparse.pop_back();
+		    }
+                } //j = 0 to 1
+		
                 massert(assigns[i] == extbool_Undef);
                 
                 if (tot0 & tot1) {
@@ -5194,10 +5697,12 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                         while (implications.size() > 0 ) implications.pop();
                         if (assigns[vcp.v>>1] == extbool_Undef) {
                             if (eas[vcp.v>>1] == UNIV) {cerr << "SOFORT INFEAS UNIV" << endl;}
-                            oob = assign(vcp.v>>1, 1-(vcp.v&1),trail.size(),CRef_Undef, false);
+                            oob = assign(/*alpha,*/ vcp.v>>1, 1-(vcp.v&1),trail.size(),CRef_Undef, false);
                             if (oob != ASSIGN_OK) cerr << "sofort infeasable" << endl;
                         }
                     } else if (1||propQlimiter[vcp.v] <= 0) {
+		      //assert((vcp.v>>1) != 53 || 1-(vcp.v&1) == 1);
+		      //cerr << "2) fix var x" << (vcp.v>>1) << endl;
                         implications.push(vcp);
                         if (info_level > 5) cerr << "I";
                         //propQlimiter[vcp.v] = implications.size();
@@ -5238,7 +5743,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                         return false; // i, 0;
                     }
                     propQ.clear();
-                    oob = assign(vcp.v>>1, 1-(vcp.v&1),trail.size(),CRef_Undef, false);
+                    oob = assign(/*alpha,*/ vcp.v>>1, 1-(vcp.v&1),trail.size(),CRef_Undef, false);
                     if (oob != ASSIGN_OK) {
                         cerr << "sofort infeasable: x" << (vcp.v>>1) << "=" << 1-(vcp.v&1) << " " << eas[vcp.v>>1] << " " << (int)assigns[vcp.v>>1]<< endl;
                         if (1||block[vcp.v>>1] <= minblock) {
@@ -5255,13 +5760,43 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                         inspectedVars.clear();
                         ObjProbeMode = false;
                         return false; // i, 0;
-                    }
+                    } else {
+		      vardata[vcp.v>>1].level = -4;
+		      vardata[vcp.v>>1].reason = CRef_Undef;
+		      //cerr << "forever set: " << (vcp.v>>1) << " " << (oob==ASSIGN_OK) << " AOK:" << ASSIGN_OK << " oob:" << oob << endl;
+		      setFixed(vcp.v>>1,1-(vcp.v&1));
+		    }
                     //propQ.clear();
                     while (propQ.size() > 0) {
                         int oob = ASSIGN_OK;
-                        if (assigns[propQ.last().v>>1] == extbool_Undef && eas[propQ.last().v>>1] == EXIST)
-                            oob = assign(propQ.last().v>>1, 1-(propQ.last().v&1),trail.size(),CRef_Undef, false);
-                        else if (assigns[propQ.last().v>>1] != extbool_Undef && assigns[propQ.last().v>>1] == (propQ.last().v&1)) {
+                        if (assigns[propQ.last().v>>1] == extbool_Undef && eas[propQ.last().v>>1] == EXIST) {
+			  oob = assign(/*alpha,*/ propQ.last().v>>1, 1-(propQ.last().v&1),trail.size(),CRef_Undef, false);
+			  if (oob==ASSIGN_OK) {
+			    assert(oob == ASSIGN_OK);
+			    vardata[propQ.last().v>>1].level = -4;
+			    vardata[propQ.last().v>>1].reason = CRef_Undef;
+			    //if ((vcp.v>>1)==979) cerr << "forever set: " << (vcp.v>>1) << endl;
+			    setFixed(propQ.last().v>>1,1-(propQ.last().v&1));
+			  } else {
+                            cerr << "SOFORT INFEASIBLE, assign" << endl;
+                            if (1||block[vcp.v>>1] <= minblock) {
+                                max_progress_var = (vcp.v>>1);
+                                max_progress_pol = 1-(vcp.v&1);
+                            }
+                            while (implications.size() > 0) implications.pop();
+                            EmptyPropQ(false,false,true);
+                            for (int ii = 0; ii < nVars(); ii++) propQlimiter[2*ii] = propQlimiter[2*ii+1] = 0;
+                            while(varbuf.size()>0) { seenProbe[varbuf.last()] = 0; varbuf.pop(); }
+                            for (int K = 0; K < inspectedVars.size();K++) {
+                                insertVarOrder(inspectedVars[K]);
+                            }
+                            inspectedVars.clear();
+                            ObjProbeMode = false;
+                            return false; // i, 0;
+			  }
+			  //if ((vcp.v>>1)==979) cerr << "forever set: " << (vcp.v>>1) << endl;
+			  setFixed(propQ.last().v>>1,1-(propQ.last().v&1));
+                        } else if (assigns[propQ.last().v>>1] != extbool_Undef && assigns[propQ.last().v>>1] == (propQ.last().v&1)) {
                             cerr << "SOFORT INFEASIBLE, probe" << endl;
                             if (1||block[vcp.v>>1] <= minblock) {
                                 max_progress_var = (vcp.v>>1);
@@ -5311,7 +5846,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
             }
             if (propQ.size() > 0 && getShowWarning()) cerr << "Warning: propQ not empty" << endl;
             EmptyPropQ(false,false,true);
-            if ((info_level & 2) ) cerr << "length of trail: " << trail.size() << endl;
+            if (getShowInfo() ) cerr << "info length of trail: " << trail.size() << endl;
         }
         
     }	while (/*max_progress_var > -1 && assigns[max_progress_var] != extbool_Undef*/VarFixed);
@@ -5321,66 +5856,9 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
     }
     while(varbuf.size()>0) { seenProbe[varbuf.last()] = 0; varbuf.pop(); }
     
-    if (info_level & 2) cerr << "Info: first phase of probing finished" << endl;
+    if (getShowInfo()) cerr << "Info: first phase of probing finished" << endl;
     
     int cntCli=0;
-    if (0)for (int i=0; i < nVars()+nVars(); i++) {
-        int j = CM.FirstAdjacentInConflictGraph(i);
-        while (j >= 0) {
-            int k = CM.NextAdjacentInConflictGraph(j);
-            while (k >= 0) {
-                //cerr << "teste " << CM.getAdjacent(j) << " und " << CM.getAdjacent(k) << endl;
-                if (CM.EdgeIsInContainer(CM.getAdjacent(j) < CM.getAdjacent(k) ? CM.getAdjacent(j) : CM.getAdjacent(k),
-                                         CM.getAdjacent(j) < CM.getAdjacent(k) ? CM.getAdjacent(k) : CM.getAdjacent(j))) {
-                    if(0)cerr << "3er clique gefunden: x" << i/2 << "=" << 1-(i&1) << ", x" <<
-                        CM.getAdjacent(j)/2 << "=" << 1-(CM.getAdjacent(j)&1) << ", x" << CM.getAdjacent(k)/2 << "=" << 1-(CM.getAdjacent(k)&1) << endl;
-                    cntCli++;
-                    spezialconstraint.clear();
-                    int negs=0;
-                    bool learnok = false;
-                    CoeVar ilit,jlit,klit;
-                    int inode=i,jnode=CM.getAdjacent(j),knode=CM.getAdjacent(k);
-                    if ((inode&1) == 0) { /* inode ist positives Literal */ ilit = mkCoeVar(inode/2,1.0,true); }
-                    else { ilit = mkCoeVar(inode/2,1.0,false); negs++; }
-                    if ((jnode&1) == 0) { /* jnode ist positives Literal */ jlit = mkCoeVar(jnode/2,1.0,true); }
-                    else { jlit = mkCoeVar(jnode/2,1.0,false); negs++; }
-                    if ((knode&1) == 0) { /* knode ist positives Literal */ klit = mkCoeVar(knode/2,1.0,true); }
-                    else { klit = mkCoeVar(knode/2,1.0,false); negs++; }
-                    spezialconstraint.push(ilit);
-                    spezialconstraint.push(jlit);
-                    spezialconstraint.push(klit);
-                    if(0)cerr << "Spezialconstraint: x" << var(ilit) << "=" << 1-(sign(ilit)) << ", x" <<
-                        var(jlit) << "=" << 1-(sign(jlit)) << ", x" << var(klit) << "=" << 1-(sign(klit)) << endl;
-                    //cerr << VarsInConstraints.size() << " " << VarsInConstraints[ilit.x/2].size() << " " << VarsInConstraints[jlit.x/2].size()<< " " << VarsInConstraints[klit.x/2].size() << endl;
-                    //cerr << VarsInConstraints.capacity() << " " << VarsInConstraints[ilit.x/2].capacity() << " " << VarsInConstraints[jlit.x/2].capacity()<< " " << VarsInConstraints[klit.x/2].capacity() << endl;
-                    learnok = addLearnConstraint(spezialconstraint, (coef_t)(-1+negs), 0 /*konfliktvar, not used*/,false);
-                    if (learnok) {
-                        Constraint &learnt_c = constraintallocator[constraints[constraints.size()-1]];
-                        //learnt_c.print(learnt_c,assigns,false);
-                        std::vector<data::IndexedElement> lhs;
-                        for (int ii = 0; ii < learnt_c.size();ii++) {
-                            unsigned int index = var(learnt_c[ii]);
-                            double value = (sign(learnt_c[ii]) ? (double)(-learnt_c[ii].coef) : (double)(learnt_c[ii].coef));
-                            lhs.push_back(data::IndexedElement(index,value));
-                        }
-                    }
-                    
-                }
-                k = CM.NextAdjacentInConflictGraph(k);
-            }
-            j = CM.NextAdjacentInConflictGraph(j);
-        }
-    }
-    
-    if (info_level & 4) cerr << cntCli << " Cliquen" << endl;
-    
-    /*if (!CM.EdgeContainer.empty()) {
-     int64_t x = CM.EdgeContainer.getFstRetData();
-     do {
-     
-     x = getNxtRetData();
-     }  while (!CM.EdgeContainer.isFinished());
-     }*/
     
     static bool only_once = true;//false;
     if (only_once == false) {
@@ -5395,13 +5873,13 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                 bool conflict = false;
                 if (assigns[i] != extbool_Undef) break;
                 assert(assigns[i] == extbool_Undef);
-                int oob = assign(i,j, trail.size(),CRef_Undef,conflict, false, true);
+                int oob = assign(/*alpha,*/ i,j, trail.size(),CRef_Undef,conflict, false, true);
                 if (oob != ASSIGN_OK) {
-                    if (j==0) { tot0=true; continue; }
+		  if (j==0) { tot0=true; if (0)cerr << "i set tot0 für x" << i << endl; continue; }
                     if (j == 1 && tot0) { cerr << "Info: infeasible!" << endl; break; }
                     else if (j == 1) {
                         PurgeTrail(trail.size()-1,decisionLevel());
-                        assign(i,0,trail.size(),CRef_Undef, conflict, false, true);
+                        assign(/*alpha,*/ i,0,trail.size(),CRef_Undef, conflict, false, true);
                         break;
                     }
                     //Constraint &c= constraintallocator[oob];
@@ -5418,12 +5896,13 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                 
                 //cerr << "zz0=" << zz0 << " T1:" << trail.size();
                 increaseDecisionLevel(); //starts with decision level 1 in depth 0
-                bool p = propagate(confl, confl_var, confl_partner, true, block[i]>1/*!=minblock*/);
+                bool p = propagate(/*alpha,*/ confl, confl_var, confl_partner, true, block[i]>1/*!=minblock*/);
                 if (!p) {
                     if (j==0) {
                         PurgeTrail(trail.size()-1,decisionLevel()-1);
                         decreaseDecisionLevel();
                         unassign(i);
+			if(0)cerr << "ii set tot0 für x" << i << endl; 
                         tot0=true;
                         continue;
                     }
@@ -5432,7 +5911,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                         PurgeTrail(trail.size()-1,decisionLevel()-1);
                         decreaseDecisionLevel();
                         unassign(i);
-                        assign(i,0,trail.size(),CRef_Undef, conflict, false, true);
+                        assign(/*alpha,*/ i,0,trail.size(),CRef_Undef, conflict, false, true);
                         break;
                     }
                 } else {
@@ -5441,7 +5920,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                         decreaseDecisionLevel();
                         massert(trail.size() > 0);
                         unassign(i);
-                        assign(i,1,trail.size(),CRef_Undef,conflict, false, true);
+                        assign(/*alpha,*/ i,1,trail.size(),CRef_Undef,conflict, false, true);
                         break;
                     }
                 }
@@ -5488,8 +5967,8 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                             cerr << "Warning4: prevented entering a continuous variable into conflict graph" << endl;
                         } else {
                             addLearnConstraint(spezialconstraint, 1-negs, 0 /*konfliktvar, not used*/,true);
-                            if (q < r) CM.AddEdge2Container(q.x,r.x);
-                            else       CM.AddEdge2Container(r.x,q.x);
+                            if (q < r) CM_AddEdge/*2Container*/(q.x,r.x);
+                            else       CM_AddEdge/*2Container*/(r.x,q.x);
                             cnt++;
                             //cerr << cnt << ":"; constraintallocator[constraints[constraints.size()-1]].print(constraintallocator[constraints[constraints.size()-1]],assigns,false);
                         }
@@ -5504,7 +5983,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
         }
     }
     
-    if (info_level & 4) cerr << "second phase of probing finished" << endl;
+    if (getShowInfo()) cerr << "info: second phase of probing finished" << endl;
     for (int gh=0;gh<trail.size();gh++) {
         if (eas[trail[gh]] == UNIV) cerr << "UNIVERSAL2: " << trail[gh] << endl;
         if (gh >= old_trailsize) {
@@ -5547,6 +6026,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
     ObjProbeMode = false;
     return true/*max_progress_var, max_progress_pol*/;
 }
+#endif
 
 void QBPSolver::cliqueFix(int pick) {
     int bestCliq=-1;
@@ -6363,8 +6843,6 @@ bool QBPSolver::reduceDB(bool delAll)
         constraintallocator[constraints[j]].mark(0);
     
     updateColumns();
-    learnEleminations(1);
-    //learnEleminations(1);
 
     if(maxBlock == 1 && objIsInteger() && (floor(global_dual_bound+0.000001) - ceil(global_score-0.000001)) / objIsInteger() <= 2.0) {
       //cerr << "re-ADD SMALL-GAP CONSTRAINT." << endl;
@@ -6396,7 +6874,12 @@ bool QBPSolver::reduceDB(bool delAll)
       bool couldLearn = true;
       couldLearn = addLearnConstraint(in_learnt, -restrictrhs, -1 /*konfliktvar, not used*/,false);
       if (!couldLearn) {
-	if(getShowError()) cerr << "Error: could not learn the objective search constraint." << endl;
+	if(getShowError()) {
+	  cerr << "Error: could not learn the objective search constraint." << endl;
+          for (int i = 0; i < in_learnt.size();i++)
+             cerr << (sign(in_learnt[i]) ? "-" : "") << in_learnt[i].coef << "x" << var(in_learnt[i]) << (deleted(in_learnt[i])?"D":"") << "( A:" << (int)assigns[var(in_learnt[i])]<<  ")" << " + ";
+	  cerr << "0 >= " << -restrictrhs << endl;
+	}
       } 
     }
     
@@ -6451,7 +6934,7 @@ void QBPSolver::relocAll(ConstraintAllocator& to)
         cto.header.isVarBnd = tmp.header.isVarBnd;
         cto.header.usedinAgg= tmp.header.usedinAgg;
         cto.header.largest = tmp.header.largest;
-        cto.header.watched = 1;
+        cto.header.dirty = tmp.header.dirty;
         cto.header.learnt = tmp.header.learnt;
         cto.header.mark = tmp.header.mark;
         cto.header.size = tmp.header.size;

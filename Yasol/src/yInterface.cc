@@ -65,20 +65,66 @@ void yInterface::yReadIniFile() {
                           else qbp->setUsePump(false);
 		  } else if (tokens[0].compare("useMiniSearch") == 0) {
                           if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
-                          if (tokens[1].compare("1") == 0) qbp->setUseMiniSearch(true);
-                          else qbp->setUseMiniSearch(false);
+                          if (tokens[1].compare("1") == 0) qbp->setUseMiniSearch(1);
+			  else if (tokens[1].compare("0") == 0) qbp->setUseMiniSearch(0);
+			  else if (tokens[1].compare("2") == 0) qbp->setUseMiniSearch(2);
+			  else if (tokens[1].compare("3") == 0) qbp->setUseMiniSearch(3);
+			  else if (tokens[1].compare("4") == 0) qbp->setUseMiniSearch(4);
+			  else if (tokens[1].compare("5") == 0) qbp->setUseMiniSearch(5);
+			  else if (tokens[1].compare("6") == 0) qbp->setUseMiniSearch(6);
+			  else if (tokens[1].compare("7") == 0) qbp->setUseMiniSearch(7);
+			  else if (tokens[1].compare("8") == 0) qbp->setUseMiniSearch(8);
+			  else if (tokens[1].compare("9") == 0) qbp->setUseMiniSearch(9);
+			  else if (tokens[1].compare("10") == 0) qbp->setUseMiniSearch(10);
+			  else if (tokens[1].compare("11") == 0) qbp->setUseMiniSearch(11);
+			  else if (tokens[1].compare("12") == 0) qbp->setUseMiniSearch(12);
+			  else if (tokens[1].compare("13") == 0) qbp->setUseMiniSearch(13);
+			  else if (tokens[1].compare("14") == 0) qbp->setUseMiniSearch(14);
+			  else if (tokens[1].compare("15") == 0) qbp->setUseMiniSearch(15);
+                          else qbp->setUseMiniSearch(0);
+			  //Meaning: - 0 : no minisearch
+			  //         - 1 : minisearch yes, uviRELAX = false
+			  //         - 2 : minisearch no, uviRELAX = yes
+			  //         - 3 : minisearch yes, uviRELAX = yes
+			  //         - >3: bit 1 and 2 analogously, but early finish when minisearch too long
+		  } else if (tokens[0].compare("useConflictGraph") == 0) {
+                          if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
+                          if (tokens[1].compare("1") == 0) qbp->setUseConflictGraph(1);
+			  else if (tokens[1].compare("2") == 0) qbp->setUseConflictGraph(2);
+                          else qbp->setUseConflictGraph(0);
 		  } else if (tokens[0].compare("maintainPv") == 0) {
                           if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
                           if (tokens[1].compare("1") == 0) qbp->setMaintainPv(true);
                           else qbp->setMaintainPv(false);
 		  } else if (tokens[0].compare("useGMI") == 0) {
 			  if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
-			  if (tokens[1].compare("1") == 0) qbp->setUseGMI(true);
-			  else qbp->setUseGMI(false);
+			  if (tokens[1].compare("0") == 0) qbp->setUseGMI(0);
+			  else if (tokens[1].compare("1") == 0) qbp->setUseGMI(1);
+			  else if (tokens[1].compare("2") == 0) qbp->setUseGMI(2);
+			  else if (tokens[1].compare("3") == 0) qbp->setUseGMI(3);			  
+		  } else if (tokens[0].compare("useHighsHeuristic") == 0) {
+			  if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
+			  if (qbp->getUseHighsH() >= 0) {
+			    if (tokens[1].compare("1") == 0) qbp->setUseHighsH(true);
+			    else qbp->setUseHighsH(false);
+			  } else qbp->setUseHighsH(false);
+		  } else if (tokens[0].compare("useAlphaCuts") == 0) {
+			  if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
+			  if (tokens[1].compare("1") == 0) qbp->setUseAlphaCuts(true);
+			  else qbp->setUseAlphaCuts(false);
 		  } else if (tokens[0].compare("showInfo") == 0) {
 			  if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
-			  if (tokens[1].compare("1") == 0) qbp->setShowInfo(true);
-			  else qbp->setShowInfo(false);
+			  if (tokens[1].compare("0") == 0) qbp->setShowInfo(0);
+			  else if (tokens[1].compare("1") == 0) qbp->setShowInfo(1);
+			  else if (tokens[1].compare("2") == 0) qbp->setShowInfo(2);
+			  else if (tokens[1].compare("3") == 0) qbp->setShowInfo(3);
+			  else if (tokens[1].compare("4") == 0) qbp->setShowInfo(4);
+			  else if (tokens[1].compare("5") == 0) qbp->setShowInfo(5);
+			  else if (tokens[1].compare("6") == 0) qbp->setShowInfo(6);
+			  else if (tokens[1].compare("7") == 0) qbp->setShowInfo(7);
+			  else if (tokens[1].compare("8") == 0) qbp->setShowInfo(8);
+			  else if (tokens[1].compare("9") == 0) qbp->setShowInfo(9);
+			  
 		  } else if (tokens[0].compare("showWarning") == 0) {
 			  if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
 			  if (tokens[1].compare("1") == 0) qbp->setShowWarning(true);
@@ -179,7 +225,57 @@ void yInterface::yReadIniFile() {
                   }                  
 	    }
 	    myfile.close();
-	  } else cout << "Unable to find Yasol.ini. Use standard parameter setting instead."<<endl;
+	  } else if(supressAllOutput) cerr << "Info: Unable to find Yasol.ini. I use standard parameter setting instead."<<endl;
+	  if (yip.showInfo >= 0)
+	    qbp->setShowInfo(yip.showInfo);
+	  if (yip.showWarning >= 0)
+	    qbp->setShowWarning(yip.showWarning);	    
+	  if (yip.showError >= 0)
+	    qbp->setShowError(yip.showError);	    
+	  if (yip.writeOutputFile >= 0)
+	    qbp->setWriteOutputFile(yip.writeOutputFile);
+	  if (yip.maintainPv >= 0)
+	    qbp->setMaintainPv(yip.maintainPv);
+	  if (yip.learnDualCuts >= 0)
+	    qbp->setLearnDualCuts(yip.learnDualCuts);
+	  if (yip.useGMI >= 0)
+	    qbp->setUseGMI(yip.useGMI);
+	  if (yip.useCover >= 0)
+	    qbp->setUseCover(yip.useCover);
+	  if (yip.useLiftAndProjectCuts >= 0)
+	    qbp->setUseLaP(yip.useLiftAndProjectCuts);
+	  if (yip.useLazyLP >= 0)
+	    qbp->setUseLazyLP(yip.useLazyLP);
+	  if (yip.useShadow >= 0)
+	    qbp->setUseShadow(yip.useShadow);
+	  if (yip.useLimitedLP >= 0)
+	    qbp->setUseLimitedLP(yip.useLimitedLP);
+	  if (yip.useCglRootPreprocess >= 0)
+	    qbp->setUseCglRootPreprocess(yip.useCglRootPreprocess);
+	  if (yip.useCglRootCuts >= 0)
+	    qbp->setUseCglRootCuts(yip.useCglRootCuts);
+	  if (yip.useHighsHeuristic >= 0)
+	    qbp->setUseHighsH(yip.useHighsHeuristic);
+	  if (yip.usePump >= 0)
+	    qbp->setUsePump(yip.usePump);
+	  if (yip.useMonotones >= 0)
+	    qbp->setUseMonotones(yip.useMonotones);
+	  if (yip.useAlphaCuts >= 0)
+	    qbp->setUseAlphaCuts(yip.useAlphaCuts);
+	  if (yip.useAlphabeta >= 0)
+	    qbp->setUseAlphabeta(yip.useAlphabeta);
+	  if (yip.useMiniSearch >= 0)
+	    qbp->setUseMiniSearch(yip.useMiniSearch);
+	  if (yip.useConflictGraph >= 0)
+	    qbp->setUseConflictGraph(yip.useConflictGraph);
+	  if (yip.useStrongBranching >= 0)
+	    qbp->setUseStrongBranching(yip.useStrongBranching);
+	  if (yip.reduceStrongBranching >= 0)
+	    qbp->setReduceStrongBranching(yip.reduceStrongBranching);
+	  if (yip.useFastFix >= 0)
+	    qbp->setUseFastFix(yip.useFastFix);
+	  if (yip.isSimplyRestricted >= 0)
+	    qbp->setIsSimplyRestricted(yip.isSimplyRestricted);
 }
 
 void yInterface::yReadInput(int htable_size) {
@@ -219,7 +315,10 @@ void yInterface::yReadInput(int htable_size) {
 	}
 	bool lastVarIsUniv=false;
 	if(varVec[varVec.size()-1]->getQuantifier() == data::QpVar::all){
-	  cerr << "Error: Final Variable in ORDER has to be an existential variable.\nAdd a (binary) existential dummy variable to the end of the instance's ORDER!" << endl;
+		//block++;
+		//cblock+=2;
+		//qbp->createVar(EXIST,block, cblock, varVec.size()+1,false, 0,1);
+	  cerr << "Error!: Final Variable in ORDER has to be an existential variable.\nAdd a (binary) existential dummy variable to the end of the instance's ORDER!" << endl;
 	  assert(0);
 	  lastVarIsUniv=true;
 	}
@@ -398,7 +497,7 @@ void yInterface::yReadInput(int htable_size) {
 		  }
 		  r = -(rhsVec[i]->getValue()).asDouble();
 		  qbp->addOrgConstraint(newConstraint,r,0,isUniversal,rvar,isBndCon);
-		  if(qbp->getShowInfo()){
+		  if(0&&qbp->getShowInfo()){
   		    if (cntReals>0) cerr << "info: c" << i << " reals:" << cntReals << "; ";
 		    if (cntReals==2) {
 		      for( int j = 0; j < lhs.size(); j++) {
@@ -410,7 +509,7 @@ void yInterface::yReadInput(int htable_size) {
   		    if (cntReals>0) cerr << endl;
 		  }
 		  if (cntReals > 0/*== 1*/) {
-		    if(qbp->getShowInfo()) cerr << "info: can eliminate a continuous variable" << endl;
+		    if(0&&qbp->getShowInfo()) cerr << "info: can eliminate a continuous variable" << endl;
 		    int foundCand=0;
 		    rvar = -1;
 		    for( int j = 0; j < lhs.size(); j++) {
@@ -419,7 +518,7 @@ void yInterface::yReadInput(int htable_size) {
 			if (varVec[ lhs[j].index ]->getNumberSystem()==data::QpVar::real) foundCand = 1;
 			else if (qbp->getIsIntegerBit(lhs[j].index)) foundCand = 2;
 			else foundCand = 3;
-			if(qbp->getShowInfo()) cerr << "info: can eliminate x" << lhs[j].index << " with mode=" << foundCand << endl;
+			if(0&&qbp->getShowInfo()) cerr << "info: can eliminate x" << lhs[j].index << " with mode=" << foundCand << endl;
 			qbp->updateReplacement(lhs[j].value.asDouble(), lhs[j].index, lhs, rhsVec[i]->getValue().asDouble(),foundCand,cntReals);
 			if (rvar == -1 || lhs[j].index < rvar) {
 			  foundCand=1;
@@ -500,7 +599,7 @@ void yInterface::yReadInput(int htable_size) {
     if(qbp->getShowInfo()) cerr << "Constraints ready" << endl;
 
     qbp->initializeMrows();
-    qbp->initializeConstraintWatcher();
+    //qbp->initializeConstraintWatcher();
     //yReadIniFile();
     //qbp->transferBoundsVars2Constraints();
 
@@ -527,7 +626,7 @@ double yInterface::computeCutRatio(vector< pair<unsigned int, double> >& cut) {
 
 int yInterface::GenerateCutAndBranchCuts( extSol::QpExternSolver& externSolver, vector< vector< data::IndexedElement > > &listOfCutsLhs,
 		       vector< data::QpNum > &listOfCutsRhs, vector<int> &listOfCutsVars,
-					  int treedepth, int currentBlock, bool &global_valid, std::vector<unsigned int> &candidates, int cuttype, int*types, int8_t* assigns, unsigned int initime, int* solu, int *fixs, int *blcks, int orgN, double intLB) {
+					  int treedepth, int currentBlock, bool &global_valid, std::vector<unsigned int> &candidates, int cuttype, int*types, int8_t* assigns, unsigned int initime, int* solu, int *fixs, int *blcks, int *eass, int orgN, double intLB) {
 	static bool root_once = false;
 	global_valid = false;
 	root_once = true;
@@ -540,9 +639,11 @@ int yInterface::GenerateCutAndBranchCuts( extSol::QpExternSolver& externSolver, 
 	const int CGL_MIR2     = 1024;
 	const int CGL_TWOMIR   = 2048;
 	const int CGL_PROB     = 4096;
+	const int MIRsmart     = 8192;
 
-
-	vector< pair< vector< pair<unsigned int, double> >, double > > cuts;
+	vector< pair< vector< pair<unsigned int, double> >, double > > *cuts_pt;
+	vector< pair< vector< pair<unsigned int, double> >, double > > single;
+	cuts_pt = &single;
 	if (cuttype & CGL_LIB) {
 	  //64 GMI
 	  if (qbp->getInfoLevel()>-8) cerr << " first entry." << endl;
@@ -551,7 +652,7 @@ int yInterface::GenerateCutAndBranchCuts( extSol::QpExternSolver& externSolver, 
 	    useCglPreProcess = 2;
 #ifndef NO_CGL
 	  if (qbp->getInfoLevel()>-8) cerr << "Row Count is " << cbc->CutGenSolver->getRowCount() <<endl;
-	  cuts = cbc->CutGenSolver->CreateCuts(externSolver, types, assigns, treedepth, initime, solu, fixs, blcks, orgN,
+	  cuts_pt = cbc->CutGenSolver->CreateCuts(externSolver, types, assigns, treedepth, initime, solu, fixs, blcks, orgN,
 					       (cuttype & 1) ? //1 means: break the loop
 					       //CGL_KNAPSACK|CGL_SIMROUND|CGL_GMI|CGL_FLOWCOVR|CGL_REDSPLIT|CGL_MIR2|1:
 					       CGL_KNAPSACK|CGL_SIMROUND|CGL_GMI|CGL_FLOWCOVR|CGL_REDSPLIT|CGL_MIR2|CGL_TWOMIR|CGL_PROB|useCglPreProcess:
@@ -560,24 +661,35 @@ int yInterface::GenerateCutAndBranchCuts( extSol::QpExternSolver& externSolver, 
 #else
 	  if(qbp->getShowInfo()) std::cerr << "Info: Cgl is not implemented." << std::endl;
 #endif
-	  if (qbp->getInfoLevel()>-8) cerr <<"Size of Cuts after: "<<cuts.size() <<endl;
+	  if (qbp->getInfoLevel()>-8) cerr <<"Size of Cuts after: "<<cuts_pt->size() <<endl;
 	} else if (cuttype & GMI) {
-		cuts = CutAdder::getGMICuts( externSolver, candidates, types, assigns, treedepth, initime, listOfCutsVars );
+	  cuts_pt = CutAdder::getGMICuts( externSolver, candidates, types, assigns, treedepth, initime, listOfCutsVars, solu , fixs, blcks, eass, orgN);
+        vector< pair< vector< pair<unsigned int, double> >, double > > &cuts = *cuts_pt;
+	for( unsigned int i = 0; i < cuts.size(); ++i ){
+	  vector< pair<unsigned int, double> >& cut = cuts.at( i ).first;
+	  vector< data::IndexedElement > addcut;
+
+	    if (0&&cut.size()<7 && fabs(cuts[i].second+0.25) < 0.01) {
+	      cerr << "before gen GMI cut as comes in: ";
+	      for (int v=0;v<cut.size();v++) {
+		cerr << cut[v].second << "y" << cut[v].first << " + ";
+	      }
+	      cerr << " >= " << cuts[i].second <<endl;
+	    }
+	}
 	} else if (cuttype & LaP) {
-		cuts = CutAdder::getLPCuts( externSolver, candidates, types, assigns, treedepth, initime, listOfCutsVars );
-	} else if (cuttype & Cover) {
-#ifndef FIND_BUG
-	        cuts = CutAdder::getCoverCuts( externSolver, types, assigns, treedepth, initime, solu, fixs, blcks, orgN );
-#else
-		cuts = CutAdder::getCoverCuts( externSolver, types, assigns, treedepth, initime );
-#endif
+		cuts_pt = CutAdder::getLPCuts( externSolver, candidates, types, assigns, treedepth, initime, listOfCutsVars );
+	} else if (cuttype & MirSmart) {
+	  cuts_pt = CutAdder::getMIRsmartEQ( externSolver, types, assigns, treedepth, initime, solu, fixs, blcks, eass, orgN );
+        } else if (cuttype & Cover) {
+	  cuts_pt = CutAdder::getCoverCuts( externSolver, types, assigns, treedepth, initime, solu, fixs, blcks, eass, orgN );
 	} else if (cuttype & UserCut) {
-#ifdef FIND_BUG
-#endif
+	  //cuts_pt = CutAdder::getAggCmirCuts( externSolver, types, assigns, treedepth, initime, solu, fixs, blcks,eass, orgN );
 	}
 
-	listOfCutsLhs.reserve( cuts.size() );
-	listOfCutsRhs.reserve( cuts.size() );
+	vector< pair< vector< pair<unsigned int, double> >, double > > &cuts = *cuts_pt;
+	listOfCutsLhs.reserve( listOfCutsLhs.size() + cuts.size() );
+	listOfCutsRhs.reserve( listOfCutsRhs.size() + cuts.size() );
 
 	for( unsigned int i = 0; i < cuts.size(); ++i ){
 		vector< data::IndexedElement > addcut;
@@ -1865,7 +1977,7 @@ void yInterface::updateConstraints(data::Qlp &qmip, utils::QlpStageSolver& QlpSt
 		//for (int zz = 0; zz < qmipsz;zz++) {
 		//	cerr << "[" << zz << "," << SOSvars.count(zz) << "]";
 		//}
-		//if (info_level >= 2) cerr << endl;
+		if (info_level >= 2) cerr << endl;
 		int minBlock = qmipsz + 10;
 		for (int zz = 0; zz < qmipsz;zz++)
 			if (block[zz] < minBlock) minBlock = block[zz];

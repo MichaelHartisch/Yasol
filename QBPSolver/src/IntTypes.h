@@ -30,7 +30,7 @@
 #else
 #include <unistd.h>
 #endif
-#   include <inttypes.h>
+#   include <IntTypes.h>
 #include <limits.h>
 
 #endif /* INTTYPES_H_ */

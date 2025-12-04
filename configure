@@ -1,0 +1,202 @@
+#!/bin/bash
+
+#set -e
+set -u
+
+usage () {
+cat <<EOF
+usage: configure [-h|--help][-c|--cplex][-g|--highs][-o|--coin][-d|--debug][-d3|--debug3][-l|--cgl][-s|--sani]
+
+-h | --help  print this command line option summary
+
+==============For Users==============
+-c  | --cplex  compile with cplex
+-g  | --highs  compile with highs
+-o  | --coin   compile with coinOR tools
+
+==============For Developers==============
+-d  | --debug  compile with '-O1 -g'
+-d3 | --debug3 compile with '-g3 -O0'
+-l  | --cgl    compile with the cgl library
+-s  | --sani   compile with sanitizer
+EOF
+}
+
+msg () {
+  echo "[configure] $*"
+}
+
+die () {
+  echo "configure: error: $*" 1>&2
+  exit 1
+}
+
+run_cmd() {
+    if [ -w "$EXTERN_SOLVER_DIR" ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+YASOL_DIR=$(pwd)
+echo $YASOL_DIR
+
+cplex=no
+highs=no
+coin=no
+debug=no
+debug3=no
+cgl=no
+sani=no
+
+[ $# -eq 0 ] && { echo "No input provided. Try '-h'."; exit 1; }
+
+while [ $# -gt 0 ]
+do
+  case $1 in
+    -h|--help) usage; exit 0;;
+    -c|--cplex) cplex=yes;;
+    -g|--highs) highs=yes;;
+    -o|--coin) coin=yes;;
+    -d|--debug) debug=yes;;
+    -d3|--debug3) debug3=yes;;
+    -l|--cgl) cgl=yes;;
+    -s|--sani) sani=yes;;
+    *) die "invalid option '$1' (try '-h')";;
+  esac
+  shift
+done
+
+CMKFLAGS="-B build"
+
+if [ $cplex = yes ]
+then
+  CMKFLAGS="$CMKFLAGS -DUSE_CPLEX=ON"
+  msg "using cplex as LP solver"
+  msg "Specify the directory of the (already installed) cplex distribution you want to link to."
+  msg "If you press Enter and do not provide the location, cmake will try to find it by itself."
+  read -r -e -p ":" USER_INPUT
+  if [ -n "$USER_INPUT" ]; then
+    if [ -d "$USER_INPUT" ]; then
+      EXTERN_SOLVER_DIR="$USER_INPUT"
+    else
+      die "\033[1;31mError: '$USER_INPUT' is not a valid directory.\033[0m"  >&2
+      EXTERN_SOLVER_DIR=""
+    fi
+  else
+    EXTERN_SOLVER_DIR=""
+  fi
+  CMKFLAGS="$CMKFLAGS -DCPLEX_ROOT_DIR=$EXTERN_SOLVER_DIR"
+  msg "cplex setup done"
+fi
+
+if [ $highs = yes ]
+then
+  CMKFLAGS="$CMKFLAGS -DUSE_HIGHS=ON"
+
+  read -p "Do you already have HiGHS and all its source files and libraries on your computer?(yes/no):" USER_INPUT
+  if [[ "$USER_INPUT" == "yes" ]]; then
+    msg "Provide the main directory of HiGHS!"
+    msg "Note that it should contain /src/Highs.h and /build/lib"
+    read -r -e -p ":" EXTERN_SOLVER_DIR
+  else 
+    msg "setting up HiGHS solver"
+    . setup/setup-highs.sh
+    if [ $? -ne 0 ]; then
+      echo "Error: HiGHS setup failed!"
+      exit 1
+    fi  #EXIT_CODE=$?
+  fi
+  CMKFLAGS="$CMKFLAGS -DHIGHS_ROOT_DIR=$EXTERN_SOLVER_DIR" 
+  msg "highs setup done"
+fi
+
+if [ $coin = yes ] || [ $cgl = yes ]
+then
+  if [ $coin = yes ] 
+  then
+    CMKFLAGS="$CMKFLAGS -DUSE_COIN=ON"
+  fi
+  read -p "Do you already have COIN-OR tools and all its source files and libraries on your computer?(yes/no):" USER_INPUT
+  if [[ "$USER_INPUT" == "yes" ]]; then
+    msg "Provide the main directory of COIN-OR!"
+    msg "Note that it should contain /dist/lib with the libraries of Cbc/OsiCbc/Cgl/Clp/CoinUtils/OsiClp/Osi."
+    read -r -e -p ":" EXTERN_SOLVER_DIR
+  else 
+    msg "setting up COIN-OR tools"
+    . setup/setup-coin.sh
+    if [ $? -ne 0 ]; then
+      echo "Error: Coin-OR setup failed!"
+      exit 1
+    fi  #EXIT_CODE=$?
+  fi
+  CMKFLAGS="$CMKFLAGS -DCOIN_ROOT_DIR=$EXTERN_SOLVER_DIR"
+  msg "coin-or setup done"
+
+  LIB="${EXTERN_SOLVER_DIR}/dist/lib"
+  if [ -d $LIB ]; then
+    if [[ ":$LD_LIBRARY_PATH:" != *"$LIB"* ]]; then
+      msg "Our solver needs the coin or libraries at runtime."
+      msg 'Hence, you need to run export LD_LIBRARY_PATH=/opt/coin-or/dist/lib:$LD_LIBRARY_PATH.'
+      msg "To make it easier for you in the future, consider adding it to your .bashrc (or similar)."
+      msg 'Do you want this script to append it to your current $HOME/.bashrc file right now (yes/no).'
+      read -p ":" USER_INPUT
+      if [[ "$USER_INPUT" == "yes" ]]; then
+        export LD_LIBRARY_PATH="$LIB:$LD_LIBRARY_PATH"
+        if [[ -f ~/.bashrc ]]; then
+          # Add the command to .bashrc if not already present
+          if ! grep -q "export LD_LIBRARY_PATH=.*$LIB" ~/.bashrc; then
+            echo "export LD_LIBRARY_PATH=\"$LIB:\$LD_LIBRARY_PATH\"" >> ~/.bashrc
+            echo "Added $LIB to LD_LIBRARY_PATH in ~/.bashrc."
+          else
+            echo "$LIB is already in LD_LIBRARY_PATH in ~/.bashrc."
+          fi
+        else
+          echo "Warning: .bashrc file not found in the home directory."
+          echo "Please create one if needed or manually add the following line to your shell configuration:"
+          echo "export LD_LIBRARY_PATH=\"\$LD_LIBRARY_PATH:$LIB\""
+        fi
+      fi
+    else
+      echo "Perfect! The LD_LIBRARY_PATH already contains "$LIB""
+    fi
+  else
+    msg 'Error: Cannot find runtime library folder ${EXTERN_SOLVER_DIR}/dist/lib'
+    exit 1
+  fi
+fi
+
+if [ $debug = yes ]
+then
+  CMKFLAGS="$CMKFLAGS -DCMAKE_BUILD_TYPE=debug"
+fi
+
+if [ $debug3 = yes ]
+then
+  CMKFLAGS="$CMKFLAGS -DCMAKE_BUILD_TYPE=debug3"
+fi
+
+if [ $cgl = yes ]
+then
+  CMKFLAGS="$CMKFLAGS -DUSE_CGL=ON"
+fi
+
+if [ $sani = yes ]
+then
+  CMKFLAGS="$CMKFLAGS -DENABLE_SANITIZERS=TRUE"
+fi
+
+sudo -k
+echo "run cmake with options ${CMKFLAGS}"
+#echo "We are here: $(pwd)"
+cd $YASOL_DIR
+echo "We are now here: $(pwd)"
+
+#mkdir -p build
+#cd build
+cmake $CMKFLAGS
+msg "all seems in order, now do 'cd build && make'"
+
+
+

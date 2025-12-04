@@ -255,7 +255,7 @@ class CliqueManager {
     // void Clear() { _Clear(first); }
     // int IsEmpty() { if (first) return 0; else return 1; }
 public:
-	struct VarData { CRef reason; int level; };
+	struct VarData { CRef reason; int level; int bndMvBegL; int bndMvBegU;};
 	ca_vec<Cli_Table> cliques;
 	CliqueManager() {
 
@@ -404,21 +404,23 @@ public:
     	}
     }
 
-    void extractImplis(ca_vec<CoeVar> &propQ, int v, int p, int n,ca_vec<extbool> &assigns) {
-    	propQ.clear();
-    	std::vector<bool> used(n+n,false);
-    	int next = FirstAdjacentInConflictGraph(v+v+(1-p));
-    	used[v+v+(1-p)] = true;
-    	while (next >=0) {
-    		int node = getAdjacent(next);
-    		if (used[node] == false && assigns[node>>1] == extbool_Undef) {
-    		    used[node] = true;
-    		    propQ.push(mkCoeVar(node>>1,1.0,(node&1) ? true : false));
-    		    //dfsExtractImplis(propQ, node, used,assigns);
-    		    dfsExtractImplis(propQ, node^1, used,assigns);
-    		}
-    		next = NextAdjacentInConflictGraph(next);
-    	}
+  void extractImplis(ca_vec<CoeVar> &propQ, int v, int p, int n,ca_vec<extbool> &assigns, bool flat=true) {
+        propQ.clear();
+        std::vector<bool> used(n+n,false);
+        int next = FirstAdjacentInConflictGraph(v+v+(1-p));
+        used[v+v+(1-p)] = true;
+        //assert(assigns[v] != 2);
+        //assert(assigns[v] == p);
+        while (next >=0) {
+                int node = getAdjacent(next);
+                if (used[node] == false /*&& assigns[node>>1] == extbool_Undef*/) {
+                    used[node] = true;
+                    int nodeVar=node/2;
+                    propQ.push(mkCoeVar(node>>1,1.0,(node&1) ? false : true));
+                    if (!flat) dfsExtractImplis(propQ, node^1, used,assigns);
+		}
+                next = NextAdjacentInConflictGraph(next);
+        }
     }
     void dfsExtractImplis(ca_vec<CoeVar> &propQ, int node, std::vector<bool> &used,ca_vec<extbool> &assigns) {
     	if (used[node] == true) return;
@@ -428,67 +430,72 @@ public:
     		int node = getAdjacent(next);
     		if (used[node] == false && assigns[node>>1] == extbool_Undef) {
     		    used[node] = true;
-    		    propQ.push(mkCoeVar(node>>1,1.0,(node&1) ? true : false));
+    		    propQ.push(mkCoeVar(node>>1,1.0,(node&1) ? false : true));
     		    //dfsExtractImplis(propQ, node, used,assigns);
     		    dfsExtractImplis(propQ, node^1, used,assigns);
     		}
     		next = NextAdjacentInConflictGraph(next);
     	}
     }
-    int forcedByConflictTable(int v, int n,ca_vec<extbool> &assigns, int &level, VarData *vd, int &sigvar) {
+  int forcedByConflictTable(int v, int n,ca_vec<extbool> &assigns, int &level, VarData *vd, int &sigvar) {
     	int p=0;
     	int mustnot0=false;
     	int mustnot1=false;
     	level = n+5;
     	int next = FirstAdjacentInConflictGraph(v+v+(1-p));
     	while (next >=0) {
-    		int node = getAdjacent(next);
-    		if (assigns[node>>1] != extbool_Undef) {
-    			if (node&1) { // Verbot hat Vorzeichen gesetzt => ist not-ed
-    				if (assigns[node>>1] == 0) {
-    					mustnot0 = true;
-    	    			if (vd[node>>1].level < level) {
-    	    				level = vd[node>>1].level;
-    	    				sigvar = node;
-    	    			}
-    				}
-    			} else {
-    				if (assigns[node>>1] == 1) {
-    					mustnot0 = true;
-    	    			if (vd[node>>1].level < level) {
-    	    				level = vd[node>>1].level;
-    	    				sigvar = node;
-    	    			}
-    				}
-    			}
-    		}
-    		next = NextAdjacentInConflictGraph(next);
+	  int node = getAdjacent(next);
+	  if (assigns[node>>1] != extbool_Undef) {
+	    if (node&1) { // Verbot hat Vorzeichen gesetzt => ist not-ed
+	      if (assigns[node>>1] == 0) {
+		mustnot0 = true;
+		//assert(vd[node>>1].level <= dl+2);
+		if (vd[node>>1].level < level) {
+		  level = vd[node>>1].level;
+		  sigvar = node;
+		}
+	      }
+	    } else {
+	      if (assigns[node>>1] == 1) {
+		mustnot0 = true;
+		//assert(vd[node>>1].level <= dl+2);
+		if (vd[node>>1].level < level) {
+		  level = vd[node>>1].level;
+		  sigvar = node;
+		}
+	      }
+	    }
+	  }
+	  next = NextAdjacentInConflictGraph(next);
     	}
     	p=1;
     	next = FirstAdjacentInConflictGraph(v+v+(1-p));
     	while (next >=0) {
-    		int node = getAdjacent(next);
-    		if (assigns[node>>1] != extbool_Undef) {
-    			if (node&1) { // Verbot hat Vorzeichen gesetzt => ist not-ed
-    				if (assigns[node>>1] == 0) {
-    					mustnot1 = true;
-    	    			if (vd[node>>1].level < level) {
-    	    				level = vd[node>>1].level;
-    	    				sigvar = node;
-    	    			}
-    				}
-    			} else {
-    				if (assigns[node>>1] == 1) {
-    					mustnot1 = true;
-    	    			if (vd[node>>1].level < level) {
-    	    				level = vd[node>>1].level;
-    	    				sigvar = node;
-    	    			}
-    				}
-    			}
-    		}
-    		next = NextAdjacentInConflictGraph(next);
+	  int node = getAdjacent(next);
+	  if (assigns[node>>1] != extbool_Undef) {
+	    if (node&1) { // Verbot hat Vorzeichen gesetzt => ist not-ed
+	      if (assigns[node>>1] == 0) {
+		mustnot1 = true;
+		//assert(vd[node>>1].level <= dl+2);
+		if (vd[node>>1].level < level) {
+		  level = vd[node>>1].level;
+		  sigvar = node;
+		}
+	      }
+	    } else {
+	      if (assigns[node>>1] == 1) {
+		mustnot1 = true;
+		//assert(vd[node>>1].level <= dl+2);
+		if (vd[node>>1].level < level) {
+		  level = vd[node>>1].level;
+		  sigvar = node;
+		}
+	      }
+	    }
+	  }
+	  next = NextAdjacentInConflictGraph(next);
     	}
+	if (level < 0) level = 0;
     	if (mustnot1 && mustnot0) return 4;
     	if (mustnot1 == true) return 0;
     	if (mustnot0 == true) return 1;

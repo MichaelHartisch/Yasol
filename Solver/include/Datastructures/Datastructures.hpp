@@ -32,5 +32,5 @@
 #include "numbers/Numbers.hpp"
 
 #include "qlp/Qlp.hpp"
-
+#include <cstdint>
 #endif /* COMPONENTS_HPP_ */

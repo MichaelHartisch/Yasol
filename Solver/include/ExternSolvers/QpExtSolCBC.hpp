@@ -119,7 +119,7 @@ public:
 
   int doDualFixing(int rowCnt, int colCnt, int *types, int *fixs, double intLB);
 
-  std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > > CreateCuts(extSol::QpExternSolver& externSolver, int *types, int8_t *assigns, int decLev, unsigned int initime, int *solu /*debugging info only*/, int *fixs, int*blcks, int orgN, int cuttype, int delCuts, double intLB);
+  std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > > *CreateCuts(extSol::QpExternSolver& externSolver, int *types, int8_t *assigns, int decLev, unsigned int initime, int *solu /*debugging info only*/, int *fixs, int*blcks, int orgN, int cuttype, int delCuts, double intLB);
 
 	void removeCuts();
 

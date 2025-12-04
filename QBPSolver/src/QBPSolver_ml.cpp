@@ -30,6 +30,82 @@ using namespace std;
 
 #include <cmath>
 
+void QBPSolver::checkAllActiveWatchers() {
+  return;
+  int lV=trail[trail.size()-1];
+  for (int i=0; i < constraints.size();i++) {
+    Constraint &c = constraintallocator[constraints[i]];
+    if (!c.header.isSat) continue;
+    if (c.header.isSat && c.header.btch1.watch1 == -2) continue;
+    int w1 = c.header.btch1.watch1;
+    int w2 = c.header.wtch2.watch2;
+    if ((assigns[var(c[w1])]!=extbool_Undef || assigns[var(c[w2])]!=extbool_Undef) &&
+	var(c[w1]) != lV && var(c[w2])!=lV) {
+      int cntUa=0;
+      for (int j = 0;j < c.size();j++) {
+	if (assigns[var(c[j])] != extbool_Undef && isFixed(var(c[j]))) {
+	  if (assigns[var(c[j])] != getFixed(var(c[j]))) {
+	    if (vardata[var(c[j])].level < fixdata[var(c[j])].level) {
+	      if (sign(c[j]) && assigns[var(c[j])]==0) { cntUa=0; break; };
+	      if (!sign(c[j]) && assigns[var(c[j])]==1) { cntUa=0; break; };
+	    } else {
+	      if (sign(c[j]) && getFixed(var(c[j]))==0) { cntUa=0; break; };
+	      if (!sign(c[j]) && getFixed(var(c[j]))==1) { cntUa=0; break; };
+	    }
+	  } else {
+	    if (sign(c[j]) && assigns[var(c[j])]==0) { cntUa=0; break; };
+	    if (!sign(c[j]) && assigns[var(c[j])]==1) { cntUa=0; break; };
+	  }
+	} else {
+	  if (sign(c[j]) && assigns[var(c[j])]==0) { cntUa=0; break; };
+	  if (!sign(c[j]) && assigns[var(c[j])]==1) { cntUa=0; break; };
+	  if (sign(c[j]) && getFixed(var(c[j]))==0) { cntUa=0; break; };
+	  if (!sign(c[j]) && getFixed(var(c[j]))==1) { cntUa=0; break; };
+	}
+	if (var(c[j]) == lV) continue;
+	if (assigns[var(c[j])]==extbool_Undef && !isFixed(var(c[j])))
+	  cntUa++;
+      }
+      if (cntUa > 1) {
+	for (int j = 0;j < c.size();j++) {
+	  cerr << (sign(c[j]) ? "-" : "+") << "x" << c[j].x/2 << " af" << (int)assigns[c[j].x/2] << getFixed(c[j].x/2) << " " << vardata[c[j].x/2].level << " " << fixdata[c[j].x/2].level << endl;
+	}
+	int va = var(c[w1]);
+	for (int ii=0; ii < VarsInConstraints[va].size();ii++) {
+	  Constraint &cc = constraintallocator[VarsInConstraints[va][ii].cr];
+
+          if (constraints[i] == VarsInConstraints[va][ii].cr)
+	    cerr << "Info to w1 " << w1 << " constraint: x" << va << " in VarsInCon:" << ii << " constraint:" << i << endl;
+	}
+	va = var(c[w2]);
+	for (int ii=0; ii < VarsInConstraints[va].size();ii++) {
+	  Constraint &cc = constraintallocator[VarsInConstraints[va][ii].cr];
+
+          if (constraints[i] == VarsInConstraints[va][ii].cr)
+	    cerr << "Info to w2 " << w2 << " constraint: x" << va << " in VarsInCon:" << ii << " constraint:" << i << endl;
+	}
+	assert(0);
+      }
+    }
+  }
+  return;
+  for (int va=0; va < nVars();va++) {
+    if (assigns[va] != extbool_Undef) continue;
+    for (int i=0; i < VarsInConstraints[va].size();i++) {
+      Constraint &c = constraintallocator[VarsInConstraints[va][i].cr];
+      if (!c.header.isSat) continue;
+      int pos = VarsInConstraints[va][i].pos;
+      int s = sign(c[pos]);
+      if (c.header.isSat && c.header.btch1.watch1 == -2) continue;
+      if (0/*c.saveInfeas(pos, val, getFixed(va), va, assigns, eas)*/) {
+	continue;
+      } else 	if (c.header.isSat && pos != c.header.btch1.watch1  && pos != c.header.wtch2.watch2) {
+	assert(0);
+      }
+    }
+  }
+}
+
 void QBPSolver::SATAddWatcher(Constraint &c, ca_vec<CoeVar> &ps, CRef cr, int v, int pos){
     VarsInConstraints[var(ps[pos])].push(ConstraintPositionPair(cr,pos,c.header.btch1.watch1,c.header.wtch2.watch2));
     ps[pos].pt2vic = VarsInConstraints[var(ps[pos])].size()-1;
@@ -246,8 +322,11 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, boo
      }
      }*/
     if ((decisionLevel()>0 && isFixed(va) && getFixed(va) == 1-val)) {
-        cerr << "ALARM2 assign " << va << " in level" << decisionLevel() << "mit reason " << from << " und fixlevel=" << fixdata[va].level << endl;
+      cerr << "Error: ALARM2 assign " << va << " in level" << decisionLevel() << "mit reason " << from << " und fixlevel=" << fixdata[va].level << " isUNIV?" << (eas[va]==UNIV) << endl;
         //assert(0);
+      if (eas[va]==UNIV) {
+	setFixed(va, extbool_Undef, -4, CRef_Undef);
+      } else
         return fixdata[va].reason;
     }
     //cout << "assign " << va << " in level" << decisionLevel() << "mit reason " << from << endl;
@@ -398,20 +477,28 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, boo
                             tmp_lowerBounds[rvar] = lby;
                             if (info_level > 1) cerr << "d1";
                             if (info_level > 1) cerr << "verbessere x" << rvar << ": [" << lowerBounds[rvar] << "," << upperBounds[rvar] << "] -> [" << lby << "," << upperBounds[rvar] << "]" << endl;
-                            std::pair< std::pair<double, double>, int> BndMv;
-                            BndMv.first.first = lowerBounds[rvar];
-                            BndMv.first.second = upperBounds[rvar];
-                            BndMv.second = rvar;
+			    std::pair< 
+			      std::pair< std::pair<double, double>, int>,
+			      std::pair<CRef, int>		  
+			      > BndMv;
+                            //std::pair< std::pair<double, double>, int> BndMv;
+                            BndMv.first.first.first = lowerBounds[rvar];
+                            BndMv.first.first.second = upperBounds[rvar];
+                            BndMv.first.second = rvar;
                             listOfBoundMvs.push(BndMv);
                         }
                         if (uby < tmp_upperBounds[rvar]) {
                             tmp_upperBounds[rvar] = uby;
                             if (info_level > 1) cerr << "d2";
                             if (info_level > 1) cerr << "verbessere x" << rvar << ": [" << lowerBounds[rvar] << "," << upperBounds[rvar] << "] -> [" << lowerBounds[rvar] << "," << uby << "]" << endl;
-                            std::pair< std::pair<double, double>, int> BndMv;
-                            BndMv.first.first = lowerBounds[rvar];
-                            BndMv.first.second = upperBounds[rvar];
-                            BndMv.second = rvar;
+			    std::pair< 
+			      std::pair< std::pair<double, double>, int>,
+			      std::pair<CRef, int>		  
+			      > BndMv;
+                            //std::pair< std::pair<double, double>, int> BndMv;
+                            BndMv.first.first.first = lowerBounds[rvar];
+                            BndMv.first.first.second = upperBounds[rvar];
+                            BndMv.first.second = rvar;
                             listOfBoundMvs.push(BndMv);
                         }
                     }
@@ -442,10 +529,14 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, boo
                             tmp_lowerBounds[rvar] = lby;
                             if (info_level > 1) cerr << "d3";
                             if (info_level > 1) cerr << "verbessere x" << rvar << ": [" << lowerBounds[rvar] << "," << upperBounds[rvar] << "] -> [" << lby << "," << upperBounds[rvar] << "]" << endl;
-                            std::pair< std::pair<double, double>, int> BndMv;
-                            BndMv.first.first = lowerBounds[rvar];
-                            BndMv.first.second = upperBounds[rvar];
-                            BndMv.second = rvar;
+			    std::pair< 
+			      std::pair< std::pair<double, double>, int>,
+			      std::pair<CRef, int>		  
+			      > BndMv;
+                            //std::pair< std::pair<double, double>, int> BndMv;
+                            BndMv.first.first.first = lowerBounds[rvar];
+                            BndMv.first.first.second = upperBounds[rvar];
+                            BndMv.first.second = rvar;
                             listOfBoundMvs.push(BndMv);
                         }
                         if (uby < tmp_upperBounds[rvar]) {
@@ -456,10 +547,14 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, boo
                                 cerr << c[jj].coef << "x" << var(c[jj]) << " + ";
                             }
                             if (info_level > 1) cerr << " 0  >= " << c.header.rhs << endl;
-                            std::pair< std::pair<double, double>, int> BndMv;
-                            BndMv.first.first = lowerBounds[rvar];
-                            BndMv.first.second = upperBounds[rvar];
-                            BndMv.second = rvar;
+			    std::pair< 
+			      std::pair< std::pair<double, double>, int>,
+			      std::pair<CRef, int>		  
+			      > BndMv;
+                            //std::pair< std::pair<double, double>, int> BndMv;
+                            BndMv.first.first.first = lowerBounds[rvar];
+                            BndMv.first.first.second = upperBounds[rvar];
+                            BndMv.first.second = rvar;
                             listOfBoundMvs.push(BndMv);
                         }
                     }
@@ -658,10 +753,14 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, boo
                 
                 assert(rvar < nVars() && rvar > -1);
                 
-                std::pair< std::pair<double, double>, int> BndMv;
-                BndMv.first.first =  c.header.wtch2.worst;
-                BndMv.first.second = c.header.btch1.best;
-                BndMv.second = -(int)cr-1;
+		std::pair< 
+		  std::pair< std::pair<double, double>, int>,
+		  std::pair<CRef, int>		  
+		  > BndMv;
+                //std::pair< std::pair<double, double>, int> BndMv;
+                BndMv.first.first.first =  c.header.wtch2.worst;
+                BndMv.first.first.second = c.header.btch1.best;
+                BndMv.first.second = -(int)cr-1;
                 listOfBoundMvs.push(BndMv);
                 upperBounds[rvar] = tmp_upperBounds[rvar];
                 lowerBounds[rvar] = tmp_lowerBounds[rvar];
@@ -739,7 +838,7 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, int
             return ASSIGN_UNIV_FAIL;
         }
     if ((decisionLevel()>0 && isFixed(va) && getFixed(va) == 1-val)) {
-        cerr << "ALARM assign " << va << " in level" << decisionLevel() << "mit reason " << from << endl;
+        cerr << "Error: ALARM assign " << va << " in level" << decisionLevel() << "mit reason " << from << endl;
         return fixdata[va].reason;
     }
     if (VarsInConstraints[va].size() == 0) {
@@ -888,10 +987,14 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, int
                             tmp_lowerBounds[rvar] = lby;
                             if (info_level > 1) cerr << "d5";
                             if (info_level > 1) cerr << "verbessere x" << rvar << ": [" << lowerBounds[rvar] << "," << upperBounds[rvar] << "] -> [" << lby << "," << upperBounds[rvar] << "]" << endl;
-                            std::pair< std::pair<double, double>, int> BndMv;
-                            BndMv.first.first = lowerBounds[rvar];
-                            BndMv.first.second = upperBounds[rvar];
-                            BndMv.second = rvar;
+			    std::pair< 
+			      std::pair< std::pair<double, double>, int>,
+			      std::pair<CRef, int>		  
+			      > BndMv;
+                            //std::pair< std::pair<double, double>, int> BndMv;
+                            BndMv.first.first.first = lowerBounds[rvar];
+                            BndMv.first.first.second = upperBounds[rvar];
+                            BndMv.first.second = rvar;
                             listOfBoundMvs.push(BndMv);
                             
                         }
@@ -899,10 +1002,14 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, int
                             tmp_upperBounds[rvar] = uby;
                             if (info_level > 1) cerr << "d6";
                             if (info_level > 1) cerr << "verbessere x" << rvar << ": [" << lowerBounds[rvar] << "," << upperBounds[rvar] << "] -> [" << lowerBounds[rvar] << "," << uby << "]" << endl;
-                            std::pair< std::pair<double, double>, int> BndMv;
-                            BndMv.first.first = lowerBounds[rvar];
-                            BndMv.first.second = upperBounds[rvar];
-                            BndMv.second = rvar;
+			    std::pair< 
+			      std::pair< std::pair<double, double>, int>,
+			      std::pair<CRef, int>		  
+			      > BndMv;
+                            //std::pair< std::pair<double, double>, int> BndMv;
+                            BndMv.first.first.first = lowerBounds[rvar];
+                            BndMv.first.first.second = upperBounds[rvar];
+                            BndMv.first.second = rvar;
                             listOfBoundMvs.push(BndMv);
                         }
                     }
@@ -933,20 +1040,28 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, int
                             tmp_lowerBounds[rvar] = lby;
                             if (info_level > 1) cerr << "d7";
                             if (info_level > 1) cerr << "verbessere x" << rvar << ": [" << lowerBounds[rvar] << "," << upperBounds[rvar] << "] -> [" << lby << "," << upperBounds[rvar] << "]" << endl;
-                            std::pair< std::pair<double, double>, int> BndMv;
-                            BndMv.first.first = lowerBounds[rvar];
-                            BndMv.first.second = upperBounds[rvar];
-                            BndMv.second = rvar;
+			    std::pair< 
+			      std::pair< std::pair<double, double>, int>,
+			      std::pair<CRef, int>		  
+			      > BndMv;
+                            //std::pair< std::pair<double, double>, int> BndMv;
+                            BndMv.first.first.first = lowerBounds[rvar];
+                            BndMv.first.first.second = upperBounds[rvar];
+                            BndMv.first.second = rvar;
                             listOfBoundMvs.push(BndMv);
                         }
                         if (uby < tmp_upperBounds[rvar]) {
                             tmp_upperBounds[rvar] = uby;
                             if (info_level > 1) cerr << "d8";
                             if (info_level > 1) cerr << "verbessere x" << rvar << ": [" << lowerBounds[rvar] << "," << upperBounds[rvar] << "] -> [" << lowerBounds[rvar] << "," << uby << "]" << endl;
-                            std::pair< std::pair<double, double>, int> BndMv;
-                            BndMv.first.first = lowerBounds[rvar];
-                            BndMv.first.second = upperBounds[rvar];
-                            BndMv.second = rvar;
+			    std::pair< 
+			      std::pair< std::pair<double, double>, int>,
+			      std::pair<CRef, int>		  
+			      > BndMv;
+                            //std::pair< std::pair<double, double>, int> BndMv;
+                            BndMv.first.first.first = lowerBounds[rvar];
+                            BndMv.first.first.second = upperBounds[rvar];
+                            BndMv.first.second = rvar;
                             listOfBoundMvs.push(BndMv);
                         }
                     }
@@ -1158,10 +1273,14 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, int
                 
                 assert(rvar < nVars() && rvar > -1);
                 
-                std::pair< std::pair<double, double>, int> BndMv;
-                BndMv.first.first =  c.header.wtch2.worst;
-                BndMv.first.second = c.header.btch1.best;
-                BndMv.second = -(int)cr-1;
+		std::pair< 
+		  std::pair< std::pair<double, double>, int>,
+		  std::pair<CRef, int>		  
+		  > BndMv;
+                //std::pair< std::pair<double, double>, int> BndMv;
+                BndMv.first.first.first =  c.header.wtch2.worst;
+                BndMv.first.first.second = c.header.btch1.best;
+                BndMv.first.second = -(int)cr-1;
                 listOfBoundMvs.push(BndMv);
                 upperBounds[rvar] = tmp_upperBounds[rvar];
                 lowerBounds[rvar] = tmp_lowerBounds[rvar];
@@ -1229,6 +1348,10 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, int
 void QBPSolver::unassign(int vcon, bool useDM, bool keepAssign) {
     int var = trail.last();
     int dl = vardata[var].level;
+    if (assigns[vcon]==extbool_Undef) {
+      cerr << "Error: do not unassign as variable is not assigned." << endl;
+      return;
+    }
     if (vardata[var].reason != CRef_Undef) dl--;
     if (dl > 0) {
       if (vcon != var) {
@@ -1246,9 +1369,9 @@ void QBPSolver::unassign(int vcon, bool useDM, bool keepAssign) {
     assert(assigns[var] != extbool_Undef);
         
     while(listOfBoundMvs.size() > listOfBoundMvs_lim[trail.size()-1]) {
-        int var = listOfBoundMvs[listOfBoundMvs.size()-1].second;
-        double l = listOfBoundMvs[listOfBoundMvs.size()-1].first.first;
-        double u = listOfBoundMvs[listOfBoundMvs.size()-1].first.second;
+        int var = listOfBoundMvs[listOfBoundMvs.size()-1].first.second;
+        double l = listOfBoundMvs[listOfBoundMvs.size()-1].first.first.first;
+        double u = listOfBoundMvs[listOfBoundMvs.size()-1].first.first.second;
         assert(u >= l);
         //((yInterface*)yIF)->qlpRelax.setUpperBound geht nicht
         if (!keepAssign || vardata[vcon].level > 0) { // auf Level 0 gesetzte Variablen bleiben gesetzt
@@ -1348,7 +1471,7 @@ void QBPSolver::unassign(int vcon, bool useDM, bool keepAssign) {
 
 }
 
-int64_t QBPSolver::hs_assign(int va, int val, int t, CRef from, bool &conflict) {
+int64_t QBPSolver::hs_assign(float alpha, int va, int val, int t, CRef from, bool &conflict) {
     //return ASSIGN_OK;;
     settime[va] = t;
     assigns[va] = val;
@@ -1506,7 +1629,7 @@ bool QBPSolver::addObjective(ca_vec<CoeVar>& ps, coef_t c)
         add_c.header.learnt = false;
         add_c.header.largest = largest;
         add_c.header.mark = 0;
-        add_c.header.watched = 1;
+        add_c.header.dirty = 0;
         add_c.header.act = 1.0;
         for (int i = 0; i < ps.size(); i++) {
             VarsInConstraints[var(ps[i])].push(ConstraintPositionPair(cr,i,add_c.header.btch1.best,add_c.header.wtch2.worst));
@@ -1570,9 +1693,7 @@ bool QBPSolver::addConstraint_(ca_vec<CoeVar>& ps, coef_t c, int settim, bool le
     bool usedRed=false;
     //assert(!isUniversal);
     bool wasSAT = myc.isSatConstraint(ps,c, type.getData());
-
-    bool StoreUnivConsEx=getUniversalConstraintsExist();
-    bool StoreUnivPoly=isUniversalPolytope();
+    
 //#define SIMPLIFY_IN_PRESENCE_OF_UNIV_CONSTRAINT
 #ifdef SIMPLIFY_IN_PRESENCE_OF_UNIV_CONSTRAINT
     if (!isUniversal) simplify1(ps,myc.isSatConstraint(ps,c, type.getData()), true, usedRed);
@@ -1618,6 +1739,7 @@ int OrgB=-1;
 bool NotMoreThanTwo=true;
 int MinBlock=maxBlock;
 int MaxBlock=0;
+
 for (int i = 0; i < ps.size(); i++) {
     if(isUniversal && eas[var(ps[i])]==EXIST) UniversalPolytope=false;
     if(isUniversal /*&& eas[var(ps[i])]==UNIV*/ && block[var(ps[i])]>MaxBlock) MaxBlock=block[var(ps[i])];
@@ -1690,10 +1812,6 @@ if (NotMoreThanTwo){
  			}
 		//}
 		//assert(((yInterface*)yIF)->integers[var(ps[0])].org_ub-((yInterface*)yIF)->integers[var(ps[0])].org_lb==-c);
-		if(isUniversal && eas[var(ps[0])]==EXIST){
-		    UniversalConstraintsExist = StoreUnivConsEx;
-		    UniversalPolytope = StoreUnivPoly;
-		}
 		IntegerBoundConstraint=true;
 	}
 	else if(TypeA!=TypeB && indB!= -1 && c==0){
@@ -1825,13 +1943,11 @@ if (NotMoreThanTwo){
     }
     else {
       if (ps.size()==1){
-        if(eas[var(ps[0])]==UNIV && !isUniversal){
-            if(getShowWarning()) cerr << "WARNING: Existential constraint of size one found that results in the fixation of a universal variable. Fixation ommitted. Results in loss for existential player. Use BOUNDS section instead to fix variables" <<endl;
-        }
-        else if (eas[var(ps[0])]!=UNIV && isUniversal){
-            if(getShowWarning()) cerr << "WARNING: Universal constraint of size one found that results in the fixation of an existential variable. Fixation ommitted. Results in loss for existential player. Use BOUNDS section instead to fix variables" <<endl;
-	}
-	else assert(0);
+        if(eas[var(ps[0])]==UNIV && !isUniversal) {
+	  if (getShowWarning()) cerr << "WARNING: Existential constraint of size one found that results in the fixation of a universal variable. Fixation ommitted. Results in loss for existential player. Use BOUNDS section instead to fix variables" <<endl;
+        } else if (eas[var(ps[0])]!=UNIV && isUniversal) {
+	  if (getShowWarning()) cerr << "WARNING: Universal constraint of size one found that results in the fixation of an existential variable. Fixation ommitted. Results in loss for existential player. Use BOUNDS section instead to fix variables" <<endl;
+	} else assert(0);
       }
     Linf:;
         //Changed for All-Constraint
@@ -1869,7 +1985,7 @@ if (NotMoreThanTwo){
             if (containsReal && info_level >= 5) cerr << lowerBounds[var(ps[i])] << "," << upperBounds[var(ps[i])] << " - ";
             if (eas[var(ps[i])] == UNIV) cU=true;
         }
-        if (containsReal && getShowInfo()) cerr <<"Info: Contains Reals"<< endl;
+        if (containsReal && info_level >= 5) cerr << endl;
         if (add_c.isSatConstraint(ps,c, type.getData()) && !cU) {
             add_c.header.isSat = true;
             add_c.header.isClique = false;
@@ -1904,7 +2020,7 @@ if (NotMoreThanTwo){
         add_c.header.universal = isUniversal;
         add_c.header.isBndCon=iBC;
         add_c.header.rVar = rvar;
-        add_c.header.watched = 1;
+        add_c.header.dirty = 0;
         add_c.header.act = 1.0;
         add_c.header.DLD = 0;
         add_c.header.isIntBnd=(int)IntegerBoundConstraint;
@@ -2001,14 +2117,12 @@ if (NotMoreThanTwo){
                 else{
                     if(VarsInAllConstraints[var(ps[add_c.header.btch1.watch1])].size()==0)
                         VarsPresentInAllConstraints.push_back(var(ps[add_c.header.btch1.watch1]));
- 		    if(ps.size()>1 && VarsInAllConstraints[var(ps[add_c.header.wtch2.watch2])].size()==0)
-                        VarsPresentInAllConstraints.push_back(var(ps[add_c.header.wtch2.watch2]));
+ 		    if(VarsInAllConstraints[var(ps[add_c.header.wtch2.watch2])].size()==0)
+                         VarsPresentInAllConstraints.push_back(var(ps[add_c.header.wtch2.watch2]));
                     VarsInAllConstraints[var(ps[add_c.header.btch1.watch1])].push(ConstraintPositionPair(cr, add_c.header.btch1.watch1, add_c.header.btch1.watch1, add_c.header.wtch2.watch2));
                     add_c[add_c.header.btch1.watch1].pt2vic = VarsInAllConstraints[var(add_c[add_c.header.btch1.watch1])].size()-1;
-                    if(ps.size()>1){
-                        VarsInAllConstraints[var(ps[add_c.header.wtch2.watch2])].push(ConstraintPositionPair(cr, add_c.header.wtch2.watch2 , add_c.header.btch1.watch1, add_c.header.wtch2.watch2));
-                        add_c[add_c.header.wtch2.watch2].pt2vic = VarsInAllConstraints[var(add_c[add_c.header.wtch2.watch2])].size()-1;
-		    }
+                    VarsInAllConstraints[var(ps[add_c.header.wtch2.watch2])].push(ConstraintPositionPair(cr, add_c.header.wtch2.watch2 , add_c.header.btch1.watch1, add_c.header.wtch2.watch2));
+                    add_c[add_c.header.wtch2.watch2].pt2vic = VarsInAllConstraints[var(add_c[add_c.header.wtch2.watch2])].size()-1;
                 }
             } else {
                 add_c.header.btch1.watch1 = -2;
@@ -2033,7 +2147,7 @@ if (NotMoreThanTwo){
     return true;
 }
 
-bool QBPSolver::addLearnConstraint(ca_vec<CoeVar>& ps, coef_t c, int conf_var, bool isSat/* = true*/)
+bool QBPSolver::addLearnConstraint(ca_vec<CoeVar>& ps, coef_t c, int conf_var, bool isSat/* = true*/, float alpha /*= -1e30*/)
 {
 /*cerr << "AddLearn Constraint: " << endl;
         int rhsV=1;
@@ -2057,6 +2171,7 @@ bool QBPSolver::addLearnConstraint(ca_vec<CoeVar>& ps, coef_t c, int conf_var, b
     if (isSat) {
       cutSharpening( ps, c );
     }
+    sort(ps,IOL);
     if (USE_TRACKON > 0) {
         double lhs_v=0.0;
         for (int h=0;h<ps.size();h++) {
@@ -2148,9 +2263,16 @@ bool QBPSolver::addLearnConstraint(ca_vec<CoeVar>& ps, coef_t c, int conf_var, b
     if (used_mem > max_useable_mem ) {
         break_from_outside = true;
         for (int l=1;l<decisionLevel();l++) {
-            if (info_level & 2) cerr << (int)stack_val_ix[l];
-            stack_restart_ready[l] = true;
-            stack_save_val_ix[l] = stack_val_ix[l];
+	  stack_container &STACKz = search_stack.stack[l-1];
+	  //int8_t *valII = &stack_valII[(l)<<1];
+	  //int8_t &val_ixII = stack_val_ixII[l];
+	  int8_t *val = STACKz.val;
+	  int8_t &val_ix = STACKz.val_ix;
+	  //assert(stack_val_ixII[l] == STACKz.val_ix);
+	  //assert(val[0]==valII[0]);
+	  //assert(val[1]==valII[1]);      
+	  stack_restart_ready[l] = true;
+	  stack_save_val_ix[l] = val_ix;
         }
         return false;
     }
@@ -2178,7 +2300,7 @@ bool QBPSolver::addLearnConstraint(ca_vec<CoeVar>& ps, coef_t c, int conf_var, b
     learn_c.header.learnt = true;
     learn_c.header.largest = largest;
     learn_c.header.mark = 0;
-    learn_c.header.watched = 1;
+    learn_c.header.dirty = 0;
     learn_c.header.act = 1.0;
     learn_c.header.DLD = 0;
     if (!learn_c.header.isSat) {
@@ -2304,12 +2426,14 @@ bool QBPSolver::addLearnConstraint(ca_vec<CoeVar>& ps, coef_t c, int conf_var, b
             int pres_settime = settime[var(learn_c[k])];
             if (w1 > w2) { int tw=w1; w1 = w2; w2 = tw; }
             if (settime[var(ps[w1])] == pres_settime && settime[var(ps[w2])] == pres_settime) {
-                for (int i = 0; i < learn_c.size();i++)
-                    cout << (sign(learn_c[i]) ? "-" : "") << learn_c[i].coef << "x" << var(learn_c[i]) << (deleted(learn_c[i])?"D":"") << "(" << (int)assigns[var(learn_c[i])]<< "," << settime[var(learn_c[i])]<< "," << vardata[var(learn_c[i])].level << ")" << " + ";
-                cout << endl;
-                cout << "w1=" << learn_c.header.btch1.watch1 << " and w2=" << learn_c.header.wtch2.watch2 << endl;
-                cout << "worstval=" << worst_val << " and rhs=" << learn_c.header.rhs << endl;
-                cout << "Konfliktvar=" << conf_var << " cr=" << cr << endl;
+	      cerr << "Warning: " << endl;
+	      for (int i = 0; i < learn_c.size();i++)
+		cerr << (sign(learn_c[i]) ? "-" : "") << learn_c[i].coef << "x" << var(learn_c[i]) << (deleted(learn_c[i])?"D":"") << "(" << (int)assigns[var(learn_c[i])]<< "," << settime[var(learn_c[i])]<< "," << vardata[var(learn_c[i])].level << ")" << " + ";
+	      cerr << endl;
+	      cerr << "Warning cont. w1=" << learn_c.header.btch1.watch1 << " and w2=" << learn_c.header.wtch2.watch2 << endl;
+	      cerr << "Warning cont. worstval=" << worst_val << " and rhs=" << learn_c.header.rhs << endl;
+	      cerr << "Warning cont. Konfliktvar=" << conf_var << " cr=" << cr << endl;
+	      return false;
             }
             assert(settime[var(ps[w1])] != pres_settime || settime[var(ps[w2])] != pres_settime);
             if (settime[var(ps[w1])] == pres_settime) { // wurde die Variable unter w1 gesetzt?
@@ -2465,7 +2589,6 @@ if (isReal) {
     listOfBoundMvs_lim.push(0);
     brokenCnt.push(0);
     cnt_goms.push(0);
-    listOfGoms_lim.push(0);
     num_conflicts_per_level.push(0);
     num_leaves.push(0);
     fstStSol.push_back(0.0);
@@ -2479,8 +2602,8 @@ if (isReal) {
     eas      .push(ea);
     isPseudoGeneral.push(false);
     trail    .capacity(v+3);
-    stack_val_ix.capacity(v+2);
-    stack_val.capacity(2*v+4);
+    //stack_val_ixII.capacity(v+2);
+    //stack_valII.capacity(2*v+4);
     stack_save_val_ix.capacity(v+2);
     stack_save_val.capacity(2*v+4);
     stack_restart_ready.push(false);
@@ -2508,12 +2631,13 @@ if (isReal) {
     AllpropQlimiter.push(0);
     VarsInAllConstraints.growTo(v+3);
     VaInCoBuffer.growTo(v+3);
+    lurkingBounds.growTo(v+30);
     unfixVar.growTo(v+30);
     locUnivClause.growTo(v+30);
     VIsFixed.push(extbool_Undef);
     litInClique.growTo(v+v+2);
     level_finished.capacity(v+2);
-    BackJumpInfo.capacity(v+2);
+    BackJumpInfoII.capacity(v+2);
     DM.setNVars(v);
     isInObj.push(numvars+10);
     num_vars = nVars();
@@ -3152,7 +3276,7 @@ bool QBPSolver::SearchNonBinarized(std::vector<data::QpNum> &startLPSol, std::ve
   for (int i = 0; i < startLPSol.size() && i < nVars();i++)  IPSol.push_back(RoundedSolution[i]);
   return true;                                                       
   if(checkIPsol(RoundedSolution)){
-    if(getShowInfo()) cerr <<"Info: IP Solution found"<<endl;
+    cerr <<"IP Solution found"<<endl;
     IPSol.clear();
     for (int i = 0; i < startLPSol.size() && i < nVars();i++)  IPSol.push_back(RoundedSolution[i]);
     return true;
@@ -3163,7 +3287,7 @@ bool QBPSolver::SearchNonBinarized(std::vector<data::QpNum> &startLPSol, std::ve
       else            value = value + c[j].coef*RoundedSolution[var(c[j])];
     }
     value -= objOffset;
-    if (getShowInfo()) cerr <<"Info: Value is " << value <<endl;
+    cerr <<"Value is " << value <<endl;
   }
   else return false;
           

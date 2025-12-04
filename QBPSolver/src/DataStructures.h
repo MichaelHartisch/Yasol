@@ -83,11 +83,15 @@ public:
         coef_t localbest;
         coef_t   rhs;
         float    act;
-        unsigned int rVar;
+        //unsigned int rVar;
+        union {uint32_t rVar; float alpha;};
+        // rVar is the position of the real variable of a isBndCon-constraint. Is only used when isBndCon==true.
+        // alpha is only used when constraint is learnt. A learnt one is never isBndCon and vice versa.
+      
         unsigned largest   : 29;
         unsigned mark      : 2;
         unsigned universal : 1;
-        unsigned watched   : 1;
+        unsigned dirty     : 1;
         unsigned learnt    : 1;
         unsigned isSat     : 1;
         unsigned isClique  : 1;
@@ -117,6 +121,7 @@ public:
         header.size      = ps.size();
         header.act       = 0.0;
         header.usedinAgg = 0;
+	header.dirty     = 0;
 
         int32_t *index_varix = (int32_t*)(&data[header.size]);
         cr_index_varix = index_varix - ((int32_t*)this);
@@ -206,8 +211,221 @@ public:
         return false;
     }
 
+  inline bool saveFeas(int8_t assigns[], int VIsFixed[], void *vardataVoid, void *fixdataVoid, int conf_var) {
+        VarData *vardata = (VarData*)vardataVoid;
+	VarData *fixdata = (VarData*)fixdataVoid;
+        if (!header.isSat) {
+	  double delta=0.0;
+	  if (conf_var >= 0 && assigns[conf_var]==2 && VIsFixed[conf_var]!=2) {
+	    double own_worst=0.0;
+	    for (int i = 0;i < size();i++) {
+	      if ((data[i].x>>1) == conf_var) {
+		if ((data[i].x & 1) == 1) own_worst -= data[i].coef; 
+	      } else {
+#ifdef OLD_ELSE
+		int va = data[i].x>>1;
+		assert(!(assigns[va]!=2 && VIsFixed[va]!=2 && assigns[va]!=VIsFixed[va]));
+		if (data[i].x & 1) {
+		  if (assigns[va]==1 || VIsFixed[va]==1)
+		    own_worst -= data[i].coef;
+		}
+#else
+		int va = data[i].x>>1;
+		int value;
+		if (assigns[va]!=2 && VIsFixed[va]!=2 && assigns[va]!=VIsFixed[va]) {
+		  std::cerr << "Warning. Safely feasible?" << std::endl;
+		  if (vardata[va].level <= fixdata[va].level)
+		    value = assigns[va];
+		  else
+		    value = VIsFixed[va];
+		} else if (assigns[va]==1) value = assigns[va];
+		else if (VIsFixed[va]==1) value = VIsFixed[va];
+		if (data[i].x & 1) {
+		  if (assigns[va]==1 || VIsFixed[va]==1)
+		    own_worst -= data[i].coef;
+		}
+#endif
+	      }
+	    }
+	    if (own_worst >= header.rhs)
+	      return true;
+	  } else {	    
+            if (header.wtch2.worst >= header.rhs) {
+                return true;
+            }
+	  }
+        } else {
+            if (header.btch1.watch1 == -2) return true;
+            if (size() == 1) {
+                int s1 = data[0].x & 1;
+                int v1 = data[0].x >> 1;
+		if (v1 != conf_var) {
+		  if (assigns[v1]!=2 && VIsFixed[v1]==2) {
+		    if      (s1 == 0 && assigns[v1] == 1) return true;
+		    else if (s1 == 1 && assigns[v1] == 0) return true;
+		  } else if (assigns[v1]==2 && VIsFixed[v1]!=2) {
+		    if      (s1 == 0 && VIsFixed[v1] == 1) return true;
+		    else if (s1 == 1 && VIsFixed[v1] == 0) return true;		  
+		  } else if (assigns[v1]!=2 && VIsFixed[v1]!=2) {
+		    if (vardata[v1].level <= fixdata[v1].level) {
+		      if      (s1 == 0 && assigns[v1] == 1) return true;
+		      else if (s1 == 1 && assigns[v1] == 0) return true;
+		    } else {
+		      if      (s1 == 0 && VIsFixed[v1] == 1) return true;
+		      else if (s1 == 1 && VIsFixed[v1] == 0) return true;		  
+		    }
+		  }
+		}
+                return false;
+            }
+
+            int s1 = data[header.btch1.watch1].x & 1;
+            int v1 = data[header.btch1.watch1].x >> 1;
+	    if (v1 != conf_var) {
+	      if (assigns[v1]!=2 && VIsFixed[v1]==2) {
+		if      (s1 == 0 && assigns[v1] == 1) return true;
+		else if (s1 == 1 && assigns[v1] == 0) return true;
+	      } else if (assigns[v1]==2 && VIsFixed[v1]!=2) {
+		if      (s1 == 0 && VIsFixed[v1] == 1) return true;
+		else if (s1 == 1 && VIsFixed[v1] == 0) return true;		  
+	      } else if (assigns[v1]!=2 && VIsFixed[v1]!=2) {
+		if (vardata[v1].level <= fixdata[v1].level) {
+		  if      (s1 == 0 && assigns[v1] == 1) return true;
+		  else if (s1 == 1 && assigns[v1] == 0) return true;
+		} else {
+		  if      (s1 == 0 && VIsFixed[v1] == 1) return true;
+		  else if (s1 == 1 && VIsFixed[v1] == 0) return true;		  
+		}
+	      }
+	    }
+	    
+            int v2 = data[header.wtch2.watch2].x >> 1;
+            int s2 = data[header.wtch2.watch2].x & 1;
+	    if (v2 != conf_var) {
+	      if (assigns[v2]!=2 && VIsFixed[v2]==2) {
+		if      (s2 == 0 && assigns[v2] == 1) return true;
+		else if (s2 == 1 && assigns[v2] == 0) return true;
+	      } else if (assigns[v2]==2 && VIsFixed[v2]!=2) {
+		if      (s2 == 0 && VIsFixed[v2] == 1) return true;
+		else if (s2 == 1 && VIsFixed[v2] == 0) return true;		  
+	      } else if (assigns[v2]!=2 && VIsFixed[v2]!=2) {
+		if (vardata[v2].level <= fixdata[v2].level) {
+		  if      (s2 == 0 && assigns[v2] == 1) return true;
+		  else if (s2 == 1 && assigns[v2] == 0) return true;
+		} else {
+		  if      (s2 == 0 && VIsFixed[v2] == 1) return true;
+		  else if (s2 == 1 && VIsFixed[v2] == 0) return true;		  
+		}
+	      }
+	    }
+        }
+        return false;
+    }
+
+    inline bool saveFeas(int8_t assigns[], int VIsFixed[], void *vardataVoid, void *fixdataVoid, ca_vec<int> &types, ca_vec<coef_t> &lBs, ca_vec<coef_t> &uBs, bool recompute=false) {
+      //if (header.watched == 0) return true;
+      VarData *vardata = (VarData*)vardataVoid;
+      VarData *fixdata = (VarData*)fixdataVoid;
+
+        if (!header.isSat) {
+            if (recompute) {
+                float worst=0.0, rhs;
+                for (int i = 0; i < size();i++) {
+                    if (types[var(data[i])] == 0/*BINARY*/ ) {
+                        if (!sign(data[i]) && assigns[var(data[i])] == 1) worst += data[i].coef;
+                        else if (sign(data[i]) && assigns[var(data[i])] == 1) worst -= data[i].coef;
+                        else if (sign(data[i]) && assigns[var(data[i])] == 2) worst -= data[i].coef;
+                    } else {
+                        if (sign(data[i])) { //Koeffizient < 0
+                            if (lBs[var(data[i])] >= 0) {
+                                worst = worst - data[i].coef * uBs[var(data[i])];
+                            } else if (uBs[var(data[i])] < 0) {
+                                worst = worst - data[i].coef * uBs[var(data[i])];
+                            }  else if (uBs[var(data[i])] >= 0 && lBs[var(data[i])] < 0) {
+                                worst = worst - data[i].coef * uBs[var(data[i])];
+                            } else assert(0); // darf nicht vorkommen.
+                        } else { //Koeffizient >= 0
+                            if (lBs[var(data[i])] >= 0) {
+                                worst = worst + data[i].coef * lBs[var(data[i])];
+                            } else if (uBs[var(data[i])] < 0) {
+                                worst = worst + data[i].coef * lBs[var(data[i])];
+                            }  else if (uBs[var(data[i])] >= 0 && lBs[var(data[i])] < 0) {
+                                worst = worst + data[i].coef * lBs[var(data[i])];
+                            } else assert(0); // darf nicht vorkommen.
+                        }
+                    }
+                }
+
+                if (worst >= header.rhs) return true;
+            } else if (header.wtch2.worst >= header.rhs) {
+                return true;
+            }
+        } else {
+            if (header.btch1.watch1 == -2) return true;
+            if (size() == 1) {
+                int s1 = data[0].x & 1;
+                int v1 = data[0].x >> 1;
+		if (assigns[v1]!=2 && VIsFixed[v1]==2) {
+		  if      (s1 == 0 && assigns[v1] == 1) return true;
+		  else if (s1 == 1 && assigns[v1] == 0) return true;
+		} else if (assigns[v1]==2 && VIsFixed[v1]!=2) {
+		  if      (s1 == 0 && VIsFixed[v1] == 1) return true;
+		  else if (s1 == 1 && VIsFixed[v1] == 0) return true;		  
+		} else if (assigns[v1]!=2 && VIsFixed[v1]!=2) {
+		  if (vardata[v1].level <= fixdata[v1].level) {
+		    if      (s1 == 0 && assigns[v1] == 1) return true;
+		    else if (s1 == 1 && assigns[v1] == 0) return true;
+		  } else {
+		    if      (s1 == 0 && VIsFixed[v1] == 1) return true;
+		    else if (s1 == 1 && VIsFixed[v1] == 0) return true;		  
+		  }
+		}
+                return false;
+            }
+
+            int s1 = data[header.btch1.watch1].x & 1;
+            int v1 = data[header.btch1.watch1].x >> 1;
+	    if (assigns[v1]!=2 && VIsFixed[v1]==2) {
+	      if      (s1 == 0 && assigns[v1] == 1) return true;
+	      else if (s1 == 1 && assigns[v1] == 0) return true;
+	    } else if (assigns[v1]==2 && VIsFixed[v1]!=2) {
+	      if      (s1 == 0 && VIsFixed[v1] == 1) return true;
+	      else if (s1 == 1 && VIsFixed[v1] == 0) return true;		  
+	    } else if (assigns[v1]!=2 && VIsFixed[v1]!=2) {
+	      if (vardata[v1].level <= fixdata[v1].level) {
+		if      (s1 == 0 && assigns[v1] == 1) return true;
+		else if (s1 == 1 && assigns[v1] == 0) return true;
+	      } else {
+		if      (s1 == 0 && VIsFixed[v1] == 1) return true;
+		else if (s1 == 1 && VIsFixed[v1] == 0) return true;		  
+	      }
+	    }
+	    
+            int v2 = data[header.wtch2.watch2].x >> 1;
+            int s2 = data[header.wtch2.watch2].x & 1;
+	    if (assigns[v2]!=2 && VIsFixed[v2]==2) {
+	      if      (s2 == 0 && assigns[v2] == 1) return true;
+	      else if (s2 == 1 && assigns[v2] == 0) return true;
+	    } else if (assigns[v2]==2 && VIsFixed[v2]!=2) {
+	      if      (s2 == 0 && VIsFixed[v2] == 1) return true;
+	      else if (s2 == 1 && VIsFixed[v2] == 0) return true;		  
+	    } else if (assigns[v2]!=2 && VIsFixed[v2]!=2) {
+	      if (vardata[v2].level <= fixdata[v2].level) {
+		if      (s2 == 0 && assigns[v2] == 1) return true;
+		else if (s2 == 1 && assigns[v2] == 0) return true;
+	      } else {
+		if      (s2 == 0 && VIsFixed[v2] == 1) return true;
+		else if (s2 == 1 && VIsFixed[v2] == 0) return true;		  
+	      }
+	    }
+        }
+        return false;
+    }
+
+    struct VarData { CRef reason; int level; int bndMvBegL; int bndMvBegU; };
+  
     inline bool saveFeas(int8_t assigns[], ca_vec<int> &types, ca_vec<coef_t> &lBs, ca_vec<coef_t> &uBs, bool recompute=false) {
-        if (header.watched == 0) return true;
+      //if (header.watched == 0) return true;
         if (!header.isSat) {
             if (recompute) {
                 float worst=0.0, rhs;

@@ -331,7 +331,10 @@ void QpExtSolCLP::setBase(extSol::QpExternSolver::QpExtSolBase& base) {
 }
 
 void QpExtSolCLP::setRayGuess(const std::vector<data::QpNum>& rayGuess) {/*not implemented, only needed for ToSimplex*/
-	//not supported
+#ifdef SHOW_EXTERN_SOLVER_WARNINGS
+    std::cerr << "info: my LP solver is based upon CLP." << std::endl;
+#endif
+    //not supported
 }
 
 void QpExtSolCLP::adaptToSolverMode(QpExtSolSolverMode m) {
@@ -370,8 +373,8 @@ void QpExtSolCLP::adaptToSolverMode(QpExtSolSolverMode m) {
 	//std::cerr << "Info: Tolarances: prim=" << pvalue << " dual:" << dvalue << std::endl;
 	}
 	//model.setDblParam( ClpPrimalTolerance, /*1e-9*/1e-12 * model.numberColumns() );
-			//model.setDblParam( ClpPrimalTolerance, /*1e-9*/1e-8 );
-			//model.setDblParam( ClpDualTolerance, /*1e-9*/1e-8 );
+	model.setDblParam( ClpDualTolerance, /*1e-9*/1e-7 );
+	model.setDblParam( ClpPrimalTolerance, /*1e-9*/1e-6 );
 
 #ifdef DISABLE_CBC_OUTPUT
 	model.setLogLevel(0);
@@ -1293,8 +1296,8 @@ void QpExtSolCLP::getReducedCosts(std::vector<data::QpNum>& reduced) {
 	//model.initialSolve();
 	model.scaling(/*2*/1+loops % 4);
 	model.setPerturbation(50);
-	model.setPrimalTolerance(1e-12);
 	model.setDualTolerance(1e-8) ;
+	model.setPrimalTolerance(/*1e-12*/1e-8);
 	if (loops > 4) {
 	  model.setPrimalTolerance(0.0);
 	  model.setDualTolerance(1e-8) ;
@@ -1711,6 +1714,54 @@ void QpExtSolCLP::initInternalLP_snapshot(const data::Qlp& qlp)
 	  
 	  std::vector<data::IndexedElement> org_lhs = conVec[i]->getElements();
 	  
+	  // split in leq-manner
+	  data::QpNum multiplier = 1.0;
+	  if (org_rhs.getRatioSign() == data::QpRhs::RatioSign::greaterThanOrEqual)
+	    multiplier = -1.0;
+	  std::vector<data::IndexedElement> negSummands;
+	  std::vector<data::IndexedElement> posSummands;
+	  std::vector<data::IndexedElement> indifferentSummands;
+	  for (int j=0; j < org_lhs.size();j++) {
+	    data::QpNum coef = org_lhs[j].value * multiplier;
+	    data::QpNum lb = varVec[org_lhs[j].index]->getLowerBound();
+	    data::QpNum ub = varVec[org_lhs[j].index]->getUpperBound();
+	    if (coef >= 0.0 && lb >= 0.0)
+	      posSummands.push_back(org_lhs[j]);
+	    else if (coef <= 0.0 && ub <= 0.0)
+	      posSummands.push_back(org_lhs[j]);
+	    else if (coef <= 0.0 && lb >= 0.0)
+	      negSummands.push_back(org_lhs[j]);
+	    else if (coef >= 0.0 && ub <= 0.0)
+	      negSummands.push_back(org_lhs[j]);
+	    else indifferentSummands.push_back(org_lhs[j]);
+	  }
+	  data::QpNum sumPosCoefs = 0.0;
+	  data::QpNum sumNegCoefs = 0.0;
+	  for (int j=0;j<negSummands.size();j++)
+	    sumNegCoefs = sumNegCoefs + fabs(negSummands[j].value.asDouble());
+	  for (int j=0;j<posSummands.size();j++)
+	    sumPosCoefs = sumPosCoefs + fabs(posSummands[j].value.asDouble());
+	  if (indifferentSummands.size() == 0) {
+	    if (negSummands.size() == 1 && posSummands.size() > 1 && varVec[negSummands[0].index]->getNumberSystem()==data::QpVar::binaries && org_rhs.getValue() < 1e-8 && org_rhs.getValue() > -1e-8) { // disaggregate
+	      data::QpNum gegSummand0 = (negSummands[0].value >= 0 ? negSummands[0].value : data::QpNum(-1.0)*negSummands[0].value);
+	      if ( gegSummand0 >= sumPosCoefs-1e-8 ) {
+		std::cerr << "disaggregate!" << std::endl;
+		for (int j=0;j<posSummands.size();j++) {
+		  std::vector<data::IndexedElement> dummy_lhs(1);
+		  dummy_lhs[0] = posSummands[j];
+		  data::QpRhs dummy_rhs;
+		  dummy_rhs.setRatioSign(data::QpRhs::RatioSign::smallerThanOrEqual);
+		  dummy_rhs.setValue(0.0);
+		  LHSs.push_back(dummy_lhs);
+		  RHSs.push_back(dummy_rhs);
+		  lazyRowIndicator.push_back(true);
+		  lazyRows.push_back(RHSs.size()-1);
+		  setStatus(RHSs.size()-1, computeStatus(dummy_lhs, dummy_rhs) );
+		}
+	      }
+	    }
+	  }
+
 	  LHSs.push_back(org_lhs);
 	  RHSs.push_back(org_rhs);
 	  lazyRowIndicator.push_back(true);

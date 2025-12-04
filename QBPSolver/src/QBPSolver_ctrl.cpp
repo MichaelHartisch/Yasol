@@ -60,7 +60,7 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     bool comp_finished = false;
     double result = n_infinity;
 
-    if (info_level > -8) cerr << "SEARCH INITIALIZATION in CTRL" << endl;
+    if (getShowInfo()) cerr << "SEARCH INITIALIZATION in CTRL" << endl;
     cerr.precision(17);
     if (info_level > -8) cerr << "set ifc:" << ifc << endl;
     yIF = ifc;
@@ -70,6 +70,7 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     old_num_conflicts = (int64_t)(-20);
     global_score = n_infinity;
     global_dual_bound= p_infinity;
+    max_var_index = nVars();
 
     BendersCutAlarm = false;
     end_by_empty_clause = false;
@@ -78,12 +79,13 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     // NEW FOR ALL_SYSTEM
     ExistLegalUntil =-1;
     AllLegalUntil=-1;
+    fixVarsIndices_init();
 
     always0.push_back(true);
     always1.push_back(true);
 
-    stack_val_ix.push(0);
-    stack_val.push(0);
+    //stack_val_ixII.push(0);
+    //stack_valII.push(0);
     AllpropQlimiter.push(0);
     AllpropQlimiter.push(0);
     stack_restart_ready.push(0);
@@ -102,7 +104,6 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     stack_restart_ready.push(false);
     listOfCuts_lim.push(0);
     listOfBoundMvs_lim.push(0);
-    listOfGoms_lim.push(0);
     p_activity .push(0);  //activity .push(rnd_init_act ? drand(random_seed) * 0.00001 : 0);
     n_activity .push(0);  //activity .push(rnd_init_act ? drand(random_seed) * 0.00001 : 0);
     p_pseudocost.push(0);  //activity .push(rnd_init_act ? drand(random_seed) * 0.00001 : 0);
@@ -122,7 +123,6 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     listOfBoundMvs_lim.push(0);
     brokenCnt.push(0);
     cnt_goms.push(0);
-    listOfGoms_lim.push(0);
     num_conflicts_per_level.push(0);
     num_leaves.push(0);
     fstStSol.push_back(0.0);
@@ -135,12 +135,13 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     VarLBval.push_back(0);
     VarUBval.push_back(0);
     VariableBound.push_back({false,false,0,0,-1,-1,false});
-
+    float alpha1=(float)constraintallocator[constraints[0]].header.rhs;
+    
     data::Qlp qlp = ((yInterface*)yIF)->qlpRelax;//QlpStSolve->qlp;//((yInterface*)yIF)->qlpRelax;
     utils::QlpStageSolver *QlpStTmpPt=0;
     QlpStSolve->getExternSolver(maxLPStage).initInternalLP_snapshot(qlp);
 
-    int LPvarSize = resizer.expandLp2Qlp(true,top_scenarios,qlp, block, eas, nVars(),&QlpStSolve,&QlpStTmpPt,maxLPStage, this, type, killer.getData(), assigns,  /*-constraintallocator[constraints[0]].header.rhs*/-global_score, -global_dual_bound, useLazyLP, info_level);
+    int LPvarSize = resizer.expandLp2Qlp(true,top_scenarios,qlp, block, eas, nVars(),&QlpStSolve,&QlpStTmpPt,maxLPStage, this, type, killer.getData(), assigns,  /*-constraintallocator[constraints[0]].header.rhs*/-global_score, -global_dual_bound, useLazyLP, info_level, max_var_index);
     //int LPvarSize = resizer.shrinkLp(top_scenarios,qlp, block, eas, nVars(),&QlpStSolve,&QlpStTmpPt,maxLPStage, this, type, killer.getData(), assigns, -global_score, -global_dual_bound, useLazyLP, info_level);
     delete QlpStSolve;
     QlpStSolve = QlpStTmpPt;
@@ -148,7 +149,8 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     int m1 = QlpStSolve->getExternSolver( maxLPStage ).getRowCount();
     rootLPsol.capacity(nVars()+10);
     rootLPsolEx = false;
-
+    lurkingBounds[0].iniLurkingBounds(lurking, nVars());
+ 
     GlSc2 = n_infinity;
 
     InitPV(100);
@@ -189,6 +191,8 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
       initFixed(i);
       seen[i] = 0;
       propQ.clear();
+      vardata[i].bndMvBegL = -1;
+      vardata[i].bndMvBegU = -1;
       //cerr << "x" << i << "," << VarsInConstraints[i].size() << " | ";
       if (eas[i]==EXIST && (type[i] == INTEGER ||type[i] == BINARY)) {
 	if (assigns[i] == extbool_Undef && fabs(lowerBounds[i] - upperBounds[i]) < 1e-3) {
@@ -196,15 +200,15 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
 	  if (type[i] == BINARY) {
 	    assert(isZero(lowerBounds[i],1e-9) || isOne(upperBounds[i],1e-9));
 	    if(getShowInfo()) cerr << "Info: Binary already fixed: x_" << i << "=" << (lowerBounds[i] < 0.5 ? 0 : 1) << endl;
-	    oob = assign(i, lowerBounds[i] < 0.5 ? 0 : 1, trail.size(),CRef_Undef, false);
+	    oob = assign(alpha1, i, lowerBounds[i] < 0.5 ? 0 : 1, trail.size(),CRef_Undef, false);
 	  } else
-	    oob = real_assign(i, 0.5*(lowerBounds[i]+upperBounds[i]), trail.size(),CRef_Undef);
+	    oob = real_assign(alpha1,i, 0.5*(lowerBounds[i]+upperBounds[i]), trail.size(),CRef_Undef);
 
 	  if (oob != ASSIGN_OK) {
 	    if(getShowInfo()) cerr << "Info: contradicting input" << endl;
 	    return n_infinity;
 	  } else {
-	    if (!propagate(confl, confl_var, confl_partner,false,false,1000000)) {
+	    if (!propagate(alpha1,confl, confl_var, confl_partner,false,false,1000000)) {
 	      if (getShowInfo()) cerr << "Info: INFEASIBLE PREPROCESS!" << endl;
 	      PurgeTrail(trail.size()-1,decisionLevel()-1);
 	      return n_infinity;
@@ -358,7 +362,7 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
 	    // TODO falls ja, kann UNIVERSAL auf anderen Wert fixiert werden !?
 	    int64_t oob;
 	    if (type[cpropQ[uuu].first] == BINARY)
-	      oob = assign(cpropQ[uuu].first,cpropQ[uuu].second > 0.5 ? 1 : 0, trail.size(),CRef_Undef, true);
+	      oob = assign(alpha1,cpropQ[uuu].first,cpropQ[uuu].second > 0.5 ? 1 : 0, trail.size(),CRef_Undef, true);
 	    else
 	      oob = ASSIGN_OK;//real_assign(cpropQ[uuu].first, cpropQ[uuu].second, trail.size(),CRef_Undef);
 
@@ -375,7 +379,7 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
 	      PurgeTrail(trail.size()-1,decisionLevel()-1);
 	      return n_infinity;
 	    }
-	    if (!propagate(confl, confl_var, confl_partner,false,false,1000000)) {
+	    if (!propagate(alpha1,confl, confl_var, confl_partner,false,false,1000000)) {
 	      if (1||info_level >= 2) cerr << "3a:INFEASIBLE 2!" << endl;
 	      PurgeTrail(trail.size()-1,decisionLevel()-1);
 	      return n_infinity;
@@ -397,6 +401,52 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     cpropQ.clear();
     reduceDB(true); //includes updateColumns();
     //cerr << "enter initBlocks..." << block.size() << endl;
+    int PPHres = 0;//preparePPH();
+    if (PPHres > 0) {
+      cerr << "Info: computation can be finished. Highs preprocessing has solved it" << endl;
+      assert(0);
+    } else if (PPHres < 0) {
+      cerr << "Error: Highs initialization failed." << endl;
+      assert(0);
+    }
+    double ObjectiveValue=dont_know;
+    std::vector<data::QpNum> solutionTmp;
+
+    PPHres = 0;//rampupPPH(solutionTmp,ObjectiveValue /*,false*/);
+    if (PPHres == 11 && maxBlock == 1) {
+      assert(solutionTmp.size() == nVars());
+      global_score=-ObjectiveValue;
+      if (getMaintainPv() && 1 < PV.size() && global_score > stageValue[1]) {
+	stageValue[1] = global_score;
+	for (int iii = 0; iii < nVars();iii++) {
+	  PV[1][iii] = solutionTmp[iii].asDouble();
+	}					  
+	if (0/*LATE_PV_CP*/) {				
+	  for (int iii=0;iii<10;iii++) cerr << PV[1][iii];
+	  cerr << " -0.4-> " << stageValue[1] << endl;	  
+	}
+      }
+     
+      for (int iii = 0; iii < nVars();iii++) {
+	if (block[iii] == 1) {
+	  fstStSol[iii] = solutionTmp[iii].asDouble();
+	}
+	//if(type[iii]==BINARY && eas[iii]==EXIST)
+	//	killer[iii] =(IntegerSolution[iii].asDouble() < 0.5 ? 0 : 1);
+      }
+      //UpdForecast(fstStSol);
+      coef_t gap;
+      aliveTimer = time(NULL);
+      gap = fabs(100.0*(-global_dual_bound + (-ObjectiveValue)) / (fabs(ObjectiveValue)+1e-10) );
+      progressOutput("++++h", global_score, global_dual_bound, true, objInverted,0);
+      uviRELA_Suc = 1.0;
+      uviRELA_cnt = 1.0;
+      deltaMiniS_time = time(NULL);
+      //lastMBCwasSuccess =true;
+      strongExtSol = true;
+    }
+    //searchPPH(solutionTmp,ObjectiveValue /*,false*/);
+    iniListOfBndCon();
     return 0.0;
 }
 
@@ -406,7 +456,8 @@ coef_t QBPSolver::searchRelaxation(int t, void *ifc, std::vector<data::IndexedEl
   HTCutentry *HTCe;
   pair<coef_t, uint64_t> hash;
   if(getShowInfo()) cerr << "info: SEARCH RELAXATION in CTRL" << endl;
-
+  float alpha1=(float)global_score;
+    
   if (restrictlhs.size() > 0) {
     learn_primBase.clear();
     for (int i = 0; i < restrictlhs.size();i++) {
@@ -451,13 +502,13 @@ coef_t QBPSolver::searchRestriction(int t, void *ifc, std::vector<data::IndexedE
   coef_t result;
   HTCutentry *HTCe;
   pair<coef_t, uint64_t> hash;
-  int remGom = listOfGoms.size();
   int remBndMvs = listOfBoundMvs.size();
   int remCuts = listOfEnteredCuts.size();
   int remConflGraphSize = CM.getConflictGraphSize();
   int remPrimalRestriction=-1;
   CRef remPrimalRestrictionCR=-1;
   //assert(decisionLevel() == 0);
+  float alpha1=(float)global_score;
 
   //return searchPrimal(t, ifc, alpha, beta);
   cerr << "SEARCH RESTRICTION in CTRL" << endl;
@@ -590,17 +641,17 @@ coef_t QBPSolver::searchRestriction(int t, void *ifc, std::vector<data::IndexedE
 
   // lösche alle Constraints der dualen Seite. Im StageSolve und im snapshot.
   while(listOfBoundMvs.size() > remBndMvs) { 
-    int  var = listOfBoundMvs[listOfBoundMvs.size()-1].second; 
-    double l = listOfBoundMvs[listOfBoundMvs.size()-1].first.first; 
-    double u = listOfBoundMvs[listOfBoundMvs.size()-1].first.second; 
+    int  var = listOfBoundMvs[listOfBoundMvs.size()-1].first.second; 
+    double l = listOfBoundMvs[listOfBoundMvs.size()-1].first.first.first; 
+    double u = listOfBoundMvs[listOfBoundMvs.size()-1].first.first.second; 
     upperBounds[var] = u; 
     lowerBounds[var] = l; 
     listOfBoundMvs.pop(); 
-  }                         
-  while(listOfGoms.size() > remGom) {   
-    cnt_goms[listOfGoms[listOfGoms.size()-1]]--; 
-    listOfGoms.pop();                            
-  }                                                
+  }
+  for (int i=0;i<nVars();i++) {
+    vardata[i].bndMvBegL = -1;
+    vardata[i].bndMvBegU = -1;    
+  }
   QlpStSolve->removeUserCutsFromCut(maxLPStage/*listOfEnteredCuts[remCuts].first*/); 
   while(listOfEnteredCuts.size() > 0/*remCuts*/) { 
     listOfEnteredCuts.pop();                          
@@ -685,6 +736,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
     if (info_level > -8) cerr << "SEARCH PRIMAL in CTRL" << endl;
 
     do {
+      float alpha1=(float)global_score;
       if (useDeep==0) usedDeep = false;
       else usedDeep = true;
       if (!feasPhase) { lmax_sd = nVars() + 10; useDeep = true; }
@@ -721,10 +773,14 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
       for (int hh = 0; hh < p_activity.size(); hh++) p_activity[hh] /= (num_learnts-old_num_learnts+1);//10000;
       old_num_learnts = num_learnts;
       coef_t score=n_infinity;
+      static int cnt=0;
       do {
+	cnt++;
 	if (USE_TRACKON > 0) assert(isOnTrack());
 	//max_learnts = max_learnts + max_learnts / 10 + 1;
-	if (propagate(confl, confl_var, confl_partner, false, false, 1000000)) {
+	for (int Z=0;Z<propQ.size();Z++)
+	  propQ[Z].cr = CRef_Undef;
+	if (propagate(alpha1,confl, confl_var, confl_partner, false, false, 1000000)) {
 	  if (info_level >= 3) cout << "Length of trail=" << trail.size() << "; length of propQ=" << propQ.size() << endl;
 	  int cnt_len2=0;
 	  int cnt_len1=0;
@@ -738,12 +794,12 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		if ( assigns[var(c[i])] == extbool_Undef ) len++;
 	      }
 	      // ist nicht mehr erlaubt, da restriction möglich sein sellen. if (len <= 2) c.header.learnt = 0; // TODO das ist nur eine Kr�cke, um zu verhindern, dass kurze Consraints gel�scht werden
-	      if (len == 2 && !c.saveFeas(assigns,type,lowerBounds,upperBounds,true)) cnt_len2++;
+	      if (len == 2 && !c.saveFeas(assigns,VIsFixed,(void*)vardata.getData(),(void*)fixdata.getData(),type,lowerBounds,upperBounds,true)) cnt_len2++;
 	      if (len == 1) {
 		// evtl. detach constraint?
 	      }
-	      if (len == 1 && !c.saveFeas(assigns,type,lowerBounds,upperBounds,true)) cnt_len1++;
-	      if (len == 1 && !c.saveFeas(assigns,type,lowerBounds,upperBounds,true) && c.header.isSat) {
+	      if (len == 1 && !c.saveFeas(assigns,VIsFixed,(void*)vardata.getData(),(void*)fixdata.getData(),type,lowerBounds,upperBounds,true)) cnt_len1++;
+	      if (len == 1 && !c.saveFeas(assigns,VIsFixed,(void*)vardata.getData(),(void*)fixdata.getData(),type,lowerBounds,upperBounds,true) && c.header.isSat && c.header.alpha <= constraintallocator[constraints[0]].header.rhs) {
 		for (int i=0; i < c.size(); i++) {
 		  if ( assigns[var(c[i])] == extbool_Undef && type[var(c[i])] == BINARY) {
 		    if (useFULLimpl || propQlimiter[c[i].x] <= 0) {
@@ -768,14 +824,15 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	  if (info_level > 1) cerr <<"Es gibt " << cnt_len2 << " constraints der Laenge 2 und " << cnt_len1 << "der Laenge 1" << endl;
 	  if (USE_TRACKON > 0) assert(isOnTrack());
 
-	  if (propagate(confl, confl_var, confl_partner,false,false,1000000)) {
+	  if (propagate(alpha1,confl, confl_var, confl_partner,false,false,1000000)) {
 	    max_sd = lmax_sd;
 	    lp_decider_depth = max_sd / lp_divider;
 	    if (break_from_outside) {
 	      break_from_outside = false;
 	      if (useWarmRestart) {
 		for (int l=1;l<nVars();l++) {
-		  stack_val_ix[l] = stack_save_val_ix[l];
+		  stack_container &STACKz = search_stack.stack[l-1];
+		  STACKz.val_ix /*= stack_val_ixII[l]*/ = stack_save_val_ix[l];
 		}
 	      } else {
 		for (int l=0;l<nVars();l++) {
@@ -800,10 +857,10 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	    for (int pick=0; type[pick]==BINARY && useMonotones && pick<nVars();pick++){
 	      if (assigns[pick] == extbool_Undef) {
 		if (eas[pick]==UNIV && useMonotones && (CW.getCWatcher(pick+pick) == -1 || (feasPhase && CW.getCWatcher(pick+pick) == 0)) ) {
-		  assign(pick,(eas[pick]==EXIST) ? 0 : 1, trail.size(),CRef_Undef, true);
+		  assign(alpha1,pick,(eas[pick]==EXIST) ? 0 : 1, trail.size(),CRef_Undef, true);
 		  if (info_level >= 3) cerr << "mon set " << pick << " = " << ((eas[pick]==EXIST) ? 0 : 1) << endl;
 		} else if (eas[pick]==UNIV && useMonotones && (CW.getCWatcher(pick+pick+1) == -1 || (feasPhase && CW.getCWatcher(pick+pick+1) == 0)) ) {
-		  assign(pick,(eas[pick]==EXIST) ? 1 : 0, trail.size(),CRef_Undef, true);
+		  assign(alpha1,pick,(eas[pick]==EXIST) ? 1 : 0, trail.size(),CRef_Undef, true);
 		  if (info_level >= 3) cerr << "mon set " << pick << " = " << ((eas[pick]==EXIST) ? 1 : 0) << endl;
 		}
 	      }
@@ -821,7 +878,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	    //utils::QlpStageSolver *QlpStageTmp = 0;
 	    QlpStageTmp = 0;
 	    if (useShadow && !feasPhase /*&& top_scenarios.size() > 0*/) {
-                            
+	      //top_scenarios.clear();   
 	      data::Qlp qlp = ((yInterface*)yIF)->qlpRelax;
 	      if (info_level > 1) cerr << "Precheck I " << qlp.getConstraintCount() << ", "<< ((yInterface*)yIF)->qlpRelax.getConstraintCount() << endl;
 	      if (info_level > 1) cerr << "Precheck II " << QlpStSolve->getExternSolver(maxLPStage).getRowCount() << ", "<< ((yInterface*)yIF)->qlp.getConstraintCount() << endl;
@@ -839,14 +896,11 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	      	data::Qlp qlpDeep = ((yInterface*)yIF)->qlpRelax;
 		ca_vec<Scenario_t> emptyScen;
 		emptyScen.clear();
-		resizer.expandLp2Qlp(false, emptyScen,qlpDeep, block, eas, nVars(),&QlpStSolveDeep,&QlpStSolve,maxLPStage, this, type, killer.getData(), assigns,  /*-constraintallocator[constraints[0]].header.rhs*/-global_score, -global_dual_bound, useLazyLP, info_level,0);
+		resizer.expandLp2Qlp(false, emptyScen,qlpDeep, block, eas, nVars(),&QlpStSolveDeep,&QlpStSolve,maxLPStage, this, type, killer.getData(), assigns,  /*-constraintallocator[constraints[0]].header.rhs*/-global_score, -global_dual_bound, useLazyLP, info_level,max_var_index,0);
+		//QlpStSolveDeep=NULL;
 #endif
-		int LPvarSize = resizer.expandLp2Qlp(false, top_scenarios,qlp, block, eas, nVars(),&QlpStSolve,&QlpStageTmp,maxLPStage, this, type, killer.getData(), assigns,  /*-constraintallocator[constraints[0]].header.rhs*/-global_score, -global_dual_bound, useLazyLP, info_level);
+		int LPvarSize = resizer.expandLp2Qlp(false, top_scenarios,qlp, block, eas, nVars(),&QlpStSolve,&QlpStageTmp,maxLPStage, this, type, killer.getData(), assigns,  /*-constraintallocator[constraints[0]].header.rhs*/-global_score, -global_dual_bound, useLazyLP, info_level, max_var_index);
 		{
-		  while(listOfGoms.size() > 0) {   
-		    cnt_goms[listOfGoms[listOfGoms.size()-1]]--; 
-		    listOfGoms.pop();                            
-		  }                                                
 		  while(listOfEnteredCuts.size() > 0) { 
 		    listOfEnteredCuts.pop();                          
 		    int li = listOfEnteredCutHashs.size()-1;          
@@ -876,7 +930,6 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		listOfCuts_lim[ii] = 0;
 		listOfBoundMvs_lim[ii] = 0;
 	      }
-	      listOfGoms.clear();
 	      //listOfEnteredCutHashs.clear();
 
 	      for (int i = 0; i < rembase.size();i++) {
@@ -925,9 +978,9 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		    if (assigns[cpropQ[uuu].first] == extbool_Undef && eas[cpropQ[uuu].first] != UNIV) {
 		      int64_t oob;
 		      if (type[cpropQ[uuu].first] == BINARY)
-			oob = assign(cpropQ[uuu].first,cpropQ[uuu].second > 0.5 ? 1 : 0, trail.size(),CRef_Undef, true);
+			oob = assign(alpha1,cpropQ[uuu].first,cpropQ[uuu].second > 0.5 ? 1 : 0, trail.size(),CRef_Undef, true);
 		      else
-			oob = real_assign(cpropQ[uuu].first, cpropQ[uuu].second, trail.size(),CRef_Undef);
+			oob = real_assign(alpha1,cpropQ[uuu].first, cpropQ[uuu].second, trail.size(),CRef_Undef);
 		      // TODO Pruefen ob cpropQ[uuu].first wirklich manchmal UNIV und wegen Monotonie gesetzt.
 		      // TODO falls ja, kann UNIVERSAL auf anderen Wert fixiert werden !?
 		      if (oob != ASSIGN_OK || eas[cpropQ[uuu].first] == UNIV) {
@@ -935,7 +988,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 			PurgeTrail(trail.size()-1,decisionLevel()-1);
 			return n_infinity;
 		      }
-		      if (!propagate(confl, confl_var, confl_partner,false,false,1000000)) {
+		      if (!propagate(alpha1,confl, confl_var, confl_partner,false,false,1000000)) {
 			if (1||info_level >= 2) cerr << "3:INFEASIBLE 2!" << endl;
 			PurgeTrail(trail.size()-1,decisionLevel()-1);
 			return n_infinity;
@@ -1003,7 +1056,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		  QlpStSolve->setVariableLB(i,0.0,type.getData());
 		  QlpStSolve->setVariableUB(i,1.0,type.getData());
 		  int ts = trail.size();
-		  int64_t oob = assign(i,val, trail.size(),CRef_Undef, true);
+		  int64_t oob = assign(alpha1,i,val, trail.size(),CRef_Undef, true);
 
 		  if (oob != ASSIGN_OK || eas[i] == UNIV) {
 		    if(getShowInfo()) cerr << "END as implied variable led to direct infeasibility." << endl;
@@ -1014,7 +1067,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		    vardata[i].level = 0;
 		    vardata[i].reason = CRef_Undef;
 		    settime[i] = 0;
-		    if (!propagate(confl, confl_var, confl_partner,false,false,1000000)) {
+		    if (!propagate(alpha1,confl, confl_var, confl_partner,false,false,1000000)) {
 		      if (info_level >= 2) cerr << "Error: Propagation did not work at root II." << endl;
 		      while (trail.size() > ts) {
 			insertVarOrder(trail[trail.size()-1]);
@@ -1043,14 +1096,14 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		      cerr << "Error: Search finished, but not noticed." << endl;
 		    } else {
 		      cerr << "Error: Variable not set although known from conflict table." << endl;
-		      int64_t oob = assign(i,fbct, trail.size(),CRef_Undef, true);
+		      int64_t oob = assign(alpha1,i,fbct, trail.size(),CRef_Undef, true);
 		      if (oob != ASSIGN_OK /*|| eas[uuu] == UNIV*/) {
 			if (info_level >= 2) cerr << "Error: cannot be fixed to that value." << endl;
 		      } else {
 			vardata[i].level = 0;
 			vardata[i].reason = CRef_Undef;
 			settime[i] = 0;
-			if (!propagate(confl, confl_var, confl_partner,false,false,1000000)) {
+			if (!propagate(alpha1,confl, confl_var, confl_partner,false,false,1000000)) {
 			  if (info_level >= 2) cerr << "Error: Propagation did not work at root." << endl;
 			} else {
 			  QlpStSolve->setVariableFixation(i,(double)assigns[i],type.getData());
@@ -1114,10 +1167,21 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	      //HTC->clear();
 	    }
 	    FollowPump=false;
-	    double gs_old = global_score;
-	    for (int i = 0; i < nVars();i++)
-	      if (assigns[i] != extbool_Undef && type[i] == BINARY)
-		QlpStSolve->setVariableFixation(i,(double)assigns[i],type.getData());
+            double gs_old = global_score;
+            bool univVarsExist=false;
+            for (int i = 0; i < nVars();i++) {
+              if (assigns[i] != extbool_Undef && type[i] == BINARY)
+                QlpStSolve->setVariableFixation(i,(double)assigns[i],type.getData());
+              if (eas[i]==UNIV) univVarsExist = true;
+            }
+	    for (int i = 0; i < constraints.size();i++) {
+	      Constraint &c = constraintallocator[constraints[i]];
+	      bool changed=false;
+	      if (!c.header.isSat)
+		makeFullBndsCheckAndCorrect(c, i, changed);
+	    }
+            if (!univVarsExist)
+              UniversalConstraintsExist = false;
 
 	    V = alphabeta_loop(t,lmax_sd ,start_a, start_b,false,p_infinity,-1,0, true, true,0,0,false, true);
 	    if (1||!break_from_outside) {
@@ -1231,10 +1295,14 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	  } else {
 	    v = n_infinity;
 	    break_from_outside = false;
+	    cerr << "Warning: propagation failed. Finished?" << endl;
+	    useWarmRestart = false;
 	  }
 	} else {
 	  v = n_infinity;
 	  break_from_outside = false;
+	  cerr << "Warning: propagation II failed. Finished?" << endl;
+	  useWarmRestart = false;	  
 	}
 	static ca_vec<ValueConstraintPair> buf_propQ;
 	buf_propQ.clear();
@@ -1247,6 +1315,18 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	  if (info_level >= 2) cerr << "isFi == true, weil Restart" << endl;
 	  isFi = true;
 	}
+        for (int i=0; i < constraints.size();i++) {
+          Constraint &c = constraintallocator[constraints[i]];
+          coef_t rhs = c.header.rhs;
+          double lb, ub;
+          
+          if (c.header.isSat) continue;
+          //if (c.saveFeas(assigns.getData())) continue;
+          
+          computeConstraintBoundsWithoutFix(c,lb,ub);
+          c.header.wtch2.worst = lb;
+          c.header.btch1.best = ub;
+        }
 	for (int uuu=0; !comp_finished && uuu < nVars(); uuu++) {
 	  if (getFixed(uuu) != extbool_Undef && assigns[uuu] == extbool_Undef) {
 	    if (eas[uuu] == UNIV) {
@@ -1254,13 +1334,13 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	      if (feasPhase) score = v = n_infinity;
 	      comp_finished = true;
 	    } else {
-	      int64_t oob = assign(uuu,getFixed(uuu), trail.size(),CRef_Undef, true);
+	      int64_t oob = assign(alpha1,uuu,getFixed(uuu), trail.size(),CRef_Undef, true);
 	      if (oob != ASSIGN_OK /*|| eas[uuu] == UNIV*/) {
 		if (info_level >= 2) cerr << "INFEASIBLE!" << endl;
 		if (feasPhase) score = v = n_infinity;
 		comp_finished = true;
 	      }
-	      if (!propagate(confl, confl_var, confl_partner,false,false,1000000)) {
+	      if (!propagate(alpha1,confl, confl_var, confl_partner,false,false,1000000)) {
 		if (info_level >= 2) cerr << "INFEASIBLE 2!" << endl;
 		if (feasPhase) score = v = n_infinity;
 		comp_finished = true;
@@ -1297,7 +1377,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	      comp_finished = true;
 	      break;
 	    } else if (assigns[propQ[ii].v>>1] == extbool_Undef) { // can occur when the implication comes from lp
-	      assign(propQ[ii].v>>1,1-(propQ[ii].v&1), trail.size(),CRef_Undef, true);
+	      assign(alpha1,propQ[ii].v>>1,1-(propQ[ii].v&1), trail.size(),CRef_Undef, true);
 	      if (info_level >= 2) cerr << "have fixed x" <<  (propQ[ii].v>>1) << " mit pQ_index=" << 0 << endl;
 	    } else if (assigns[propQ[ii].v>>1] == (propQ[ii].v&1)) {
 	      if (info_level >= 2) cerr << "contra implication" << endl;
@@ -1337,7 +1417,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	}
 	if ((info_level >= 5)) cerr << "some Info" << propQ.size() << " " << revImplQ.size() << " " << hasObjective << " " << v << " " << dont_know << endl;
 	if (end_by_empty_clause) {
-	  cerr << "Detected empty constraint" << endl;
+	  if(getShowInfo()) cerr << "Detected empty constraint" << endl;
 	  break;
 	}
 	if (comp_finished) break;
@@ -1458,7 +1538,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 
       if (next_level_inc > 2000 || !useRestarts) {
 	if (1/*||trail.size() > oldTrailSize*/) {
-	  for (int j = 0; j < constraints.size(); j++) {
+	  for (int j = 1; j < constraints.size(); j++) {
 	    CRef cr = constraints[j];
 	    Constraint &c = constraintallocator[cr];
 	    if (!c.header.isSat) {
@@ -1487,7 +1567,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		  cerr << "Info: from Check Ctrl Collection: infeasable. Constraint has " << c.size() << endl;
 		  for (int i = 0; i < c.size(); i++) {
 		    if (type[var(c[i])] ==BINARY && assigns[var(c[i])] == 0) continue;
-		    cerr << (sign(c[i]) ? "-":"" )<< (type[var(c[i])] == BINARY ? "x":"y")  << var(c[i]) << "=" << (int)assigns[var(c[i])]
+		    cerr << (sign(c[i]) ? "-":"" )<< (type[var(c[i])] == BINARY ? (eas[var(c[i])]==EXIST?"x":"X") :"y")  << var(c[i]) << "=" << (int)assigns[var(c[i])]
 			 << "(" << lowerBounds[var(c[i])] << "," <<  upperBounds[var(c[i])] << "," << (int)type[var(c[i])] << ")" << " + ";
 		  }
 		  cerr << " >=? " << c.header.rhs << " -> best=" << best << endl;
@@ -1554,10 +1634,10 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	  bool improvement = false;
 	  if (-v<best_objective) { best_objective = -v; improvement = true; }
 	  if (hasObjective) {
-	    gap = abs(100.0*(-global_dual_bound - best_objective) / (abs(best_objective)+1e-10) );
+	    gap = fabs(100.0*(global_dual_bound - global_score) / (0.5*abs(global_score+global_dual_bound)+1e-10) );
 	    if (info_level > 1) cerr << "Best Objective Value so far: " << best_objective << " ;GAP:" << gap << "% ;Global LB of Minimazation: " << -global_dual_bound << " Time:" << time(NULL)-starttime << " DecisionNodes: " << num_decs << endl;
 	  }
-	  if (gap >= -0.01 && gap < SOLGAP) {
+	  if (gap >= -0.01 && gap < SOLGAP*(break_from_outside?0.25:1.0)) {
 	    if(getShowInfo()) cerr << "Info: Minimum gap reached. bestO:" << best_objective << " gdb:" << global_dual_bound << " bfo:" << break_from_outside<< endl;
 	    break;
 	  }
@@ -1636,7 +1716,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	  if (cc.header.btch1.best < constraintallocator[constraints[0]].header.rhs) break;
 	  //cc.print(cc,assigns,false);
 	  if (info_level >= 5)  cerr << "fP=" << feasPhase << " bfo=" << break_from_outside << " impl0" << impl0 << " isFi=" << isFi << " uD=" << usedDeep << " uWR=" << useWarmRestart << endl;
-	  if (!feasPhase && !break_from_outside && /*!impl0 &&*/ usedDeep && !useWarmRestart/*&& !isFi*/) {
+	  if ((!feasPhase && !break_from_outside && /*!impl0 &&*/ usedDeep && !useWarmRestart /*&& !isFi*/) || global_dual_bound <= global_score) {
 	    if(getShowInfo()) cerr << "termination because fP=" << feasPhase << " bfo=" << break_from_outside << " impl0" << impl0 << " isFi=" << isFi << " uD=" << usedDeep << " uWR=" << useWarmRestart << endl;
 	    //char a;
 	    //cin >> a;
@@ -1707,9 +1787,9 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		if (assigns[cpropQ[uuu].first] == extbool_Undef && eas[cpropQ[uuu].first] != UNIV) {
 		  int64_t oob;
 		  if (type[cpropQ[uuu].first] == BINARY)
-		    oob = assign(cpropQ[uuu].first,cpropQ[uuu].second > 0.5 ? 1 : 0, trail.size(),CRef_Undef, true);
+		    oob = assign(alpha1,cpropQ[uuu].first,cpropQ[uuu].second > 0.5 ? 1 : 0, trail.size(),CRef_Undef, true);
 		  else
-		    oob = real_assign(cpropQ[uuu].first, cpropQ[uuu].second, trail.size(),CRef_Undef);
+		    oob = real_assign(alpha1,cpropQ[uuu].first, cpropQ[uuu].second, trail.size(),CRef_Undef);
 		  // TODO Pruefen ob cpropQ[uuu].first wirklich manchmal UNIV und wegen Monotonie gesetzt.
 		  // TODO falls ja, kann UNIVERSAL auf anderen Wert fixiert werden !?
 		  if (oob != ASSIGN_OK || eas[cpropQ[uuu].first] == UNIV) {
@@ -1721,7 +1801,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		      return best_objective;
 		    //return n_infinity;
 		  }
-		  if (!propagate(confl, confl_var, confl_partner,false,false,1000000)) {
+		  if (!propagate(alpha1,confl, confl_var, confl_partner,false,false,1000000)) {
 		    if (1||info_level >= 2) cerr << "3:INFEASIBLE 2!" << endl;
 		    PurgeTrail(trail.size()-1,decisionLevel()-1);
 		    if (feasPhase)
@@ -1754,7 +1834,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
       } else best_objective = v;
       if(info_level >= 5) cerr << "v=" << v << " dK=" << dont_know << " bfo=" << break_from_outside << " cf=" << comp_finished << endl;
       if (end_by_empty_clause) {
-	cerr << "Detected empty constraint 2" << endl;
+	if(getShowInfo()) cerr << "Detected empty constraint 2" << endl;
 	break;
       }
     } while ((v == dont_know || break_from_outside) && !comp_finished);
@@ -1818,11 +1898,21 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
       if (fabs(global_score-PVval) < 1e-9){ if(getShowInfo()) cerr << "PV value and objective are the same." << endl;}
       else if(getShowError()) cerr << "ERROR: PV value and objective DIFFER. PVval=" << PVval << " objective=" << global_score << endl;
     }
+#ifdef OLD_OUT_PV
     C.mefprint(processNo,"char pvsol[] = \"");
     for (int i = 0, j=0; i < nVars();i++,j++) {
       C.mefprint(processNo,"%.0f",PV[1][i]);
     }
     C.mefprint(processNo,"\"\n");
+#else
+    C.mefprint(processNo,"double pvsol[] = {");
+    for (int i = 0, j=0; i < nVars()-1;i++,j++) {
+      C.mefprint(processNo,"%lf,",PV[1][i]);
+    }
+    C.mefprint(processNo,"%lf",PV[1][nVars()-1]);
+    C.mefprint(processNo,"};\n");
+    C.mefprint(processNo,"int pvSolCnt=%d\n",nVars());
+#endif    
     /*
     if(getWriteOutputFile()){
 	double gap = abs(100.0*(-global_dual_bound - best_objective) / (abs(best_objective)+1e-10) );

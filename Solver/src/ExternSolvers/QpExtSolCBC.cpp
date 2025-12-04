@@ -38,6 +38,7 @@
 #include "CglMixedIntegerRounding2.hpp"
 #include <CglPreProcess.hpp>
 #include <CglClique.hpp>
+//#include <CglCliqueStrengthening.hpp>
 #include <CglProbing.hpp>
 #include <CoinPackedVector.hpp>
 //#ifdef COMPILE_WITH_CBC
@@ -590,7 +591,7 @@ namespace extSol {
     return numberFixed;
   }
 
-  std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > > QpExtSolCBC::CreateCuts(extSol::QpExternSolver& externSolver, int *types, int8_t *assigns, int decLev, unsigned int initime, int *solu /*debugging info only*/, int *fixs, int*blcks, int orgN, int cuttype, int delCuts, double intLB) {
+  std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > > *QpExtSolCBC::CreateCuts(extSol::QpExternSolver& externSolver, int *types, int8_t *assigns, int decLev, unsigned int initime, int *solu /*debugging info only*/, int *fixs, int*blcks, int orgN, int cuttype, int delCuts, double intLB) {
     int output=0;
     //clear();
     if (output) std::cerr << "rows before swap:" << model.solver()->getNumRows() << " extSol-rows:" << externSolver.getRowCount() << " model-cols:" << model.solver()->getNumCols() << " orgN:" << orgN << " extSol-cols:" << externSolver.getVariableCount() << std::endl;
@@ -659,7 +660,7 @@ namespace extSol {
     //solver = OsiClpSolverInterface((ClpSimplex*)externSolver.getSolverModel(),false);
     //model = CbcModel(solver);
     if (output) std::cerr << "HIER Nochmal: NumRows: "<< model.solver()->getNumRows() <<" " <<this->getRowCount() <<std::endl;
-    std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > > cuts_out;
+    static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > > cuts_out;
     cuts_out.clear();
     //OsiClpSolverInterface si(this->solver);
     for (int i=0;i < orgN;i++) {
@@ -714,198 +715,6 @@ namespace extSol {
       solver1->resolve();
     }
 
-    if(0){
-      CbcModel model(*solver2);
-      
-      //#ifdef CRITICAL
-	CglPreProcess process;
-	if (1/*preProcess*/) {
-	  solver2 = process.preProcess(*solver1/**model.solver()*/,false,5);
-	  if (!solver2) {
-	    if (output) std::cerr << "Pre-processing of Cgl says infeasible\n" << std::endl;
-	    assert(0);
-	  }
-	  solver2->resolve();
-	}
-	//#endif
-
-	model.solver()->setHintParam(OsiDoReducePrint,true,OsiHintTry);
-	// Set up some cut generators and defaults
-	// Probing first as gets tight bounds on continuous
-
-	CglProbing generator1;
-	generator1.setUsingObjective(true);
-	generator1.setMaxPass(1);
-	generator1.setMaxPassRoot(5);
-	// Number of unsatisfied variables to look at
-	generator1.setMaxProbe(10);
-	generator1.setMaxProbeRoot(1000);
-	// How far to follow the consequences
-	generator1.setMaxLook(50);
-	generator1.setMaxLookRoot(500);
-	// Only look at rows with fewer than this number of elements
-	generator1.setMaxElements(200);
-	generator1.setRowCuts(3);
-
-	CglGMI generator2;
-	// try larger limit
-	//generator2.setLimit(300);
-
-	CglKnapsackCover generator3;
-
-	CglRedSplit generator4;
-	// try larger limit
-	generator4.setLimit(200);
-
-	CglClique generator5;
-	generator5.setStarCliqueReport(false);
-	generator5.setRowCliqueReport(false);
-
-	CglMixedIntegerRounding2 mixedGen;
-	CglFlowCover flowGen;
-  
-	// Add in generators
-	// Experiment with -1 and -99 etc
-	model.addCutGenerator(&generator1,-1,"Probing");
-	model.addCutGenerator(&generator2,-1,"Gomory");
-	model.addCutGenerator(&generator3,-1,"Knapsack");
-	// model.addCutGenerator(&generator4,-1,"RedSplit");
-	model.addCutGenerator(&generator5,-1,"Clique");
-	model.addCutGenerator(&flowGen,-1,"FlowCover");
-	model.addCutGenerator(&mixedGen,-1,"MixedIntegerRounding");
-	// Say we want timings
-	int numberGenerators = model.numberCutGenerators();
-	int iGenerator;
-	/*
-	for (iGenerator=0;iGenerator<numberGenerators;iGenerator++) {
-	  CbcCutGenerator * generator = model.cutGenerator(iGenerator);
-	  generator->setTiming(true);
-	}
-	*/
-	OsiClpSolverInterface * osiclp = dynamic_cast< OsiClpSolverInterface*> (model.solver());
-	// go faster stripes
-	if (osiclp) {
-	  // Turn this off if you get problems
-	  // Used to be automatically set
-	  osiclp->setSpecialOptions(128);
-	  if(osiclp->getNumRows()<300&&osiclp->getNumCols()<500) {
-	    //osiclp->setupForRepeatedUse(2,0);
-	    osiclp->setupForRepeatedUse(0,0);
-	  }
-	} 
-	// Uncommenting this should switch off all CBC messages
-	// model.messagesPointer()->setDetailMessages(10,10000,NULL);
-	// Allow rounding heuristic
-
-	CbcRounding heuristic1(model);
-	model.addHeuristic(&heuristic1);
-
-	// And local search when new solution found
-
-	CbcHeuristicLocal heuristic2(model);
-	model.addHeuristic(&heuristic2);
-
-	// Redundant definition of default branching (as Default == User)
-	//CbcBranchUserDecision branch;
-	//model.setBranchingMethod(&branch);
-
-	// Definition of node choice
-	//CbcCompareUser compare;
-	//model.setNodeComparison(compare);
-
-	// Do initial solve to continuous
-	model.initialSolve();
-
-	// Could tune more
-	double objValue = model.solver()->getObjSense()*model.solver()->getObjValue();
-	double minimumDropA=CoinMin(1.0,fabs(objValue)*1.0e-3+1.0e-4);
-	double minimumDrop= fabs(objValue)*1.0e-4+1.0e-4;
-	printf("min drop %g (A %g)\n",minimumDrop,minimumDropA);
-	model.setMinimumDrop(minimumDrop);
-
-	if (model.getNumCols()<500)
-	  model.setMaximumCutPassesAtRoot(-100); // always do 100 if possible
-	else if (model.getNumCols()<5000)
-	  model.setMaximumCutPassesAtRoot(100); // use minimum drop
-	else
-	  model.setMaximumCutPassesAtRoot(20);
-	model.setMaximumCutPasses(10);
-	//model.setMaximumCutPasses(2);
-
-	// Switch off strong branching if wanted
-	// model.setNumberStrong(0);
-	// Do more strong branching if small
-	if (model.getNumCols()<5000)
-	  model.setNumberStrong(10);
-	model.setNumberStrong(20);
-	//model.setNumberStrong(5);
-	model.setNumberBeforeTrust(5);
-
-	model.solver()->setIntParam(OsiMaxNumIterationHotStart,100);
-
-	// If time is given then stop after that number of minutes
-	double minutes = -1.0;
-	if (minutes>=0.0) {
-	  std::cout<<"Stopping after "<<minutes<<" minutes"<<std::endl;
-	  model.setDblParam(CbcModel::CbcMaximumSeconds,60.0*minutes);
-	}
-	// Switch off most output
-	/*
-	if (model.getNumCols()<3000) {
-	  model.messageHandler()->setLogLevel(1);
-	  //model.solver()->messageHandler()->setLogLevel(0);
-	} else {
-	  model.messageHandler()->setLogLevel(2);
-	  model.solver()->messageHandler()->setLogLevel(1);
-	}
-	*/
-	//model.messageHandler()->setLogLevel(2);
-	//model.solver()->messageHandler()->setLogLevel(2);
-	//model.setPrintFrequency(50);
-	//#define DEBUG_CUTS
-#if PREPROCESS==2
-	// Default strategy will leave cut generators as they exist already
-	// so cutsOnlyAtRoot (1) ignored
-	// numberStrong (2) is 5 (default)
-	// numberBeforeTrust (3) is 5 (default is 0)
-	// printLevel (4) defaults (0)
-	CbcStrategyDefault strategy(true,5,5);
-	// Set up pre-processing to find sos if wanted
-	if (preProcess)
-	  strategy.setupPreProcessing(2);
-	model.setStrategy(strategy);
-#endif
-	// Do complete search
-  
-	std::cout << "ENTER SEARCH!" << std::endl;
-	model.branchAndBound();
-
-	std::cout//<<mpsFileName<<" took "<<CoinCpuTime()-time1<<" seconds, "
-		 <<model.getNodeCount()<<" nodes with objective "
-		 <<model.getObjValue()
-		 <<(!model.status() ? " Finished" : " Not finished")
-		 <<std::endl;
-
-	// Print more statistics
-	std::cout<<"Cuts at root node changed objective from "<<model.getContinuousObjective()
-		 <<" to "<<model.rootObjectiveAfterCuts()<<std::endl;
-
-	for (iGenerator=0;iGenerator<numberGenerators;iGenerator++) {
-	  CbcCutGenerator * generator = model.cutGenerator(iGenerator);
-	  std::cout<<generator->cutGeneratorName()<<" was tried "
-		   <<generator->numberTimesEntered()<<" times and created "
-		   <<generator->numberCutsInTotal()<<" cuts of which "
-		   <<generator->numberCutsActive()<<" were active after adding rounds of cuts";
-	  if (generator->timing())
-	    std::cout<<" ( "<<generator->timeInCutGenerator()<<" seconds)"<<std::endl;
-	  else
-	    std::cout<<std::endl;
-	}
-  
-
-    }
-
-
     model.solver()->resolve();
 
     double Before=model.solver()->getObjValue();
@@ -917,7 +726,8 @@ namespace extSol {
     int totalNumberApplied = 0;
     const int CGL_LIB = 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096;
     const int CGL_KNAPSACK = 16;
-    const int CGL_SIMROUND = 32;
+    //const int CGL_SIMROUND = 32;
+    const int CGL_CLIQUE   = 32;
     const int CGL_GMI      = 64;
     const int CGL_LIFTAPRO = 128;
     const int CGL_FLOWCOVR = 256;
@@ -935,6 +745,7 @@ namespace extSol {
     cg6.setLimit(200);
     CglMixedIntegerRounding2 cg7;
     CglTwomir cg8;
+    CglClique cg9;
 
     cg0.setUsingObjective(true);
     cg0.setMaxPass(1);
@@ -949,6 +760,9 @@ namespace extSol {
     cg0.setMaxElements(200);
     cg0.setRowCuts(3);
 
+    cg9.setStarCliqueReport(false);
+    cg9.setRowCliqueReport(false);
+    
     //CglSimpleRounding cg8;
     //CglAllDifferent cg9;
     bool equalObj;
@@ -965,6 +779,8 @@ namespace extSol {
       // Generate and apply cuts
       /*static*/ OsiCuts cuts;
       int remCutCnt=0;
+      if (cuttype & CGL_CLIQUE) cg9.generateCuts(*model.solver(),cuts); 
+      if (output) std::cerr << "FIND CLIQUES " << cuts.sizeCuts()-remCutCnt << std::endl; remCutCnt = cuts.sizeCuts();
       if (cuttype & CGL_PROB) cg0.generateCuts(*model.solver(),cuts);
       if (output) std::cerr << "PROBING " << cuts.sizeCuts()-remCutCnt << std::endl; remCutCnt = cuts.sizeCuts();
 
@@ -995,7 +811,7 @@ namespace extSol {
       if (!model.solver()->optimalBasisIsAvailable())
 	model.solver()->resolve();
       if (!model.solver()->optimalBasisIsAvailable())
-	return cuts_out;
+	return &cuts_out;
       if (output) std::cerr << "optimal basis is available:" << model.solver()->optimalBasisIsAvailable() << std::endl;
       if (cuttype & CGL_KNAPSACK) cg1.generateCuts(*model.solver(),cuts);
       if (output) std::cerr << "KNAPSACK " << cuts.sizeCuts()-remCutCnt << std::endl; remCutCnt = cuts.sizeCuts();
@@ -1005,14 +821,14 @@ namespace extSol {
       if (output) std::cerr << "FLOWCOVER " << cuts.sizeCuts()-remCutCnt << std::endl; remCutCnt = cuts.sizeCuts();
       if (cuttype & CGL_REDSPLIT) cg6.generateCuts(*model.solver(),cuts);
       if (output) std::cerr << "REDSPLIT " << cuts.sizeCuts()-remCutCnt << std::endl; remCutCnt = cuts.sizeCuts();
-      if (cuttype & CGL_MIR2) cg7.generateCuts(*model.solver(),cuts);
+      // //if (cuttype & CGL_MIR2) cg7.generateCuts(*model.solver(),cuts);
       if (output) std::cerr << "MIR2 " << cuts.sizeCuts()-remCutCnt << std::endl; remCutCnt = cuts.sizeCuts();
       if (cuttype & CGL_TWOMIR) cg8.generateCuts(*model.solver(),cuts);
       if (output) std::cerr << "TWOMIR " << cuts.sizeCuts()-remCutCnt << std::endl; remCutCnt = cuts.sizeCuts();
-      if (cuttype & CGL_GMI) cg3.generateCuts(*model.solver(),cuts);
-      //if (cuttype & CGL_SIMROUND) cg2.generateCuts(*model.solver(),cuts);
+      // //if (cuttype & CGL_GMI) cg3.generateCuts(*model.solver(),cuts);
       if (output) std::cerr << "GMI " << cuts.sizeCuts()-remCutCnt << std::endl; remCutCnt = cuts.sizeCuts();
-
+      //if (cuttype & CGL_SIMROUND) cg2.generateCuts(*model.solver(),cuts);
+      
       //cg8.generateCuts(*model.solver(),cuts);
       //cg9.generateCuts(*model.solver(),cuts);
       acRc = model.solver()->applyCuts(cuts,0.0);
@@ -1126,7 +942,7 @@ namespace extSol {
 	hugeImpact = false;
       if (output) std::cerr << "Quotient of progress: " << fabs(model.solver()->getObjValue()-objVal) / (fabs(model.solver()->getObjValue())+fabs(objVal))<< std::endl;
       if (output) std::cerr << ((cuttype & 1) == 0 ? "stay in loop" : "break loop") <<std::endl;
-    } while( (!equalObj /*|| loop_cnt < 5*/ ) && (((cuttype & 1) == 0 && loop_cnt < 3) || hugeImpact));
+    } while( (!equalObj /*|| loop_cnt < 200*/ ) && (((cuttype & 1) == 0 && loop_cnt < 3) || hugeImpact /*|| loop_cnt < 200*/));
     if (output) {
       std::cerr <<std::endl <<std::endl;
       std::cerr << "----------------------------------------------------------" 
@@ -1163,7 +979,7 @@ namespace extSol {
     //    model.solver()->resolve();
     //  double After=model.solver()->getObjValue();
     //  if(fabs(Before-After)>.1) std::cerr <<"After applying cuts, objective value changed from "<<Before<< "to "  << model.solver()->getObjValue() <<std::endl;
-    return cuts_out;
+    return &cuts_out;
   }
 
 

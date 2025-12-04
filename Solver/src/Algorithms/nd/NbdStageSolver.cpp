@@ -348,7 +348,9 @@ void NbdStageSolver::removeStageCutsFromCut(unsigned int ucid) {
 	it = this->ucidToConIndexMap.find(ucid);
 	end = this->ucidToConIndexMap.end();
 	if (it == end) {
-	  std::cerr << "Error: NbdExtStageSolCplex::removeUserCutsFromCut --> Cut to remove doies not exist" << std::endl;
+#ifdef SHOW_EXTERN_SOLVER_WARNINGS
+	  std::cerr << "Error: NbdExtStageSolCplex::removeUserCutsFromCut --> Cut to remove does not exist" << std::endl;
+#endif
 	  return;
 	  //throw utils::DataStructureException("NbdExtStageSolCplex::removeUserCutsFromCut --> Cut to remove doies not exist: " + utils::ToolBox::convertToString(ucid));
 	}

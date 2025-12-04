@@ -237,7 +237,7 @@ void Parser::CheckDigits(std::string& Coefficient, bool IsScientific){
     }
     else if(IsScientific && (Coefficient.size()>1 || Coefficient[0]=='0')) throw utils::ParserException("Use a number between 1 and 10 for the coefficient when using scientific notation " + Coefficient);
     if(Coefficient.find("-") != std::string::npos || Coefficient.find("+") != std::string::npos) MoreSymbols++;
-    if(Coefficient.size()>MAX_DIGITS+MoreSymbols)
+    if(0&&Coefficient.size()>MAX_DIGITS+MoreSymbols)
         throw utils::ParserException("Do not use coefficients with more than " +std::to_string(MAX_DIGITS) +" digits: " + Coefficient);
 }
 

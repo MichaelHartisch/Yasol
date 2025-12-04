@@ -1188,8 +1188,12 @@ unsigned int NbdMaster::addUserCuts(const std::vector<data::IndexedElement>& lhs
 			break;
 		}
 	}
-	if (depth < 0)
-		throw utils::AlgorithmException("NbdMaster::addUserCuts(...) -> could not determine cut depth for " + data::indexedElementVecToString(lhs));
+	if (depth < 0) {
+	  throw utils::AlgorithmException("NbdMaster::addUserCuts(...) -> could not determine cut depth for " + data::indexedElementVecToString(lhs));
+	  depth = this->qpTree.size() - 1;
+	  std::cerr << "NbdMaster::addUserCuts(...) -> could not determine cut depth." << std::endl;
+	  return -1;
+	}
 	if (!depth) {
 		//utils::Logger::globalLog(utils::LOG_INFO, LOG_TAG, "Adding UserCut at Root Node");
 	} else if (depth == this->qpTree.size() - 1) {

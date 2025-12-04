@@ -53,6 +53,7 @@ void CommPrint::itoa(int n, char s[])
 
 int CommPrint::mefprint(int ID, char *fmt ...)
 {
+   return 0;
    char fname[200];
    char ending[10];
    char IDStr[10];
@@ -63,7 +64,7 @@ int CommPrint::mefprint(int ID, char *fmt ...)
    strcpy(fname,"./Solutions_");
    strcpy(ending,".log");
 
-   sprintf(IDStr,"%d",ID);
+   snprintf(IDStr,9,"%d",ID);
    //fprintf(stderr,"%s\n",fname);
    //fprintf(stderr,"%s\n",IDStr);
    strcat(fname,IDStr);

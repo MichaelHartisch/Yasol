@@ -1,49 +1,52 @@
 # Yasol
-Yasol is a search-based solver that is able to deal with multistage robust linear discrete optimization problems, with final mixed-integer recourse actions and a discrete uncertainty set, which even can be decision-dependent.
+Yasol is a search-based solver that is able to deal with multistage robust linear discrete optimization problems, with final mixed-integer recourse and a discrete uncertainty set, defined via linear constraints, which even can be decision-dependent.
 
-# Install and Run (on Mac and Linux)
-Open the build_Yasol.bat to edit it.
-1. If neccessary change the compiler and archiver.
-2. Depending on you system (Mac or Linux) ensure the correct lines are (un)commented. 
-3. Tell the compiler where to find the solver you want to use as external LP solver (clp/cbc and/or cplex). This might look like this:
+# Building
+Ideally, you only have to run
 
-export YASOL_CLP_PATH=/opt/tools/coinor_tools\
-export YASOL_CPLEX_PATH=/opt/ibm/ILOG/CPLEX_Studio1261/cplex\
-or\
-export YASOL_CLP_PATH=/nethome/user/CbcClp\
-export YASOL_CPLEX_PATH=/Applications/CPLEX_Studio221/cplex
+      ./configure [OPTIONS]
+      cd build
+      make check
 
-Start the script by typing "./build_Yasol.bat"
-You can use the following options
-cplex  - to use cplex as lp solver
-clp    - to use clp as lp solver
-cgl    - to add cgl for obtaining additional cuts; this options als need the YASOL_CLP_PATH
-debug  - for having more information when having to debug. Not recommended for inexperienced users.
+See `./configure -h` for a full list of options.  
+Depending on the selected configuration, the script may ask you to provide the path to your locally installed IP solver (CoinOR Tools, CPLEX, or HiGHS). If you do not have a solver installed, it can also download and install one for you (CoinOR Tools and HiGHS only).  
+If you already have the solvers on your system, you may simply press **Enter** when prompted and let CMake attempt to locate the required installations automatically.  
+The most common calls will look like this:  
+Compiling with cplex: `./configure -c`
 
-Calls might look like this:
-./build_Yasol.bat cplex
-./build_Yasol.bat clp
-./build_Yasol.bat cplex cgl
+Compiling with highs: `./configure -g`
 
-If you are using CPLEX and are working on a mac with next gen chip we recommend preprending "arch -x86_64"
+Compiling with coinor: `./configure -o`
 
-If the process ended without any error you can try to run Yasol. You will find the executable in the Yasol/Debug folder.
-You can solve an instance by calling Yasol via ".\Yasol MyInstance.qlp"
+After successfully configuring the solver, a `build` directory will appear in the project’s root folder.
+Running `make` (or `make check` for a quick verification of the compiled program) will produce the yasol executable. The build process also generates the corresponding library files, which you can use if you wish to include Yasol in your own project.
 
-When trying to execute Yasol you might encounter library errors. You may need to
-  - add 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/PATH/TO/CbcClp/dist/lib' to your ~/.bashrc (Linux)
-  - add 'export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:/PATH/TO/CbcClp/dist/lib' to ~/.bashrc (OS X)
 
-We also observed that we had to add /usr/bin/x86_64-linux-gnu to the LD_LIBRARY_PATH.
+# Running
+From your `build` folder you can now run our solver by calling
+      
+      ./yasol [PATH_TO_INSTANCE] [OPTIONS]
 
-# Install and Run (Windows)
-The latest version of Yasol is not supported on Windows. However, older version of our solver exist, that can run on Windows. Please see the instructions on the [GitHub Pages](https://yasolqipsolver.github.io/yasol.github.io/)
-or our [Homepage](http://www.q-mip.org/). 
-# Yasol.ini
-The Yasol.ini file can be used to change some high level settings of the solver. We recommend that you change them only if you really know what is going to happen. Always feel free to reach out to us.
-One special note regarding the Yasol.ini: The standard setting we selected is "isSimplyRestricted=0". This makes the search rather slow and careful when there is a universal constraint system. 
-Setting isSimplyRestricted=1 might significantly speed up the search, but this is only allowed if the instances has special properties. If your instance does not have the demanded property this setting will
-result in wrong results. Please see our publications or feel free to contact us any time.
+You find some instances in the folder 'examples' in the main directory. A call then might look like this:
+
+      ./yasol ../examples/knapsack.qlp --timeLimit=4 --isSimplyRestricted=1
+
+# Yasol as Library
+In case you want to use the solver as a callable library, you find for your convinence the folder myCMakeProject in the main directory. This folder contains a small project calling yasol. Depending on the IP solver you have compiled yasol with, you can now build this project as follows:
+
+cplex: `cmake -B build -DUSE_CPLEX=ON -DYASOL_PATH=/path/to/yasol/main/directory`  
+highs: `cmake -B build -DUSE_HIGHS=ON -DYASOL_PATH=/path/to/yasol/main/directory`  
+cplex: `cmake -B build -DUSE_COIN=ON -DYASOL_PATH=/path/to/yasol/main/directory`  
+
+Here, `YASOL_PATH` should be the main directory, **not** the `build` folder. Then do `cd build && make`.
+
+The program `MyYasol' then builds the famous bilevel problem from Moore & Bard as QIP using our datastructures, calls the solver and outputs the result. 
+# References
+
+1. Hartisch, M. and Lorenz, U., 2022. A general model-and-run solver for multistage robust discrete linear optimization. arXiv preprint arXiv:2210.11132. [DOI](https://doi.org/10.48550/arXiv.2210.11132)
+3. Hartisch, M., 2020. Quantified integer programming with polyhedral and decision-dependent uncertainty. PhD thesis. [DOI](https://doi.org/10.25819/ubsi/4841)
+2. Ederer, T., Hartisch, M., Lorenz, U., Opfer, T. and Wolf, J., 2017. Yasol: an open source solver for quantified mixed integer programs. In Advances in Computer Games (pp. 224-233).  [DOI]( https://doi.org/10.1007/978-3-319-71649-7_19)
+
 
 # Other Links
 For further information please visit

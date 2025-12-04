@@ -508,7 +508,7 @@ public:
 					SolutionFound=true;
 					if(oldIS > IntScore && qbp->getShowInfo()) cerr <<endl <<"info: heuristic integer solution with objective value (integer Test) "<< IntScore << " in " << (time(NULL)-StartingTime) <<" second(s) and " << CountIterations << " LPCalls and " << CountPerturbs << " perturbations. " << SolutionFound << " " << Output.size() << endl;
 					if(oldIS > IntScore) CountIterations = 2;
-					if (1||oldIS > IntScore) alpha = alpha * 0.8; 
+					if (oldIS <= IntScore+fabs(IntScore*0.05)) alpha = alpha * 0.8; 
 					if (alpha < 0.1) break;
 
 					//cin.get();

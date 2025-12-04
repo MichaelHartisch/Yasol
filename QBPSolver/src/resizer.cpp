@@ -73,6 +73,100 @@ bool Resizer_::exactAvail(std::vector<data::IndexedElement> &table_lhs, std::vec
     return false;
 }
 
+void Resizer_::rebuildRelaxation(utils::QlpStageSolver *QlpStSolvePt, int maxLPStage, ca_vec<int> &type, QBPSolver *qbp) {
+	  std::vector<data::QpNum> solution;
+	  algorithm::Algorithm::SolutionStatus status;
+	  data::QpNum      lb,ub;
+	  int start_rows = (*QlpStSolvePt).getExternSolver(maxLPStage).getRowCount();
+
+	  time_t startT = time(NULL);
+	  if(qbp->getShowInfo()) cerr << "info: begin to rebuild relaxation" << endl;
+	  for (int i = 0; i < (*QlpStSolvePt).getExternSolver(maxLPStage).getLProws_snapshot();i++) {
+	    (*QlpStSolvePt).getExternSolver(maxLPStage).addCut(
+			(*(*QlpStSolvePt).getExternSolver(maxLPStage).getRowLhs_snapshot(i)),
+			(*(*QlpStSolvePt).getExternSolver(maxLPStage).getRowRhs_snapshot())[i].getRatioSign(),
+			(*(*QlpStSolvePt).getExternSolver(maxLPStage).getRowRhs_snapshot())[i].getValue());
+	    (*QlpStSolvePt).getExternSolver(maxLPStage).setLazyStatus(i,false);
+	  }
+	  ExtSolverParameters Params;
+	  Params.decLevel = 1;
+	  Params.type = type.getData();
+	  Params.v_ids = v_ids.data();
+	  Params.nVars = (*QlpStSolvePt).getExternSolver( maxLPStage ).getVariableCount();
+	  (*QlpStSolvePt).getExternSolver( maxLPStage ).setParameters(Params);
+	  //qbp->QLPSTSOLVE_SOLVESTAGE(-1e100, maxLPStage, status, lb, ub, solution, algorithm::Algorithm::WORST_CASE, 1, -1, -1, false, false, false);
+	  (*QlpStSolvePt).solveStage(maxLPStage, status, lb, ub, solution, algorithm::Algorithm::WORST_CASE, -1, -1);
+	   if(qbp->getShowInfo()) cerr << "info: solved LP after " << time(NULL) - startT << "secs." << endl;
+	  //cerr << "dual bound=" << lb.asDouble() << endl;
+	  if (1) {
+#define SNAP_BASED
+#ifndef SNAP_BASED
+	    (*QlpStSolvePt).getExternSolver( maxLPStage ).clearLP_snapshot();
+	    (*QlpStSolvePt).getExternSolver( maxLPStage ).prepareMatrixRowForm();
+	    std::vector<data::IndexedElement> row;
+	    std::vector<data::QpRhs> rhs_vector;
+	    (*QlpStSolvePt).getExternSolver( maxLPStage ).getRhs(rhs_vector);
+	    for (int i = start_rows; i < (*QlpStSolvePt).getExternSolver(maxLPStage).getRowCount();i++) {
+	      row.clear();
+	      (*QlpStSolvePt).getExternSolver( maxLPStage ).getRowLhs(i, row);
+	      data::QpRhs rhs = rhs_vector[i];
+	      double lhs=0.0;
+	      (*QlpStSolvePt).getExternSolver( maxLPStage ).addLProw_snapshot(row, rhs);
+	      if (solution.size() > 0) {
+		for (int k=0;k<row.size();k++)
+		  lhs = lhs + row[k].value.asDouble() * solution[row[k].index].asDouble();
+	      } else {
+		lhs = rhs.getValue().asDouble();
+	      }
+	      if (fabs(rhs.getValue().asDouble() - lhs) < 1e-9 || i < 10) {
+		(*QlpStSolvePt).getExternSolver(maxLPStage).setLazyStatus(i-start_rows,false);
+	      } else {
+		(*QlpStSolvePt).getExternSolver(maxLPStage).setLazyStatus(i-start_rows,true);
+	      }
+	    }
+#else
+	    //(*QlpStSolvePt).getExternSolver( maxLPStage ).clearLP_snapshot();
+	    //(*QlpStSolvePt).getExternSolver( maxLPStage ).prepareMatrixRowForm();
+	    //std::vector<data::IndexedElement> row;
+	    //std::vector<data::QpRhs> rhs_vector;
+	    //(*QlpStSolvePt).getExternSolver( maxLPStage ).getRhs(rhs_vector);
+	    for (int i = start_rows; i < (*QlpStSolvePt).getExternSolver(maxLPStage).getRowCount();i++) {
+	      std::vector<data::IndexedElement> &row = (*(*QlpStSolvePt).getExternSolver(maxLPStage).getRowLhs_snapshot(i-start_rows));
+	      //sign = (*(*QlpStSolvePt).getExternSolver(maxLPStage).getRowRhs_snapshot())[i-startrows].getRatioSign();
+	      data::QpRhs rhs;
+	      rhs.setValue( (*(*QlpStSolvePt).getExternSolver(maxLPStage).getRowRhs_snapshot())[i-start_rows].getValue() );
+	      double lhs=0.0;
+	      //(*QlpStSolvePt).getExternSolver( maxLPStage ).addLProw_snapshot(*row, rhs);
+	      if (solution.size() > 0) {
+		for (int k=0;k<row.size();k++)
+		  lhs = lhs + (row)[k].value.asDouble() * solution[(row)[k].index].asDouble();
+	      } else {
+		lhs = rhs.getValue().asDouble();
+	      }
+	      if (fabs(rhs.getValue().asDouble() - lhs) < 1e-9 || i < 10) {
+		(*QlpStSolvePt).getExternSolver(maxLPStage).setLazyStatus(i-start_rows,false);
+	      } else {
+		(*QlpStSolvePt).getExternSolver(maxLPStage).setLazyStatus(i-start_rows,true);
+	      }
+	    }
+#endif
+            if(qbp->getShowInfo()) cerr << "info: ready to re-build after " << time(NULL) - startT << "secs." << endl;
+	    (*QlpStSolvePt).getExternSolver( maxLPStage ).removeCutsFromCut(start_rows);
+	    for (int i = 0; i < (*QlpStSolvePt).getExternSolver(maxLPStage).getLProws_snapshot();i++) {
+	      if ((*QlpStSolvePt).getExternSolver(maxLPStage).getLazyStatus(i) == false) {
+		(*QlpStSolvePt).addUserCut(maxLPStage,
+			    (*(*QlpStSolvePt).getExternSolver(maxLPStage).getRowLhs_snapshot(i)),
+			    (*(*QlpStSolvePt).getExternSolver(maxLPStage).getRowRhs_snapshot())[i].getRatioSign(),
+			    (*(*QlpStSolvePt).getExternSolver(maxLPStage).getRowRhs_snapshot())[i].getValue());
+	      }
+	    }  
+	  }
+	  //qbp->QLPSTSOLVE_SOLVESTAGE(-1e100, maxLPStage, status, lb, ub, solution, algorithm::Algorithm::WORST_CASE, 1, -1, -1, false, false, false);
+	  //(*QlpStSolvePt).solveStage(maxLPStage, status, lb, ub, solution, algorithm::Algorithm::WORST_CASE, -1, -1);
+	  //cerr << "dual bound at end =" << lb.asDouble() << endl;
+	  if(qbp->getShowInfo()) cerr << "info: finished rebuilding relaxation. LP has " << (*QlpStSolvePt).getExternSolver(maxLPStage).getRowCount() << " many rows. Used " << time(NULL) - startT << " secs." << endl;
+        }
+
 //#ifdef SHRINKLP
 int Resizer_::shrinkLp(ca_vec<Scenario_t> &top_scenarios, data::Qlp &qlp, ca_vec<int> &block, ca_vec<int> &eas, int N, utils::QlpStageSolver **QlpStSolvePt, utils::QlpStageSolver **QlpStTmpPt, int maxLPStage, QBPSolver *qbp, ca_vec<int> &type, int8_t *killer, ca_vec<extbool> & assigns, double objVal, double objDual, bool useLazyLP, int info_level, int NumScenarios){
     cerr<<"ShrinkLP!!!"<<endl;
@@ -550,15 +644,15 @@ int Resizer_::shrinkLp(ca_vec<Scenario_t> &top_scenarios, data::Qlp &qlp, ca_vec
     return qlp.getVariableCount();
 }
 //#endif
-int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data::Qlp &qlp, ca_vec<int> &block, ca_vec<int> &eas, int N, utils::QlpStageSolver **QlpStSolvePt, utils::QlpStageSolver **QlpStTmpPt, int maxLPStage, QBPSolver *qbp, ca_vec<int> &type, int8_t *killer, ca_vec<extbool> & assigns, double objVal, double objDual, bool useLazyLP, int info_level, int NumScenarios){
+int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data::Qlp &qlp, ca_vec<int> &block, ca_vec<int> &eas, int N, utils::QlpStageSolver **QlpStSolvePt, utils::QlpStageSolver **QlpStTmpPt, int maxLPStage, QBPSolver *qbp, ca_vec<int> &type, int8_t *killer, ca_vec<extbool> & assigns, double objVal, double objDual, bool useLazyLP, int info_level, int &max_var_index, int NumScenarios){
 #define SHADOW_OUT 0
     std::vector<int> ministack;
     std::vector<TreeNode> tree(1);
-    
+    float alpha1=(float)qbp->getGlobalScore();
     
     bool BuildMiniDEP=(NumScenarios>0)?true:false;
     bool UseSingleVarObjective=BuildMiniDEP;
-    int max_var_index = N-1+UseSingleVarObjective;
+    /*int*/ max_var_index = N-1+UseSingleVarObjective;
 
     if(!BuildMiniDEP) *QlpStSolvePt = *QlpStTmpPt;
     if (info_level > -8) cerr << "BuildMini: " << BuildMiniDEP << endl;
@@ -905,9 +999,12 @@ int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data
                     int select_var = tree[inode].father_move.first;
                     if (SHADOW_OUT) cerr << "j=" << j << " top_scenarios[sc].scen_var.size()=" << top_scenarios[sc].scen_var.size() << " fsvb=" << block[father_select_var] << " SV=" << block[select_var] << " rn="<< rem_inode<< endl;
                     if (rem_inode > 0 && block[father_select_var] < block[select_var]) {
-                        if (block[select_var] - block[father_select_var] != 2)
-                            cerr << select_var << " " << block[select_var]  << " " << father_select_var  << " " << block[father_select_var] << endl;
-                        assert(block[select_var] - block[father_select_var] == 2);
+		      if (block[select_var] - block[father_select_var] != 2) {
+			cerr << "Error: block[select_var] - block[father_select_var] != 2: ";
+			cerr << select_var << " " << block[select_var]  << " " << father_select_var  << " " << block[father_select_var] << endl;
+			//break;
+		      }
+		      assert(block[select_var] - block[father_select_var] == 2);
                         if (SHADOW_OUT) cerr << "zwischen Block" << block[father_select_var]<< " und Block " << block[select_var] << endl;
                         int midBlockNr = block[select_var]-1;
                         int stageNr=-1;
@@ -1170,6 +1267,10 @@ int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data
     for (int i = N+UseSingleVarObjective; i < max_var_index+1;i++)
         v_ex[i] = false;
     ministack.clear();
+    //cerr << "max-var_index now known:" << max_var_index << " and qlp.getVariableCount()=" << qlp.getVariableCount() << endl;
+    qbp->clearGlobalCuts();
+    while(qlp.getVariableCount()>N) 
+      qlp.deleteColumnByIndex(qlp.getVariableCount()-1);
     //push node
     if (top_scenarios.size()>0) ministack.push_back(0);
     //while stack not empty {
@@ -1242,6 +1343,14 @@ int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data
 	                }
 	            }   
 	        }
+		bool isInt = qbp->objIsInteger();
+		objVal = -objVal;
+		if (isInt) {
+		  objVal = fmax(objVal+abs(objVal)*0.0001, ceil(objVal - 0.9)+isInt-1e-5/*INT_GAP*/);
+		} else {
+		  objVal = objVal + abs(objVal)*0.0001;//objective_epsilon=0.0001
+		}
+		objVal = -objVal;
 	        //ObjMax=(ObjMax>objVal+fabs(objVal)+1.0)?objVal+fabs(objVal)+1.0:ObjMax;
 	        double ABWEICHUNG = 1e-8;//1e-2;//1e-7 * log2(fabs(objVal)+2.0);//1e-4 * log2(fabs(objVal)+2.0);//+ fabs(objVal) * 1e-9;
 	        ObjMax=(ObjMax>objVal+(ABWEICHUNG)*fabs(objVal)+ABWEICHUNG)?objVal+(ABWEICHUNG)*fabs(objVal)+ABWEICHUNG:ObjMax;
@@ -1268,7 +1377,8 @@ int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data
 	    }
     //#define	SHADOW_OUT 0
     if (type.size() < max_var_index+2) type.growTo(max_var_index+1 +1);
-    if (SHADOW_OUT) cerr << "FINALLY " << max_var_index+1 << ": ";
+    //cerr << "FINALLY max_var_index+1=" << max_var_index+1 << " and qlp.getVariableCount()=" << qlp.getVariableCount() << ": ";
+
     for (int i = N+UseSingleVarObjective; i < max_var_index+1;i++) {
         if (SHADOW_OUT) cerr << "[" << i << "," << v_ids[i] << "]" <<  endl;
         assert(v_ids[i] > -1);
@@ -1278,7 +1388,7 @@ int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data
         //s.assign(v.getName());
         s += "_" + utils::ToolBox::convertToString(i);
         if (SHADOW_OUT) cerr << s << " | ";
-        qlp.createVariable(s, i, data::QpVar::Quantifier::exists, v_nsys[i], v_lbds[i], v_ubds[i]);
+        qlp.createVariable(s, i, data::QpVar::Quantifier::exists, v_nsys[i]/*data::QpVar::NumberSystem::real*/, v_lbds[i], v_ubds[i]);
         type[i] = type[v_ids[i]];
     }
     if (SHADOW_OUT) cerr << endl;
@@ -1368,13 +1478,13 @@ int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data
             }
         }
     }
-    qlp.deleteAllRows();
     if (info_level >= -5) cerr << "BEFORE RESIZER CONTRACTION. " << numConstraints << " constraints in qlp" << endl;
-    bool decreaseOccured= false;
+    int decreaseOccured=0;
     bool useContraction = true;//false;//true;//false;
 Ltry_again:;
+    qlp.deleteAllRows();
     numConstraints = (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();//qlp.getConstraintCount();
-    
+    //cerr << "repet max_var_index=" << max_var_index << endl;
     for (int i = 0; i < numConstraints;i++) {
         //data::QpRhs org_rhs = rhsVec[i];//(*(*QlpStTmpPt)->getExternSolver(maxLPStage).getRowRhs_snapshot())[i];// *rhsVec[i];
         data::QpRhs &org_rhs = (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowRhs_snapshot())[i];
@@ -1386,6 +1496,17 @@ Ltry_again:;
         double lb=0.0;
         double ub=0.0;
         bool lsh = false;
+	bool hasBigX=false; // we have a redesign of vaiables. bigX variables are no longer valid. Constraints with it neither.
+        for (int ii=0; ii < org_lhs.size();ii++) {
+	  if (org_lhs[ii].index > max_var_index)
+	    hasBigX=true;
+	}
+	if (hasBigX) {
+	  org_lhs.clear();
+	  org_rhs.setValue(0.0);
+	  continue;
+	}
+	if (org_lhs.size()==0) continue;
         for (int ii=0; ii < org_lhs.size();ii++) {
             data::IndexedElement new_lhs_elem = org_lhs[ii];
             int var;
@@ -1405,7 +1526,7 @@ Ltry_again:;
                     org_lhs[ii] = org_lhs[org_lhs.size()-1];
                     org_lhs.pop_back();
                     ii--;
-                    decreaseOccured = true;
+                    decreaseOccured++;
                     if (assigns[var] == 1) lsh = true;
                     //cerr << " <--;" << var << " -- ";
                     continue;
@@ -1414,7 +1535,7 @@ Ltry_again:;
                     org_lhs[ii] = org_lhs[org_lhs.size()-1];
                     org_lhs.pop_back();
                     ii--;
-                    decreaseOccured=true;
+                    decreaseOccured++;
                     continue;
                 } else if (new_lhs_elem.value.asDouble() > 0.0) {
                     //cerr << new_lhs_elem.value.asDouble() << "x" << new_lhs_elem.index << "[" << v_lbds[new_lhs_elem.index] << "," << v_ubds[new_lhs_elem.index]  << "|" << (int)assigns[new_lhs_elem.index] << "] + ";
@@ -1429,7 +1550,7 @@ Ltry_again:;
                     org_lhs[ii] = org_lhs[org_lhs.size()-1];
                     org_lhs.pop_back();
                     cerr << "--;";
-                    decreaseOccured=true;
+                    decreaseOccured++;
                     continue;
                 }
                 if (0&&assigns[var] != extbool_Undef) {
@@ -1439,7 +1560,7 @@ Ltry_again:;
                     org_lhs[ii] = org_lhs[org_lhs.size()-1];
                     org_lhs.pop_back();
                     cerr << "--;";
-                    decreaseOccured=true;
+                    decreaseOccured++;
                     continue;
                 }
                 if (isZero(new_lhs_elem.value.asDouble(),1e-10)) {
@@ -1447,7 +1568,7 @@ Ltry_again:;
                     org_lhs[ii] = org_lhs[org_lhs.size()-1];
                     org_lhs.pop_back();
                     ii--;
-                    decreaseOccured=true;
+                    decreaseOccured++;
                     continue;
                 } else if (new_lhs_elem.value.asDouble() > 0.0) {
                     //cerr << new_lhs_elem.value.asDouble() << "v" << new_lhs_elem.index << "[" << qbp->getLowerBound(new_lhs_elem.index) << "," << qbp->getUpperBound(new_lhs_elem.index) << "|" << (int)assigns[new_lhs_elem.index] << "] + ";
@@ -1586,29 +1707,27 @@ Ltry_again:;
                         qbp->decreaseDecisionLevel();
                     int64_t oob;
                     if (qbp->getType(x) == 0)
-                        oob = qbp->assign(x, qbp->getUpperBound(x) < 0.5 ? 0 : 1, qbp->getTrailSize(),CRef_Undef, false);
+		      oob = qbp->assign(alpha1,x, qbp->getUpperBound(x) < 0.5 ? 0 : 1, qbp->getTrailSize(),CRef_Undef, false);
                     else 
-                        oob = qbp->real_assign(x, (qbp->getUpperBound(x) + qbp->getLowerBound(x)) * 0.5, qbp->getTrailSize(),CRef_Undef);
+		      oob = qbp->real_assign(alpha1,x, (qbp->getUpperBound(x) + qbp->getLowerBound(x)) * 0.5, qbp->getTrailSize(),CRef_Undef);
                     if (oob != ASSIGN_OK) {	
-                        if(qbp->getShowWarning()){
-                            cerr << "WARNING: INFEASIBLE after fixing a binary variable in resizer!" << endl;
-                            cerr << "virtual END" << endl;
-  			}
+                        if(qbp->getShowWarning()) cerr << "WARNING: INFEASIBLE after fixing a binary variable in resizer!" << endl;
+                        if(qbp->getShowWarning()) cerr << "virtual END" << endl;
                     } else {
-                        if(qbp->getShowInfo()) cerr << "Info: fixing x_" << x << " to " << (qbp->getUpperBound(x) + qbp->getLowerBound(x)) * 0.5<< " in resizer." << endl;
+                        if(qbp->getShowWarning()) cerr << "info fixing x_" << x << " to " << (qbp->getUpperBound(x) + qbp->getLowerBound(x)) * 0.5<< " in resizer." << endl;
                         c_kw = true;
                     }
                     int confl_var;
                     CRef confl, confl_partner;
                     int remTrail = qbp->getTrailSize();
-                    if (oob == ASSIGN_OK && !qbp->propagate(confl, confl_var, confl_partner,false,false,1000000)) {
+                    if (oob == ASSIGN_OK && !qbp->propagate(alpha1,confl, confl_var, confl_partner,false,false,1000000)) {
                         //decreaseDecisionLevel();
                         if(qbp->getShowWarning()) cerr << "WARNING: INFEASIBLE after fixing a binary variable in resizer! Propagation failed!" << endl;
                         //while (trail.size() > remTrail) {
                         //  insertVarOrder(trail[trail.size()-1]);
                         //  unassign(trail[trail.size()-1]);
                         //}
-                        //cerr << "virtual END" << endl;
+                        if(qbp->getShowWarning()) cerr << "Warning: virtual END" << endl;
                     }
                     if (rem_dl== 1)
                         qbp->increaseDecisionLevel();
@@ -1685,22 +1804,48 @@ Ltry_again:;
         //qbp->preprocessConstraint(lhs_in, org_lhs, rhs_in, org_rhs, cpropQ);
         if (useContraction && org_lhs.size()==1 && type[org_lhs[0].index] == BINARY) {
             int var = org_lhs[0].index;
-            if(qbp->getShowInfo()){
-            	cerr << "Info: see len1 constraint. Possibly CAN FIX";
-            	cerr << org_lhs[0].value.asDouble() << "x" << org_lhs[0].index;
-            	if (org_rhs.getRatioSign() == data::QpRhs::greaterThanOrEqual) {
-                    if (org_rhs.getValue().asDouble() > qbp->getLowerBound(var))
-                        ;//qbp->setLowerBound(var,org_rhs.getValue().asDouble()); DO NOT ACTIVATE LIKE THIS; IS NOW IN INFO BLOCK
-                    cerr << " >== ";
-            	} else if (org_rhs.getRatioSign() == data::QpRhs::smallerThanOrEqual) {
-                    if (org_rhs.getValue().asDouble() < qbp->getUpperBound(var))
-                        ;//qbp->setUpperBound(var,org_rhs.getValue().asDouble()); DO NOT ACTIVATE LIKE THIS; IS NOW IN INFO BLOCK
-                    cerr << " <== ";
-                }
-                else cerr << " === ";
-                cerr << org_rhs.getValue().asDouble() << endl;
+            //cerr << "Info: see len1 constraint. Possibly CAN FIX";
+            //cerr << org_lhs[0].value.asDouble() << "x" << org_lhs[0].index;
+            if (org_rhs.getRatioSign() == data::QpRhs::greaterThanOrEqual) {
+                if (org_rhs.getValue().asDouble() > qbp->getLowerBound(var))
+                    ;//qbp->setLowerBound(var,org_rhs.getValue().asDouble());
+                //cerr << " >== ";
+		if (type[org_lhs[0].index]==BINARY && eas[org_lhs[0].index]==EXIST && org_rhs.getValue().asDouble() >= 1.0-1e-7 && org_rhs.getValue().asDouble() <= 1.0+1e-10) {
+		  qbp->setFixed(org_lhs[0].index,1,0);
+		  org_rhs.setValue(0.0);
+		  org_lhs.clear();
+		  decreaseOccured++;
+		}
+            } else if (org_rhs.getRatioSign() == data::QpRhs::smallerThanOrEqual) {
+                if (org_rhs.getValue().asDouble() < qbp->getUpperBound(var))
+                    ;//qbp->setUpperBound(var,org_rhs.getValue().asDouble());
+                //cerr << " <== ";
+		if (type[org_lhs[0].index]==BINARY && eas[org_lhs[0].index]==EXIST && org_rhs.getValue().asDouble() <= 1e-7 && org_rhs.getValue().asDouble() >= -1e-10) {
+		  qbp->setFixed(org_lhs[0].index,0,0);
+		  org_rhs.setValue(0.0);
+		  org_lhs.clear();
+		  decreaseOccured++;
+		}
+            }
+            else {
+	      //cerr << " === ";
+	      if (type[org_lhs[0].index]==BINARY && eas[org_lhs[0].index]==EXIST) {
+		if (org_rhs.getValue().asDouble() <= 1e-7 && org_rhs.getValue().asDouble() >= -1e-10) {
+		  qbp->setFixed(org_lhs[0].index,0,0);
+		  org_rhs.setValue(0.0);
+		  org_lhs.clear();
+		  decreaseOccured++;
+		} else if (org_rhs.getValue().asDouble() >= 1.0-1e-7 && org_rhs.getValue().asDouble() <= 1.0+1e-10) {
+		  qbp->setFixed(org_lhs[0].index,1,0);
+		  org_rhs.setValue(0.0);
+		  org_lhs.clear();
+		  decreaseOccured++;
+		}
+	      }
 	    }
-	    if(eas[org_lhs[0].index]==UNIV){ if(qbp->getShowWarning()) cerr << "WARNING: This is a universally quantified variable! Infeasible?" << endl;}
+            //cerr << org_rhs.getValue().asDouble() << endl;
+	    if(eas[org_lhs[0].index]==UNIV)
+	      if(qbp->getShowWarning()) cerr << "WARNING: This is a universally quantified variable! Infeasible?" << endl;
             if(0)if (fabs(qbp->getUpperBound(org_lhs[0].index) - qbp->getLowerBound(org_lhs[0].index)) < 1e-9) {
                 int toFix = (qbp->getUpperBound(org_lhs[0].index) > 0.5 ? 1 : 0);
                 cpropQ.push_back(std::pair<int,double>(org_lhs[0].index,(toFix==0 ? 0.0 : 1.0)));
@@ -1751,9 +1896,25 @@ Ltry_again:;
             
         }
     }
+
+        numConstraints = (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();//qlp.getConstraintCount();
     
-    if (decreaseOccured) {
-        //cerr << "Preprocessing shortened constraint to " << org_lhs.size() << " ";
+    for (int i = 0; i < numConstraints;i++) {
+        data::QpRhs &org_rhs = (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowRhs_snapshot())[i];
+        std::vector<data::IndexedElement> &org_lhs = *(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowLhs_snapshot(i);
+        double lb=0.0;
+        double ub=0.0;
+        bool lsh = false;
+	bool hasBigX=false; // we have a redesign of vaiables. bigX variables are no longer valid. Constraints with it neither.
+        for (int ii=0; ii < org_lhs.size();ii++) {
+	  if (org_lhs[ii].index > max_var_index)
+	    hasBigX=true;
+	}
+	assert(!hasBigX);
+    }
+    
+    if(qbp->getShowInfo()) cerr << "Info: Preprocessing made " << decreaseOccured << " changes." << endl;
+    if (decreaseOccured>1000) {
         /*
          for(int u = 0; u < org_lhs.size();u++) {
          cerr << org_lhs[u].value.asDouble() << (type[org_lhs[u].index]==BINARY?"x":"y") << org_lhs[u].index 
@@ -1770,7 +1931,7 @@ Ltry_again:;
          if (org_lhs.size() == 1) cerr << " [" << qbp->getLowerBound(org_lhs[0].index) << "," << qbp->getUpperBound(org_lhs[0].index) << "]" << endl;
          else cerr << endl;
          */
-        decreaseOccured = false;
+        decreaseOccured = 0;
         numConstraints = (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();//qlp.getConstraintCount();
         if (info_level >= -5) cerr << "again: IN BETWEEN CONTRACTION. Now " << RHSs.size() << " constraints in LHSs and " << numConstraints << " in qlp" << endl;
         goto Ltry_again;
@@ -1899,7 +2060,7 @@ Ltry_again:;
             (*QlpStSolvePt)->updateStageSolver(i, 0, qbp->nVars()-1);
         *QlpStTmpPt = *QlpStSolvePt;
     }
-    *QlpStSolvePt =  new utils::QlpStageSolver(qlp,true,false,false);
+    *QlpStSolvePt =  new utils::QlpStageSolver(qlp,true,false,true);
     std::vector<data::QpNum> lbVec;
     std::vector<data::QpNum> ubVec;
     (*QlpStTmpPt)->getExternSolver(maxLPStage).getLB(lbVec);
@@ -1914,10 +2075,13 @@ Ltry_again:;
         else
             (*QlpStSolvePt)->setVariableUB(i,ubVec[i].asDouble(),0/*qbp->getTypeData()*/);
     }
-    for (int i = 0; i <= maxLPStage; i++)
+    for (int i = 0; i <= maxLPStage; i++) {
         (*QlpStSolvePt)->updateStageSolver(i, 0, max_var_index);
+	//cerr << "max_var_index=" << max_var_index << endl;
+    }
     
     (*QlpStSolvePt)->getExternSolver(maxLPStage).initInternalLP_snapshot(qlp);
+    (*QlpStSolvePt)->getExternSolver(maxLPStage).setLazyStatus(-1,false);
     if (1) {
         if ((*QlpStSolvePt)->getExternSolver(maxLPStage).getRowCount() > 0) {
             (*QlpStSolvePt)->removeUserCutsFromCut(maxLPStage);
@@ -1928,7 +2092,21 @@ Ltry_again:;
             (*QlpStSolvePt)->getExternSolver(maxLPStage).setLazyStatus(i,true);
         }
     }
-    
+
+    numConstraints = (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();//qlp.getConstraintCount();
+    for (int i = 0; i < numConstraints;i++) {
+        data::QpRhs &org_rhs = (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowRhs_snapshot())[i];
+        std::vector<data::IndexedElement> &org_lhs = *(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowLhs_snapshot(i);
+        double lb=0.0;
+        double ub=0.0;
+        bool lsh = false;
+	bool hasBigX=false; // we have a redesign of vaiables. bigX variables are no longer valid. Constraints with it neither.
+        for (int ii=0; ii < org_lhs.size();ii++) {
+	  if (org_lhs[ii].index > max_var_index)
+	    hasBigX=true;
+	}
+	assert(!hasBigX);
+    }
     if (restrictlhs.size() > 0) {
         data::QpRhs org_rhs ;
         org_rhs.setValue(restrictrhs);
@@ -2647,7 +2825,7 @@ Ltry_again:;
         cerr << "Resize Actions: "<< ResizeAction << endl;
     }
     
-    if (!useLazyLP) {
+    if (!useLazyLP || (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot() < 20) {
         for (int i = 0; i < (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();i++) {
             (*QlpStSolvePt)->addUserCut(maxLPStage,
                                         (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowLhs_snapshot(i)),
@@ -2657,12 +2835,96 @@ Ltry_again:;
         }
         
     } else {
+#define REBUILD_EXT
+#ifdef REBUILD_EXT
+      rebuildRelaxation(*QlpStSolvePt, maxLPStage, type, qbp);
+#else
+      #ifdef OLDREB
+        std::vector<data::QpNum> solution;
+        algorithm::Algorithm::SolutionStatus status;
+        data::QpNum      lb,ub;
+	int start_rows = (*QlpStSolvePt)->getExternSolver(maxLPStage).getRowCount();
+	  
+        cerr << "info: begin resort relaxation" << endl;
+	//cerr << "rows=" << (*QlpStSolvePt)->getExternSolver(maxLPStage).getRowCount() << " snapshot-rows=" << (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot()<< endl;
         for (int i = 0; i < (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();i++) {
-            (*QlpStSolvePt)->getExternSolver(maxLPStage).setLazyStatus(i,true);
+            (*QlpStSolvePt)->getExternSolver(maxLPStage).addCut(
+                                        (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowLhs_snapshot(i)),
+                                        (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowRhs_snapshot())[i].getRatioSign(),
+                                        (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowRhs_snapshot())[i].getValue());
+            (*QlpStSolvePt)->getExternSolver(maxLPStage).setLazyStatus(i,false);
         }
+	ExtSolverParameters Params;
+	Params.decLevel = 1;
+	Params.type = type.getData();
+	Params.v_ids = v_ids.data();
+	Params.nVars = (*QlpStSolvePt)->getExternSolver( maxLPStage ).getVariableCount();
+	(*QlpStSolvePt)->getExternSolver( maxLPStage ).setParameters(Params);
+	//cerr << "0: rows=" << (*QlpStSolvePt)->getExternSolver(maxLPStage).getRowCount() << " snapshot-rows=" << (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot()<< endl;
+	(*QlpStSolvePt)->solveStage(maxLPStage, status, lb, ub, solution, algorithm::Algorithm::WORST_CASE, -1, -1);
+	if (1) {
+	  (*QlpStSolvePt)->getExternSolver( maxLPStage ).clearLP_snapshot();
+	  (*QlpStSolvePt)->getExternSolver( maxLPStage ).prepareMatrixRowForm();
+	  for (int i = start_rows; i < (*QlpStSolvePt)->getExternSolver(maxLPStage).getRowCount();i++) {
+	    std::vector<data::IndexedElement> row;
+	    (*QlpStSolvePt)->getExternSolver( maxLPStage ).getRowLhs(i, row);
+	    std::vector<data::QpRhs> rhs_vector;
+	    (*QlpStSolvePt)->getExternSolver( maxLPStage ).getRhs(rhs_vector);
+	    data::QpRhs rhs = rhs_vector[i];
+	    double lhs=0.0;
+	    (*QlpStSolvePt)->getExternSolver( maxLPStage ).addLProw_snapshot(row, rhs);
+	    if (solution.size() > 0) {
+	      for (int k=0;k<row.size();k++)
+		lhs = lhs + row[k].value.asDouble() * solution[row[k].index].asDouble();
+	    } else {
+	      lhs = rhs.getValue().asDouble();
+	    }
+	    if (fabs(rhs.getValue().asDouble() - lhs) < 1e-9 || i < 10) {
+	      //cerr << "f" << fabs(rhs.getValue().asDouble() - lhs);
+	      (*QlpStSolvePt)->getExternSolver(maxLPStage).setLazyStatus(i-start_rows,false);
+	    } else {
+	      //cerr << "t" << fabs(rhs.getValue().asDouble() - lhs);
+	      (*QlpStSolvePt)->getExternSolver(maxLPStage).setLazyStatus(i-start_rows,true);
+	    }
+	  }
+	  (*QlpStSolvePt)->getExternSolver( maxLPStage ).removeCutsFromCut(start_rows);
+	  //cerr << "I: rows=" << (*QlpStSolvePt)->getExternSolver(maxLPStage).getRowCount() << " snapshot-rows=" << (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot()<< endl;
+	  for (int i = 0; i < (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();i++) {
+	    if ((*QlpStSolvePt)->getExternSolver(maxLPStage).getLazyStatus(i) == false) {
+	      (*QlpStSolvePt)->addUserCut(maxLPStage,
+		  (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowLhs_snapshot(i)),
+		  (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowRhs_snapshot())[i].getRatioSign(),
+		  (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowRhs_snapshot())[i].getValue());
+	    }
+	  }  
+        }
+	//cerr << "II: rows=" << (*QlpStSolvePt)->getExternSolver(maxLPStage).getRowCount() << " snapshot-rows=" << (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot() << endl;
+	cerr << "info: finished resort relaxation. LP has " << (*QlpStSolvePt)->getExternSolver(maxLPStage).getRowCount() << " many rows." << endl;
+#else
+        for (int i = 0; i < (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();i++) {
+	   (*QlpStSolvePt)->getExternSolver(maxLPStage).setLazyStatus(i,true);
+        }
+#endif
+#endif
     }
-    
-    
+
+    numConstraints = (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();//qlp.getConstraintCount();
+        for (int i = 0; i < numConstraints;i++) {
+        data::QpRhs &org_rhs = (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowRhs_snapshot())[i];
+        std::vector<data::IndexedElement> &org_lhs = *(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowLhs_snapshot(i);
+        double lb=0.0;
+        double ub=0.0;
+        bool lsh = false;
+	bool hasBigX=false; // we have a redesign of vaiables. bigX variables are no longer valid. Constraints with it neither.
+        for (int ii=0; ii < org_lhs.size();ii++) {
+	  if (org_lhs[ii].index > max_var_index) {
+	    hasBigX=true;
+	    cerr << "bigX:" << org_lhs[ii].index << " at ii=" << ii << endl;
+	  }
+	}
+	assert(!hasBigX);
+    }
+
     // 4. Durchlauf
     ministack.clear();
     //push node
@@ -2678,7 +2940,7 @@ Ltry_again:;
                 int var = tree[zz].father_move.first;
                 int val = tree[zz].father_move.second;
                 if (qbp->getAssignment(var) != extbool_Undef && qbp->getAssignment(var) != val) {
-                    if(qbp->getShowWarning()) cerr << "Warning: Scenario var = " << var << " and value = " << val << " and replacement =" << tree[x].variables[var].second << endl;
+                    cerr << "Scenario var = " << var << " and value = " << val << " and replacement =" << tree[x].variables[var].second << endl;
                     continue;
                 }
                 assert(qbp->getAssignment(var) == extbool_Undef || qbp->getAssignment(var) == val);
@@ -2687,17 +2949,17 @@ Ltry_again:;
                     continue;
                 }
                 
-                int64_t oob = qbp->assign(var,val, qbp->getTrailSize(),CRef_Undef, false);
+                int64_t oob = qbp->assign(alpha1,var,val, qbp->getTrailSize(),CRef_Undef, false);
                 if (oob != ASSIGN_OK) {
                     while (qbp->getTrailSize() > rem_trail) {
                         qbp->unassign(qbp->getTrailElement(qbp->getTrailSize()-1),false,false);
                     }
                     //assert(0);
-                    if(qbp->getShowInfo()) cerr << "Info: In Resizer assignment not possible." << endl;
+                    if(qbp->getShowWarning()) cerr << "Warning: assignment not possible in resizer." << endl;
                 } else {
                     CRef confl, confl_partner;
                     int confl_var;
-                    if (qbp->propagate(confl, confl_var, confl_partner, true, false,qbp->nVars())) {
+                    if (qbp->propagate(alpha1,confl, confl_var, confl_partner, true, false,qbp->nVars())) {
                         
                         // well
                     } else {
@@ -2740,8 +3002,24 @@ Ltry_again:;
     v_ex.resize(max_var_index+2);
     if (info_level >= -5) cerr << "qlp Var Count: " << qlp.getVariableCount() << " vs N "<< N+(int)UseSingleVarObjective<<endl;
     if (0&&top_scenarios.size()==0) assert(qlp.getVariableCount() == N+(int)UseSingleVarObjective);
-    if (info_level > 0) cerr << "Size of QLP: " << (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot() << "x" << qlp.getVariableCount() << " Considered Scenarios: " << top_scenarios.size() << endl;
+    if (info_level >= -5) cerr << "Size of QLP: " << (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot() << "x" << qlp.getVariableCount() << " Considered Scenarios: " << top_scenarios.size() << endl;
     //assert(0);
+    numConstraints = (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();//qlp.getConstraintCount();
+    for (int i = 0; i < numConstraints;i++) {
+        data::QpRhs &org_rhs = (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowRhs_snapshot())[i];
+        std::vector<data::IndexedElement> &org_lhs = *(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowLhs_snapshot(i);
+        double lb=0.0;
+        double ub=0.0;
+        bool lsh = false;
+	bool hasBigX=false; // we have a redesign of vaiables. bigX variables are no longer valid. Constraints with it neither.
+        for (int ii=0; ii < org_lhs.size();ii++) {
+	  if (org_lhs[ii].index > max_var_index) {
+	    hasBigX=true;
+	    cerr << "bigX:" << org_lhs[ii].index << " at ii=" << ii << endl;
+	  }
+	}
+	assert(!hasBigX);
+    }
     return qlp.getVariableCount();
 }
 
@@ -3052,7 +3330,7 @@ void Resizer_::findCC(std::vector< std::vector<int> > &ccs, std::vector< std::ve
   }
 }
 
-bool Resizer_::assign(QBPSolver *qbp, int va, int val) {
+bool Resizer_::assign(QBPSolver *qbp, int va, int val, float alpha1) {
   int rem_dl = qbp->decisionLevel();
   bool result = true;
   assert(qbp->decisionLevel() <= 1);
@@ -3060,9 +3338,9 @@ bool Resizer_::assign(QBPSolver *qbp, int va, int val) {
     qbp->decreaseDecisionLevel();
   int64_t oob;
   if (qbp->getType(va) == 0)
-    oob = qbp->assign(va, val, qbp->getTrailSize(),CRef_Undef, false);
+    oob = qbp->assign(alpha1, va, val, qbp->getTrailSize(),CRef_Undef, false);
   else 
-    oob = qbp->real_assign(va, val, qbp->getTrailSize(),CRef_Undef);
+    oob = qbp->real_assign(alpha1, va, val, qbp->getTrailSize(),CRef_Undef);
   if (oob != ASSIGN_OK) {
     result = false;
     cerr << "C: INFEASIBLE after fixing a variable in resizer!" << endl;
@@ -3073,7 +3351,7 @@ bool Resizer_::assign(QBPSolver *qbp, int va, int val) {
   int confl_var;
   CRef confl, confl_partner;
   int remTrail = qbp->getTrailSize();
-  if (oob == ASSIGN_OK && !qbp->propagate(confl, confl_var, confl_partner,false,false,1000000)) {
+  if (oob == ASSIGN_OK && !qbp->propagate(alpha1,confl, confl_var, confl_partner,false,false,1000000)) {
     cerr << "C: INFEASIBLE after fixing a variable in resizer!" << endl;
     cerr << "virtual END II" << endl;
     result = false;

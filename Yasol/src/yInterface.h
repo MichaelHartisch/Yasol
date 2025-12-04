@@ -31,12 +31,33 @@
 
 #include "QBPSolver.h"
 #include "MipSolvers.h"
+
+#include <streambuf>
+
+class NullBuffer : public std::streambuf {
+public:
+    int overflow(int c) override { return c; } // discard all output
+};
+
+class NullStream : public std::ostream {
+public:
+    NullStream() : std::ostream(&m_sb) {}
+private:
+    NullBuffer m_sb;
+};
+
+
 #define EXIST 0
 #define UNIV  1
 
 #define NORMAL_MODE      0
 #define RESTRICTION_MODE 1
 #define RELAXATION_MODE  2
+
+// SOLUTION STATUS
+// STATUS_FEASIBLE
+// STATUS_UNIVERSAL_LOSS
+
 
 const int maxUnivVars = 0;
 
@@ -45,6 +66,13 @@ struct node {
         int i;
         bool onStack;
         int lowlink;
+};
+
+struct SolutionEntry {
+        int index;
+        string name;
+        double value;
+        int block;
 };
 
 class IntInfo {
@@ -58,6 +86,35 @@ public:
    std::string name;
    double tmp_x;
    int number;
+};
+
+class YasolIniParams {
+public:
+  int8_t showInfo=-1;
+  int8_t showWarning=-1;
+  int8_t showError=-1;
+  int8_t writeOutputFile=-1;
+  int8_t maintainPv=-1;
+  int8_t learnDualCuts=-1;
+  int8_t useGMI=-1;
+  int8_t useCover=-1;
+  int8_t useLiftAndProjectCuts=-1;
+  int8_t useLazyLP=-1;
+  int8_t useShadow=-1;
+  int8_t useLimitedLP=-1;
+  int8_t useCglRootPreprocess=-1;
+  int8_t useCglRootCuts=-1;
+  int8_t useHighsHeuristic=-1;
+  int8_t usePump=-1;
+  int8_t useMonotones=-1;
+  int8_t useAlphaCuts=-1;
+  int8_t useAlphabeta=-1;
+  int8_t useMiniSearch=-1;
+  int8_t useConflictGraph=-1;
+  int8_t useStrongBranching=-1;
+  int8_t reduceStrongBranching=-1;
+  int8_t useFastFix=-1;
+  int8_t isSimplyRestricted=-1;
 };
 
 class Component {
@@ -220,7 +277,9 @@ public:
 	        return l.first < r.first;
 	    }
 	};
+        YasolIniParams yip;
 private:
+
 	int yParamMaxHashSize;
 
 	int processNo;
@@ -228,8 +287,11 @@ private:
   bool has_basis;
    	//data::Qlp qlp,dep,qlpRelax,qlptmp;
 	utils::QlpStageSolver *QlpStSolve;
+	double finalRuntimeOfSolve;
     coef_t result;
     time_t timeout;
+    time_t timelimit;
+    bool showSolution;
     std::vector<data::QpNum> reducedCost;
     extSol::QpExternSolver::QpExtSolBase basis;
     const coef_t n_infinity = -1;
@@ -239,6 +301,11 @@ private:
     std::vector< std::pair< std::vector< std::pair<int,double> >,int > > SOSconstraints;
     std::set<std::pair<int,int>, set_compare > SOSvars;
     std::set<int> SOStabus;
+    bool createdDummy=false;
+    bool supressAllOutput=false;
+    NullStream nullStream;
+    std::streambuf* coutBuf = nullptr;
+    std::streambuf* cerrBuf = nullptr;
     double LPoffset;
     std::vector<node> stack_S;
     std::vector< std::pair< std::vector<data::IndexedElement>,double > > RelaxationBuffer;
@@ -264,6 +331,85 @@ public:
 	const int LaP = 4;
 	const int UserCut = 8;
 	const int CGL_LIB = 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096;
+        const int MirSmart= 8192;
+
+
+    void setShowSolution(bool v){ showSolution=v;}
+    void setParam(const std::string& name, int value){
+    	if (name == "timeLimit") {
+    	    setTimelimit(value); 
+    	} else if (name == "useGMI") {
+            qbp->setUseGMI(value);
+        } else if (name == "useMiniSearch") {
+            qbp->setUseMiniSearch(value);
+    	} else if (name == "useCover") {
+            qbp->setUseCover(value);
+    	} else if (name == "useStrongBranching") {
+            qbp->setUseStrongBranching(value);
+    	} else if (name == "isSimplyRestricted") {
+            qbp->setIsSimplyRestricted(value);
+    	} else {
+            throw std::invalid_argument("Unknown int parameter: " + name);
+        }	
+    }
+
+    void setParam(const std::string& name, bool value){
+    	if (name == "showInfo") {
+    	    qbp->setShowInfo(value);
+    	} else if (name == "showWarning") {
+    	    qbp->setShowWarning(value);
+	} else if (name == "showError") {
+    	    qbp->setShowError(value);
+    	} else if (name == "useAlphaCuts") {
+    	    qbp->setUseAlphaCuts(value);
+	} else if (name == "useMCTS") {
+    	    qbp->setUseMcts(value);
+    	} else if (name == "useCglRootCuts") {
+    	    qbp->setUseCglRootCuts(value);
+	} else if (name == "reduceStrongBranching") {
+    	    qbp->setReduceStrongBranching(value);
+    	} else {
+            throw std::invalid_argument("Unknown bool parameter: " + name);
+        }	
+    }
+
+
+    void doShowSolution(){
+        if(showSolution){
+          vector<SolutionEntry> theSolution= getSolution();
+		  int block=0;
+		  for (int i=0;i<theSolution.size();i++){
+		    if (block<theSolution[i].block){
+		      block++;
+		      cout << "==============Block "<< block << "=============="<<endl; 
+		    }
+		    cout << "x_"<<theSolution[i].index << " ("<< theSolution[i].name<<")="<< theSolution[i].value << endl;
+		  }
+		}
+    }
+    void writeSolutionFile(string filename){
+    	qbp->setWriteOutputFile(true);
+    	if(getStatus() == YASOL_OPTIMAL){
+ 	    qbp->WriteSolutionFile(result+qbp->getFinalOffset(), finalRuntimeOfSolve, "OPTIMAL", filename, createdDummy);
+    	}
+    	else if(getStatus() == YASOL_FEASIBLE){
+ 	    qbp->WriteSolutionFile(result+qbp->getFinalOffset(), finalRuntimeOfSolve, "FEASIBLE", filename, createdDummy);
+    	}
+ 	else if(getStatus() == YASOL_INCUMBENT){
+ 	    qbp->WriteSolutionFile(qbp->getIncumbentScore(), finalRuntimeOfSolve, "INCUMBENT", filename, createdDummy);
+ 	}
+ 	else if (getStatus()==YASOL_UNSAT)
+ 	    std::cerr << "No solution file produced.\nReason: instance is infeasible. ";
+ 	else if (getStatus()==YASOL_UNKNOWN)
+ 	    std::cerr << "No solution file produced.\nReason: terminated without incumbent — feasibility not established.";
+ 	else
+ 	    std::cerr << "No solution file produced.\nReason: unknown status.";
+    }
+
+    void supressOutput(){
+    	supressAllOutput=true;
+    }
+
     void ySetProcessNo(int pno) { processNo = pno; qbp->ySetProcessNo(pno); }
     int64_t getNumberOfDecisions() { return qbp->getNumberOfDecisions(); }
     int64_t getNumberOfPropagationSteps() { return qbp->getNumberOfPropagationSteps(); }
@@ -272,6 +418,8 @@ public:
     int getmRows() { return qbp->mRows(); }
     int getnVars() { return qbp->nVars(); }
     time_t getTimeout() { return timeout; }
+    time_t getLimit() { return timelimit; }
+
     coef_t getNinf() { return qbp->getNegativeInfinity(); }
 
 	int confl_var;
@@ -290,7 +438,7 @@ public:
 
 	void updateNode(int nodeID) {
 	  qbp->MCTS.updateFatherScore(nodeID, true);
-	  std::cerr << "new father value = " << qbp->MCTS.nodes[ qbp->MCTS.nodes[nodeID].fatherID ].minmax_bnd << std::endl;
+	  //std::cerr << "new father value = " << qbp->MCTS.nodes[ qbp->MCTS.nodes[nodeID].fatherID ].minmax_bnd() << std::endl;
 	}
 
 	double ipow2(int x) {
@@ -299,6 +447,129 @@ public:
 		if (x <= 0) return 1.0;
 		for (int i = 0; i < x;i++) r = r*2.0;
 		return r;
+	}
+
+	void solve(){
+		if (supressAllOutput){
+		    qbp->setShowInfo(false);
+		    qbp->setShowWarning(false);
+		    qbp->setShowError(false);
+		    qbp->setShowAnything(false);
+	            coutBuf = std::cout.rdbuf();
+	            cerrBuf = std::cerr.rdbuf();
+	            std::cout.rdbuf(nullStream.rdbuf());
+	            std::cerr.rdbuf(nullStream.rdbuf());
+		}
+  		//unsigned int timeout = 100; //secs
+  		//setTimeout(time(NULL) + timeout);
+		clock_t start;
+  		start = clock();
+
+  		result=ySolve(time(NULL));
+		finalRuntimeOfSolve=double(clock() - start) / double(CLOCKS_PER_SEC);
+		if(supressAllOutput){
+		    std::cout.rdbuf(coutBuf);
+        	    std::cerr.rdbuf(cerrBuf);
+		}
+	}
+
+	coef_t getResult(){
+		if (this->objInverted) return -result -this->qbp->getFinalOffset();
+		else return result +this->qbp->getFinalOffset();
+	}
+	coef_t getGap(){
+ 	   if(objInverted)
+ 	   	return abs(100.0*(+qbp->getGlobalDualBound() - qbp->getIncumbentScore() ) / (abs(qbp->getIncumbentScore())+1e-10) );
+ 	   	//return abs(100.0*(+qbp->getGlobalDualBound() - getResult()) / (abs(getResult())+1e-10) );
+   	   else
+   	   	return abs(100.0*(-qbp->getGlobalDualBound() - qbp->getIncumbentScore()) / (abs(qbp->getIncumbentScore())+1e-10) );
+	}
+
+	void setGap(double myGap){
+ 	   qbp->setGapLimit(myGap);
+	}
+	coef_t getDual(){
+ 	   if (this->objInverted) return qbp->getGlobalDualBound();
+ 	   else return -qbp->getGlobalDualBound();
+	}
+
+
+std::vector<SolutionEntry> getSolution(){
+    std::vector<SolutionEntry> theSolution;
+    if(!(getStatus()==YASOL_OPTIMAL || getStatus()==YASOL_FEASIBLE || getStatus()==YASOL_INCUMBENT)){
+    	if(qbp->getShowError()) cout << "ERROR: There is no solution to report" << endl;
+    	return theSolution;
+
+    }
+    for(int i = 0; i < getnVars()-createdDummy; i++){
+        if (integers[i].bitcnt > 1) {//get real name without underscore from binarized variables
+      					//create char array from name string
+      	    if (integers[i].pt2leader == i) {
+      	    	SolutionEntry newEntry;
+            	const char *name = integers[i].name.c_str();
+      	    	//positon of underscore in char array
+            	int bpoint = 0;
+            	//get position of underscore
+            	for(int j=0; j<=integers[i].name.length(); j++){
+                    if(name[j]=='_') bpoint = j; // get last underscore
+            	}
+      
+            	//create new name for binarized variable with substring
+           	std::string noBinName = integers[i].name.substr(0,bpoint);
+
+	        int res = 0;
+		for (int z = 0;z < integers[i].bitcnt;z++) {
+		    assert(i+z<getnVars());
+		    if(qbp->getBlock(i) == 1) res = 2*res + qbp->getFirstStageSolutionValue(i+z);
+		    else res = 2*res + qbp->getPV(i+z);
+		}
+		//index of binarized variable
+		std::string vIndex = std::to_string(i) + "-" + std::to_string(integers[i].bitcnt -1 + i);
+
+		newEntry.name = noBinName;
+		newEntry.index = i;
+		newEntry.value = res;
+		newEntry.block = qbp->getBlock(i);
+		theSolution.push_back(newEntry);
+	    }
+	    else continue;
+	}
+        else{
+	//round value if i is of type binary
+            SolutionEntry newEntry;
+            newEntry.name = integers[i].name;
+	    newEntry.index = i;
+	    newEntry.block = qbp->getBlock(i);
+      	    if(qbp->getType(i)==BINARY){
+		if(qbp->getBlock(i)==1) newEntry.value = (int)floor(qbp->getFirstStageSolutionValue(i)+0.5); 
+   		else newEntry.value = (int)floor(qbp->getPV(i)+0.5);
+      	    }else newEntry.value = qbp->getPV(i);
+    	    theSolution.push_back(newEntry);
+    	}
+    }
+    return theSolution;
+  //toWrite += " <variable name=\"" + noBinName + "\" index=\"" + std::to_string(i) + "\" value=\"" + std::to_string(PV[0][i]) + "\" block=\"" + std::to_string(block[i]) + "\"/>\n";
+}
+
+
+
+
+	int getStatus(){ 
+	    if (qbp->getTimedOut()){ // If it ran into timeout, we either have an incumbent solution or no solution at all.
+	        return qbp->getSolutionStatus();
+	    }
+	    else{
+	    	if(qbp->getSolutionStatus() == YASOL_UNSAT) return YASOL_UNSAT;
+	    	else if(qbp->getSolutionStatus() == YASOL_OPTIMAL) return YASOL_OPTIMAL;
+		    else if (!qbp->getFeasibilityOnly()) return YASOL_OPTIMAL;
+		    else if (qbp->getPhase()) return YASOL_FEASIBLE;
+	    	else return YASOL_ERROR;
+	    }
+	    return YASOL_ERROR;
+	}
+
+	double getRuntime(){
+		return finalRuntimeOfSolve;
 	}
 
 	void Reduce(std::string inputfile){
@@ -1278,27 +1549,6 @@ for(int g=0;g<conVecU.size();g++){
 		double xVal, yVal;
 		int xInd, yInd;
 
-		if (0&&colx == 90 && coly == 91) {
-			cerr << "Rows with x91:";
-			for (int i = 0; i < (*X).size();i++)
-				cerr << (*X)[i].value.asDouble() << "u" << (*X)[i].index << " ";
-			cerr << endl;
-			cerr << "Rows with x92:";
-			for (int i = 0; i < (*Y).size();i++)
-				cerr << (*Y)[i].value.asDouble() << "u" << (*Y)[i].index << " ";
-			cerr << endl;
-		}
-		if (0&&colx == 91 && coly == 90) {
-			cerr << "Rows with x92:";
-			for (int i = 0; i < (*X).size();i++)
-				cerr << (*X)[i].value.asDouble() << "u" << (*X)[i].index << " ";
-			cerr << endl;
-			cerr << "Rows with x91:";
-			for (int i = 0; i < (*Y).size();i++)
-				cerr << (*Y)[i].value.asDouble() << "u" << (*Y)[i].index << " ";
-			cerr << endl;
-		}
-
 		if (useObj) {
 			xInd = x.index; yInd = y.index;
 			if (x.index < n && y.index < n) {
@@ -1335,12 +1585,6 @@ for(int g=0;g<conVecU.size();g++){
 					else if (xVal > yVal) YdomX = false;
 					j++;
 				} else if ((*X)[i].index == (*Y)[j].index) {
-					if (0&&colx == 90 && coly == 91) {
-						cerr << (*X)[i].value.asDouble() << "x90 und " << (*Y)[j].value.asDouble() << "x91" << endl;
-					}
-					if (0&&colx == 91 && coly == 90) {
-						cerr << (*X)[i].value.asDouble() << "x91 und " << (*Y)[j].value.asDouble() << "x90" << endl;
-					}
 					assert((*RHSs)[(*X)[i].index].getRatioSign() != data::QpRhs::RatioSign::greaterThanOrEqual);
 					if ((*X)[i].value.asDouble() < (*Y)[j].value.asDouble() ) {
 						XdomY = false;
@@ -1657,7 +1901,7 @@ for(int g=0;g<conVecU.size();g++){
 					SOSvarsSparse.push_back(z);
 				} else if (assigns[z]!=2) {
 					if (fabs((double)assigns[z]-solution[z].asDouble()) > 0.1) {
-						cerr << "Error: assigned but fractional: " << (int)assigns[z] << "," << solution[z].asDouble() << endl;
+					  if (qbp->getShowError()) cerr << "Error: assigned but fractional: " << (int)assigns[z] << "," << solution[z].asDouble() << endl;
 						return false;
 					}
 					solution[z] = (double)assigns[z];
@@ -1845,6 +2089,11 @@ for(int g=0;g<conVecU.size();g++){
 	void setInfoLevel(int l) { info_level = l; }
 	int getInfoLevel() { return info_level; }
 
+	void setTimelimit(time_t t) {
+		timelimit = t;
+		qbp->setTimeout(time(NULL) + t);
+	}
+
 	void setTimeout(time_t t) {
 		timeout = t;
 		qbp->setTimeout(t);
@@ -1882,7 +2131,7 @@ for(int g=0;g<conVecU.size();g++){
     	return false;
     }
 
-    void yInit(data::Qlp& orgQlp,std::string inputfile="") {
+    void yInit(data::Qlp& orgQlp,std::string inputfile) {
 
       qlp = orgQlp;
       qlpRelax = orgQlp;
@@ -1910,12 +2159,14 @@ for(int g=0;g<conVecU.size();g++){
       qbp->AllSolver->init(orgQlp, data::QpRhs::Responsibility::UNIVERSAL);
       qbp->ExistSolver->init(orgQlp, data::QpRhs::Responsibility::EXISTENTIAL);
        if(qbp->getShowInfo()) cerr << "info: initialized AllSolver" << endl;
-      if (qbp->nVars() > 40000 || qbp->getHasObjective() == false) {
+       if(qbp->getShowInfo()) cerr << "info: #constraints: " << qbp->getNumberOfConstraints() << endl;       
+       if (qbp->getNumberOfConstraints() > 200000 || qbp->getHasObjective() == false) {
 	 if(qbp->getShowInfo()) std::cerr << "info: auto-deactivation of Cgl-Options" << std::endl;
 	qbp->setUseCglRootCuts(false);
       }
 #ifndef NO_CGL
-      cbc->CutGenSolver->init(orgQlp, data::QpRhs::Responsibility::EXISTENTIAL);
+      if (qbp->getUseCglRootCuts()) 
+	cbc->CutGenSolver->init(orgQlp, data::QpRhs::Responsibility::EXISTENTIAL);
       if (qbp->getInfoLevel()>-8 && qbp->getUseCglRootCuts()) {
 	if(qbp->getShowInfo())cerr << "info: Initialized CBCSolver" << endl;
       }
@@ -1935,6 +2186,81 @@ for(int g=0;g<conVecU.size();g++){
       qbp->DepManInitFillRate();
       qbp->setInputFileName(inputfile);
     }
+
+	void yInit(data::Qlp& orgQlp) {
+	this->objInverted=false;
+	if( orgQlp.getObjective() == data::QpObjFunc::max ){
+		orgQlp.reverseObjFunc();
+		objInverted = true;
+	} else objInverted = false;
+	std::vector<const data::QpVar *> varVec = orgQlp.getVariableVectorConst();
+	if (varVec[varVec.size()-1]->getQuantifier() == data::QpVar::all){
+	    createdDummy=true;
+	    orgQlp.createVariable(data::QpVar("dummy", varVec.size(), 0.0, 1.0,  data::QpVar::NumberSystem::binaries, data::QpVar::exists));
+	}
+	data::Qlp* binQlpPt = new data::Qlp;
+	int SimplificationFailed=this->makeBinary(orgQlp, *binQlpPt);
+	if(SimplificationFailed) {
+		std::cout << "Sorry, making binary failed. Fatal error -> stop." << std::endl;    
+		exit(1);
+	}
+      qlp = *binQlpPt;
+      qlpRelax = *binQlpPt;
+
+      utils::QlpConverter::relaxQlpNumberSystem(qlpRelax);
+
+      std::vector<data::QpVar*> vars = qlpRelax.getVariableVectorByQuantifier(data::QpVar::all);
+      std::vector<int> l_cU;
+      if (vars.size() > maxUnivVars) {
+	for(unsigned int i = 0; i < vars.size() - maxUnivVars;i++){
+	  vars[i]->setQuantifier(data::QpVar::exists);
+	  l_cU.push_back(vars[i]->getIndex());
+	}
+      }
+
+      //QlpStSolve = new utils::QlpStageSolver(qlpRelax,true,false);
+      qbp = new QBPSolver(qlpRelax);
+#ifndef NO_CGL
+      cbc = new CBCSolver();
+#endif
+      qbp->setyIF(this);
+      qbp->determineFixedUniversalVars(l_cU); // not used, gives the possiblity to restrict the number of universal variables and leads to a relaxation
+      yReadInput(yParamMaxHashSize);
+      //cerr << "Start Ini AllSolver" << endl;
+      qbp->AllSolver->init(*binQlpPt, data::QpRhs::Responsibility::UNIVERSAL);
+      qbp->ExistSolver->init(*binQlpPt, data::QpRhs::Responsibility::EXISTENTIAL);
+       if(qbp->getShowInfo()) cerr << "info: initialized AllSolver" << endl;
+       if(qbp->getShowInfo()) cerr << "info: #constraints: " << qbp->getNumberOfConstraints() << endl;       
+       if (qbp->getNumberOfConstraints() > 200000 || qbp->getHasObjective() == false) {
+	 if(qbp->getShowInfo()) std::cerr << "info: auto-deactivation of Cgl-Options" << std::endl;
+	qbp->setUseCglRootCuts(false);
+      }
+#ifndef NO_CGL
+      if (qbp->getUseCglRootCuts()) 
+	cbc->CutGenSolver->init(*binQlpPt, data::QpRhs::Responsibility::EXISTENTIAL);
+      if (qbp->getInfoLevel()>-8 && qbp->getUseCglRootCuts()) {
+	if(qbp->getShowInfo())cerr << "info: Initialized CBCSolver" << endl;
+      }
+      if (qbp->getInfoLevel()>-8) cerr << "Row Count is " << cbc->CutGenSolver->getRowCount() <<endl;
+  //    cbc->CutGenSolver->solve();
+//      cerr << "Solution at root: " << cbc->CutGenSolver->getObjValue() << endl;
+//      cbc->CutGenSolver->CreateCuts();
+#endif
+      qbp->DepManagerInitGraph();
+
+      if(qbp->getShowInfo()) cerr << "info: begin scan dependencies" << endl;
+      qbp->DepManScanConstraints();
+      if(qbp->getShowInfo()) cerr << "info: end scan dependencies" << endl;
+      for (int z=0; z < qbp->nVars();z++) {
+	qbp->insertVar2PriorityQueue(z);
+      }
+      qbp->DepManInitFillRate();
+      qbp->setInputFileName("");
+
+	  qbp->setFinalOffset(orgQlp.getObjFuncOffset().asDouble());
+
+    }
+
 
 	int yInit(std::string inputfile){
 		data::Qlp orgQlp;
@@ -1978,8 +2304,8 @@ for(int g=0;g<conVecU.size();g++){
 	int choosePolarity() {
 		return 0;
 	}
-	bool assignVariable(int pol, int var) {
-		int oob = qbp->assign(var, pol, qbp->getTrailSize(),CRef_Undef, false);
+        bool assignVariable(float alpha, int pol, int var) {
+	  int oob = qbp->assign(alpha, var, pol, qbp->getTrailSize(),CRef_Undef, false);
 		if (oob == ASSIGN_OK) return true;
 		return false;
 	}
@@ -1995,9 +2321,9 @@ for(int g=0;g<conVecU.size();g++){
 		}
 		qbp->addImplication(VCP);
 	}
-	bool propagate() {
+	bool propagate(float alpha) {
 		//if (qbp->propQ.size()==1) cerr << "eas=" << qbp->eas[qbp->propQ[0].v/2] << endl;
-		bool r = qbp->propagate(confl, confl_var, confl_partner, false, false, 1000000);
+	  bool r = qbp->propagate(alpha, confl, confl_var, confl_partner, false, false, 1000000);
 		return r;
 	}
 	void write_nodeinfo(int nodeID){
@@ -2067,6 +2393,7 @@ for(int g=0;g<conVecU.size();g++){
 		coef_t score;
 		coef_t value;
 		coef_t r;
+		float alpha = 1e-30;
 		int v;
 		ValueConstraintPair VCP;
 		int target_level;
@@ -2085,12 +2412,12 @@ for(int g=0;g<conVecU.size();g++){
 				return score;
 			}
 			qbp->increaseDecisionLevel();
-			bool success = assignVariable(!p ? i : 1-i ,v);
+			bool success = assignVariable(alpha, !p ? i : 1-i ,v);
 			//cerr << "assign " << v << "=" << (!p ? i : 1-i) << endl;
  			if (!success) continue;
 			do {
 				//if (qbp->propQ.size()>0) cerr << "prop1" << endl;
-				success = propagate();
+				success = propagate(alpha);
 				//if (qbp->propQ.size()>0) cerr << "prop2" << endl;
 				//else cerr << "S=" << success << endl;
 				//cerr << "Trail after P(" << v << "," << qbp->decisionLevel()-1 << "):";
@@ -2156,6 +2483,7 @@ for(int g=0;g<conVecU.size();g++){
 		qbp->setInitilizationTime(ini_time);
 	    qbp->increaseDecisionLevel();
 	    r = qbp->search(0, (void*)this);
+	    if (qbp->getTimedOut()) return r;
 		for (int i = 0; i < qbp->nVars(); i++) {
 			bitcnts.push_back(integers[i].bitcnt);
 			pt2leaders.push_back(integers[i].pt2leader);
@@ -2166,7 +2494,7 @@ for(int g=0;g<conVecU.size();g++){
 				for (int i = 0; i < qbp->nVars(); i++) {
 					//cerr << "x" << i << "(" << qbp->getType(i) << "," << qbp->getBlock(i) << "," << integers[i].bitcnt << ") ";
 					if (qbp->getType(i) == 5000 /*CONTINUOUS*/) {
-						if (qbp->getLowerBound(i) == qbp->getUpperBound(i)) {
+						if (0&&qbp->getLowerBound(i) == qbp->getUpperBound(i)) {
 							cerr << qbp->getLowerBound(i) << " ";
 						} else if (qbp->getBlock(i) == 1) cerr << qbp->getFirstStageSolutionValue(i) << " ";
 							   else cerr << "c" <<  qbp->getBlock(i) << " ";
@@ -2231,13 +2559,17 @@ for(int g=0;g<conVecU.size();g++){
     restrictrhs = 0.0;
     if(qbp->getShowInfo()){
     cerr << "learnDualCuts=" << qbp->getLearnDualCuts() << endl;
+    cerr << "useHighsHeuristic=" << qbp->getUseHighsH() << endl;
+    cerr << "useAlphaCuts=" << qbp->getUseAlphaCuts() << endl;
+    cerr << "useUniversalInducedRelaxation=" << qbp->getUseUniversalInducedRelaxation() << endl;
     cerr << "useGMI=" << qbp->getUseGMI() << endl;
-    cerr << "showInfo=" << qbp->getShowInfo() << endl;
+    cerr << "showInfo=" << qbp->getShowInfoInt() << endl;
     cerr << "showWarning=" << qbp->getShowWarning() << endl;
     cerr << "showError=" << qbp->getShowError() << endl;
     cerr << "useCover=" << qbp->getUseCover() << endl;
     cerr << "usePump=" << qbp->getUsePump() << endl;
-    cerr << "useMiniSeach=" << qbp->getUseMiniSearch() << endl;
+    cerr << "useMiniSearch=" << qbp->getUseMiniSearch() << endl;
+    cerr << "useConflictGraph=" << qbp->getUseConflictGraph() << endl;
     cerr << "useShadow=" << qbp->getUseShadow() << endl;
     cerr << "useLazyLP=" << qbp->getUseLazyLP() << endl;
     cerr << "useCglRootCuts=" << qbp->getUseCglRootCuts() << endl;
@@ -2271,9 +2603,9 @@ for(int g=0;g<conVecU.size();g++){
       if (numConstraints > 5) {
 	search_mode = NORMAL_MODE;
         if(qbp->getShowInfo()){
-	  cerr << "info switch to normal mode" << endl;
+	  if (!supressAllOutput) cerr << "info switch to normal mode" << endl;
         }
-        cerr << "Yasol ready"<<endl;
+        if (!supressAllOutput) cerr << "Yasol ready"<<endl;
       }
     }
     double res = qbp->searchInitialization(0, (void*)this);
@@ -2294,6 +2626,7 @@ for(int g=0;g<conVecU.size();g++){
 	restrictrhs=0.0;
         //qbp->searchInitialization(0, (void*)this);
 	r = qbp->search(0, (void*)this, search_mode, restrictlhs, restrictrhs, fstStSol, global_score, global_dual_bound, alpha, beta);
+	if (qbp->getTimedOut()) return r;
 	break;
 	//if (qbp->getInfoLevel() >= 0) return r;
 	//else return (r > (coef_t)0 ? (coef_t)1 : (coef_t)0);
@@ -2324,7 +2657,7 @@ for(int g=0;g<conVecU.size();g++){
 	    }
 	  }
 	  restrictrhs = restrictrhs - widthFactor * 5; // * (int)log2((double)qbp->nVars());//30.0;
-	  cerr << "try LOCAL SEARCH with width " << widthFactor * 5 /* * (int)log2((double)qbp->nVars())*/ << endl;
+	  if (!supressAllOutput) cerr << "try LOCAL SEARCH with width " << widthFactor * 5 /* * (int)log2((double)qbp->nVars())*/ << endl;
 	  if (widthFactor * 5 /* * (int)log2((double)qbp->nVars())*/ >= qbp->nVars()) pass = -1;
 	} else {
 	  beta = qbp->getDontKnowValue() / 2.0;//-qbp->getDontKnowValue();
@@ -2334,10 +2667,12 @@ for(int g=0;g<conVecU.size();g++){
 	  qbp->setUseFstSTSolFirst(false);
 	  if (restrictlhs.size() > 0) {
 	    restrictrhs = restrictrhs - 20;
-	    cerr << "try EXTENDED ROUNDING" << endl;
-	  } else cerr << "try ROUNDING" << endl;
+	    if (!supressAllOutput)
+	    	cerr << "try EXTENDED ROUNDING" << endl;
+	  } else if (!supressAllOutput) cerr << "try ROUNDING" << endl;
 	}
 	r = qbp->search(0, (void*)this, search_mode, restrictlhs, restrictrhs, fstStSol, global_score, dual_bound, alpha, beta);
+	if (qbp->getTimedOut()) return r;
 	global_dual_bound = qbp->getGlobalDualBound();
 	qbp->getFirstStageSolution(fstStSol);
 	if (global_score < qbp->getGlobalScore()) {
@@ -2387,7 +2722,7 @@ for(int g=0;g<conVecU.size();g++){
 	}
 
 	HT->~HTable();
-	if(qbp->getShowInfo()) std::cerr << "Info: ready for relaxation search " << endl;
+	//std::cerr << "READY for relaxation search " << endl;
         std::string StoreInputFilename=qbp->getInputFileName();
 	delete qbp;
 	qlp.deleteAllRows();
@@ -2527,12 +2862,13 @@ for(int g=0;g<conVecU.size();g++){
 	  //for (int i = 0; i < fstStSol.size(); i++) {
 	  //  std::cerr << " " << fstStSol[i];
 	  //}
-	  std::cerr << std::endl;
+	  //std::cerr <<"A THIS?"<< std::endl;
 	  if (pass < 0)
 	    qbp->setOutputSupport(false);
 	  else
 	    qbp->setOutputSupport(true);
 	  r = qbp->search(0, (void*)this, search_mode, remLhs,  remRhs, fstStSol, global_score, global_dual_bound, alpha, beta);
+	  if (qbp->getTimedOut()) return r;
 	  if (qbp->getShowInfo())std::cerr << "info: return " << r << " gs=" << global_score << " beta=" << beta << std::endl;
 	  if (pass < 0) break;
 	      if (0) {
@@ -2569,7 +2905,6 @@ for(int g=0;g<conVecU.size();g++){
 		  data::QpNum zero = qlp.getObjectiveFunctionElement(ii);
 		  cerr << zero.asDouble() << "x" << ii << " + ";
 		}
-		std::cerr << std::endl;
 
 	      }
 	      if (0) {
@@ -2637,7 +2972,7 @@ for(int g=0;g<conVecU.size();g++){
 	    QlpStSolve->changeObjFuncCoeff(qbp->getMaxLPStage(), i, zero);
 	  }
 	  lastRow = RelaxationBuffer.size()-2;
-	  if (qbp->getShowInfo()) std::cerr << " Remaining iterations " << lastRow << std::endl;
+	  //std::cerr << " Remaining iterations " << lastRow << std::endl;
 	  //std::cerr << "LAST ROW " <<  lastRow << std::endl;
 	  if (lastRow < 0) {
 	    //std::cerr << "FINALE!!!!!" << std::endl;
@@ -2726,7 +3061,7 @@ for(int g=0;g<conVecU.size();g++){
 	for (int i = 0; i < qbp->nVars(); i++) {
 	  //cerr << "x" << i << "(" << qbp->getType(i) << "," << qbp->getBlock(i) << "," << integers[i].bitcnt << ") ";
 	  if (qbp->getType(i) == 5000 /*CONTINUOUS*/) {
-	    if (qbp->getLowerBound(i) == qbp->getUpperBound(i)) {
+	    if (0&&qbp->getLowerBound(i) == qbp->getUpperBound(i)) {
 	      cerr << qbp->getLowerBound(i) << " ";
 	    } else if (qbp->getBlock(i) == 1) cerr << qbp->getFirstStageSolutionValue(i) << " ";
 	    else cerr << "c" <<  qbp->getBlock(i) << " ";
@@ -2770,6 +3105,7 @@ for(int g=0;g<conVecU.size();g++){
 	    confl_partner = CRef_Undef;
 	    offset_shift = 0.0;
 	    confl_var = 0;
+	    showSolution=0;
 	}
 
 	double computeCutRatio(vector< pair<unsigned int, double> >& cut);
@@ -2778,7 +3114,7 @@ for(int g=0;g<conVecU.size();g++){
 #ifndef FIND_BUG
 	virtual int GenerateCutAndBranchCuts( extSol::QpExternSolver& externSolver, vector< vector< data::IndexedElement > > &listOfCutsLhs,
 			       vector< data::QpNum > &listOfCutsRhs, vector<int> &listOfCutsVars,
-					      int treedepth, int currentBlock, bool &global_valid, std::vector<unsigned int> &candidates, int cuttype, int* types, int8_t *assigns, unsigned int initime, int* solu, int *fixs, int *blcks, int orgN, double intLB);
+					      int treedepth, int currentBlock, bool &global_valid, std::vector<unsigned int> &candidates, int cuttype, int* types, int8_t *assigns, unsigned int initime, int* solu, int *fixs, int *blcks, int *eass, int orgN, double intLB);
 #else
 	virtual int GenerateCutAndBranchCuts( extSol::QpExternSolver& externSolver, vector< vector< data::IndexedElement > > &listOfCutsLhs,
 			       vector< data::QpNum > &listOfCutsRhs,

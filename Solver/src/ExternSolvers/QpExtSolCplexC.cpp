@@ -298,8 +298,10 @@ void QpExtSolCplexC::setBase(extSol::QpExternSolver::QpExtSolBase& base) {
 	}
 }
 
-void QpExtSolCplexC::setRayGuess(const std::vector<data::QpNum>& rayGuess) {
-
+void QpExtSolCplexC::setRayGuess(const std::vector<data::QpNum>& rayGuess) {   
+#ifdef SHOW_EXTERN_SOLVER_WARNINGS
+    std::cerr << "info: my LP solver is based upon cplex." << std::endl;
+#endif
 }
 
 void QpExtSolCplexC::adaptToSolverMode(QpExtSolSolverMode m) {
@@ -337,7 +339,7 @@ void QpExtSolCplexC::adaptToSolverMode(QpExtSolSolverMode m) {
 		CPXXsetintparam(iloEnvCl, CPX_PARAM_THREADS, NUM_THREADS);
 	} else if (m == BARRIER) {
 		CPXXsetintparam(iloEnvCl, CPX_PARAM_LPMETHOD, CPX_ALG_BARRIER);
-		CPXXsetintparam(iloEnvCl, CPX_PARAM_BARCROSSALG, 2);
+		CPXXsetintparam(iloEnvCl, CPX_PARAM_BARCROSSALG, 0); //0 auto 1 primal 2 dual    
 		CPXXsetintparam(iloEnvCl, CPX_PARAM_PREIND, /*CPX_OFF*/CPX_OFF);
 		CPXXsetintparam(iloEnvCl, CPX_PARAM_THREADS, NUM_THREADS);
 	} else if (m == BARRIER_NO_CROSS) {
@@ -1315,6 +1317,54 @@ void QpExtSolCplexC::initInternalLP_snapshot(const data::Qlp& qlp)
 	for (int i = 0; i < numConstraints;i++) {
 	  data::QpRhs org_rhs = *rhsVec[i];
 	  std::vector<data::IndexedElement> org_lhs = conVec[i]->getElements();
+
+	  // split in leq-manner
+	  data::QpNum multiplier = 1.0;
+	  if (org_rhs.getRatioSign() == data::QpRhs::RatioSign::greaterThanOrEqual)
+	    multiplier = -1.0;
+	  std::vector<data::IndexedElement> negSummands;
+	  std::vector<data::IndexedElement> posSummands;
+	  std::vector<data::IndexedElement> indifferentSummands;
+	  for (int j=0; j < org_lhs.size();j++) {
+	    data::QpNum coef = org_lhs[j].value * multiplier;
+	    data::QpNum lb = varVec[org_lhs[j].index]->getLowerBound();
+	    data::QpNum ub = varVec[org_lhs[j].index]->getUpperBound();
+	    if (coef >= 0.0 && lb >= 0.0)
+	      posSummands.push_back(org_lhs[j]);
+	    else if (coef <= 0.0 && ub <= 0.0)
+	      posSummands.push_back(org_lhs[j]);
+	    else if (coef <= 0.0 && lb >= 0.0)
+	      negSummands.push_back(org_lhs[j]);
+	    else if (coef >= 0.0 && ub <= 0.0)
+	      negSummands.push_back(org_lhs[j]);
+	    else indifferentSummands.push_back(org_lhs[j]);
+	  }
+	  data::QpNum sumPosCoefs = 0.0;
+	  data::QpNum sumNegCoefs = 0.0;
+	  for (int j=0;j<negSummands.size();j++)
+	    sumNegCoefs = sumNegCoefs + fabs(negSummands[j].value.asDouble());
+	  for (int j=0;j<posSummands.size();j++)
+	    sumPosCoefs = sumPosCoefs + fabs(posSummands[j].value.asDouble());
+	  if (indifferentSummands.size() == 0) {
+	    if (negSummands.size() == 1 && posSummands.size() > 1 && varVec[negSummands[0].index]->getNumberSystem()==data::QpVar::binaries && org_rhs.getValue() < 1e-8 && org_rhs.getValue() > -1e-8) { // disaggregate
+	      data::QpNum gegSummand0 = (negSummands[0].value >= 0 ? negSummands[0].value : data::QpNum(-1.0)*negSummands[0].value);
+	      if ( gegSummand0 >= sumPosCoefs-1e-8 ) {
+		std::cerr << "disaggregate!" << std::endl;
+		for (int j=0;j<posSummands.size();j++) {
+		  std::vector<data::IndexedElement> dummy_lhs(1);
+		  dummy_lhs[0] = posSummands[j];
+		  data::QpRhs dummy_rhs;
+		  dummy_rhs.setRatioSign(data::QpRhs::RatioSign::smallerThanOrEqual);
+		  dummy_rhs.setValue(0.0);
+		  LHSs.push_back(dummy_lhs);
+		  RHSs.push_back(dummy_rhs);
+		  lazyRowIndicator.push_back(true);
+		  lazyRows.push_back(RHSs.size()-1);
+		  setStatus(RHSs.size()-1, computeStatus(dummy_lhs, dummy_rhs) );
+		}
+	      }
+	    }
+	  }
 	  
 	  LHSs.push_back(org_lhs);
 	  RHSs.push_back(org_rhs);
