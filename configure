@@ -167,14 +167,12 @@ then
   fi
 fi
 
-if [ $debug = yes ]
-then
+if [ $debug = yes ]; then
   CMKFLAGS="$CMKFLAGS -DCMAKE_BUILD_TYPE=debug"
-fi
-
-if [ $debug3 = yes ]
-then
+elif [ $debug3 = yes ]; then
   CMKFLAGS="$CMKFLAGS -DCMAKE_BUILD_TYPE=debug3"
+else
+  CMKFLAGS="$CMKFLAGS -DCMAKE_BUILD_TYPE=Release"
 fi
 
 if [ $cgl = yes ]
