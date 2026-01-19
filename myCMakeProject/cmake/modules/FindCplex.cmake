@@ -54,6 +54,7 @@ FIND_LIBRARY(CPLEX_LIBRARY
 HINTS ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_linux/static_pic #linux
         ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_osx/static_pic #osx
         ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_darwin/static_pic #osx
+        ${CPLEX_ROOT_DIR}/cplex/lib/arm64_osx/static_pic #osx
   PATHS ENV LIBRARY_PATH #unix
         ENV LD_LIBRARY_PATH #unix
   )

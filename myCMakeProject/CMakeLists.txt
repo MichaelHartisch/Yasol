@@ -14,12 +14,7 @@ set(USE_HIGHS_NUM 0)
 set(USE_COIN_NUM 0)
 
 if(USE_CPLEX)
-    if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "arm64")
-        message(STATUS "Detected Apple Silicon (arm64). Forcing build to x86_64.")
-        set(CMAKE_OSX_ARCHITECTURES "x86_64")
-    else()
-        message(STATUS "Detected architecture: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
-    endif()
+    message(STATUS "Detected architecture: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
     set(USE_CPLEX_NUM 1)
     if(NOT CPLEX_ROOT_DIR)
         message(STATUS "CPLEX_ROOT_DIR is not set. It would be best to specify it with -DCPLEX_ROOT_DIR=/path/to/cplex.")
@@ -45,9 +40,6 @@ elseif(TOTAL_OPTIONS EQUAL 0)
     This may look like: cmake -B build -DUSE_CPLEX=ON")
 endif()
 
-set(YASOL_PATH "/Users/michaelhartisch/Yasol_3.10.3.10")
-
-
 # Set standard compile options
 set(CMAKE_CXX_STANDARD 11)
 
@@ -70,7 +62,6 @@ endif()
 # SOURCE FILE COLLECTION (can be replaced with lists)
 # ------------------------------------------------------
 
-find_package(Cplex REQUIRED)
 include_directories(
     ./src
     ${YASOL_PATH}/Yasol/src
@@ -120,6 +111,16 @@ if(USE_CGL AND NOT USE_COIN)
     find_package(Coin REQUIRED)
     include_directories(SYSTEM ${COIN_INCLUDE_DIR})
     list(APPEND SOLVER_SRC ${CMAKE_SOURCE_DIR}/Solver/src/ExternSolvers/QpExtSolCBC.cpp)
+    set(EXTERN_SOLVER_LIB
+    ${EXTERN_SOLVER_LIB}
+    ${COIN_CBC_LIBRARY}
+    ${COIN_OSICBC_LIBRARY}
+    ${COIN_CGL_LIBRARY}
+    ${COIN_CLP_LIBRARY} 
+    ${COIN_COINUTILS_LIBRARY}
+    ${COIN_OSICLP_LIBRARY}
+    ${COIN_OSI_LIBRARY}
+    )
 endif()
 
 

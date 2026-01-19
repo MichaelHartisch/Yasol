@@ -54,7 +54,13 @@ FIND_LIBRARY(CPLEX_LIBRARY
 HINTS ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_linux/static_pic #linux
         ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_osx/static_pic #osx
         ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_darwin/static_pic #osx
+	${CPLEX_ROOT_DIR}/cplex/lib/arm64_osx/static_pic #osx_arm
   PATHS ENV LIBRARY_PATH #unix
         ENV LD_LIBRARY_PATH #unix
   )
 message(STATUS "CPLEX Library: ${CPLEX_LIBRARY}")
+if (NOT CPLEX_LIBRARY)
+        message(FATAL_ERROR "I was not able to find the libary files of cplex. Provide the respective path which, might look like this: -DCPLEX_ROOT_DIR=/opt/ibm/ILOG/CPLEX_Studio* when calling cmake directly")
+else()
+	message(STATUS "CPLEX Library: ${CPLEX_LIBRARY}")
+endif()

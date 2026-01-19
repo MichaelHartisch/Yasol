@@ -16,12 +16,7 @@ set(USE_HIGHS_NUM 0)
 set(USE_COIN_NUM 0)
 
 if(USE_CPLEX)
-    if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "arm64")
-        message(STATUS "Detected Apple Silicon (arm64). Forcing build to x86_64.")
-        set(CMAKE_OSX_ARCHITECTURES "x86_64")
-    else()
-        message(STATUS "Detected architecture: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
-    endif()
+    message(STATUS "Detected architecture: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
     set(USE_CPLEX_NUM 1)
     if(NOT CPLEX_ROOT_DIR)
         message(STATUS "CPLEX_ROOT_DIR is not set. It would be best to specify it with -DCPLEX_ROOT_DIR=/path/to/cplex.")
@@ -45,12 +40,6 @@ if(TOTAL_OPTIONS GREATER 1)
 elseif(TOTAL_OPTIONS EQUAL 0)
     message(FATAL_ERROR "No solver option is selected. Please select one solver option (USE_CPLEX, USE_HIGHS, or USE_COIN). \n 
     This may look like: cmake -B build -DUSE_CPLEX=ON")
-endif()
-
-# Architecture for CPLEX on macOS ARM
-if(USE_CPLEX AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "arm64")
-    message(STATUS "Detected Apple Silicon (arm64), forcing x86_64 for CPLEX.")
-    set(CMAKE_OSX_ARCHITECTURES "x86_64")
 endif()
 
 # Set standard compile options
@@ -173,6 +162,7 @@ if(USE_CGL AND NOT USE_COIN)
     find_package(Coin REQUIRED)
     include_directories(SYSTEM ${COIN_INCLUDE_DIR})
     list(APPEND SOLVER_SRC ${CMAKE_SOURCE_DIR}/Solver/src/ExternSolvers/QpExtSolCBC.cpp)
+    list(APPEND SOLVER_SRC ${CMAKE_SOURCE_DIR}/Solver/src/ExternSolvers/QpExtSolCLP.cpp)
     set(EXTERN_SOLVER_LIB 
     ${EXTERN_SOLVER_LIB}
     ${COIN_CBC_LIBRARY}
