@@ -2518,7 +2518,7 @@ for(int g=0;g<conVecU.size();g++){
 	    while (qbp->getVarPriorityQueueSize() > 0) {
 	    	qbp->extractVarPriorityQueueMinimum();
 	    }
-		HT->~HTable();
+		//HT->~HTable();
 	    if (info_level >= 0) return r;
 	    else return (r > (coef_t)0 ? (coef_t)1 : (coef_t)0);
 	}
@@ -2716,7 +2716,7 @@ for(int g=0;g<conVecU.size();g++){
 	  }
 	}
 
-	HT->~HTable();
+	//HT->~HTable();
 	//std::cerr << "READY for relaxation search " << endl;
         std::string StoreInputFilename=qbp->getInputFileName();
 	delete qbp;
@@ -3035,7 +3035,7 @@ for(int g=0;g<conVecU.size();g++){
       while (qbp->getVarPriorityQueueSize() > 0) {
 	qbp->extractVarPriorityQueueMinimum();
       }
-      HT->~HTable();
+      //HT->~HTable();
       pass++;
       std::cerr << "RESTART " << pass-1 << endl;
       std::string StoreInputFilename=qbp->getInputFileName();

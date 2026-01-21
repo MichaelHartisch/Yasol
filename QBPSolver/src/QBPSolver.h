@@ -4196,7 +4196,7 @@ public:
       }
       */
       if (STACK.nodeID>=0 && MCTS.nodes[STACK.nodeID].who2move >= 0) MCTS.updateFatherScore(STACK.nodeID); 
-      if(UniversalConstraintsExist && !isUniversalPolytope() &&/* !AllSystemSatisfied()*/!AllIPStillFeasible()){
+      if(UniversalConstraintsExist && !isUniversalPolytope() &&/* !AllSystemSatisfied()*/!AllIPStillFeasible()&&ExistIPStillFeasible()){
           if(getShowInfo()) cerr << "Info: AT LEAF; Detected violated universal constraint system " << v<<" "<<b<< endl;
           v=AllInfeasible;
           b=AllInfeasible;

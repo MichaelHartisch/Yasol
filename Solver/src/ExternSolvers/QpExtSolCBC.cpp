@@ -447,6 +447,7 @@ namespace extSol {
     //const char * argv[] = { "cbc", "-log", "3", "-solve", "-quit" };
     //CbcMain1( 5, argv, this->model );
     model.solver()->setHintParam(OsiDoReducePrint,true,OsiHintTry);
+    model.resetModel();
     this->model.branchAndBound();
     return this->getSolutionStatus();
   }
