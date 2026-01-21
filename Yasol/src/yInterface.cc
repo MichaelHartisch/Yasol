@@ -651,8 +651,8 @@ int yInterface::GenerateCutAndBranchCuts( extSol::QpExternSolver& externSolver, 
 	  if (qbp->getUseCglRootPreprocess()) 
 	    useCglPreProcess = 2;
 #ifndef NO_CGL
-	  if (qbp->getInfoLevel()>-8) cerr << "Row Count is " << cbc->CutGenSolver->getRowCount() <<endl;
-	  cuts_pt = cbc->CutGenSolver->CreateCuts(externSolver, types, assigns, treedepth, initime, solu, fixs, blcks, orgN,
+	  if (qbp->getInfoLevel()>-8) cerr << "Row Count is " << cutGen.solver->CutGenSolver->getRowCount() <<endl;
+	  cuts_pt = cutGen.solver->CutGenSolver->CreateCuts(externSolver, types, assigns, treedepth, initime, solu, fixs, blcks, orgN,
 					       (cuttype & 1) ? //1 means: break the loop
 					       //CGL_KNAPSACK|CGL_SIMROUND|CGL_GMI|CGL_FLOWCOVR|CGL_REDSPLIT|CGL_MIR2|1:
 					       CGL_KNAPSACK|CGL_SIMROUND|CGL_GMI|CGL_FLOWCOVR|CGL_REDSPLIT|CGL_MIR2|CGL_TWOMIR|CGL_PROB|useCglPreProcess:

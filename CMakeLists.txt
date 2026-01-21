@@ -114,6 +114,7 @@ ${CMAKE_CURRENT_SOURCE_DIR}/Solver/src/Utilities/ExternCode/QLPReader.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Solver/src/Algorithms/qlp2lp/Qlp2Lp.cpp 
     ${CMAKE_CURRENT_SOURCE_DIR}/Solver/src/Algorithms/nd/NbdStageSolver.cpp 
     ${CMAKE_CURRENT_SOURCE_DIR}/Solver/src/Algorithms/nd/NbdMaster.cpp
+    ${CMAKE_SOURCE_DIR}/Solver/src/ExternSolvers/QpExternSolvers.cpp
 )
 
 file(GLOB_RECURSE QBPSOLVER_SRC ${CMAKE_SOURCE_DIR}/QBPSolver/src/*.cpp ${CMAKE_SOURCE_DIR}/QBPSolver/src/**/*.cpp)

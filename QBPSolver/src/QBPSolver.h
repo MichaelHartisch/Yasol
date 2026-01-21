@@ -47,11 +47,7 @@
 #include <chrono>
 #include <thread>
 #include <bitset>
-#ifndef NO_MPI
-#include <mpi.h>
-#else
 #include "../../mpiClass/nomp.h"
-#endif
 #include "commprint.h"
 #include <string>
 #include <algorithm>

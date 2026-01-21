@@ -322,9 +322,7 @@ public:
 	void yReadInput(int) ;
    	data::Qlp qlp,dep,qlpRelax, qlptmp;
 	QBPSolver *qbp;
-#ifndef NO_CGL
-        CBCSolver *cbc;
-#endif
+    CutGenerator cutGen;
         bool objInverted;
 	const int GMI = 1;
 	const int Cover = 2;
@@ -2149,9 +2147,8 @@ for(int g=0;g<conVecU.size();g++){
 
       //QlpStSolve = new utils::QlpStageSolver(qlpRelax,true,false);
       qbp = new QBPSolver(qlpRelax);
-#ifndef NO_CGL
-      cbc = new CBCSolver();
-#endif
+      cutGen.solver = new CBCSolver();
+
       qbp->setyIF(this);
       qbp->determineFixedUniversalVars(l_cU); // not used, gives the possiblity to restrict the number of universal variables and leads to a relaxation
       yReadInput(yParamMaxHashSize);
@@ -2164,17 +2161,14 @@ for(int g=0;g<conVecU.size();g++){
 	 if(qbp->getShowInfo()) std::cerr << "info: auto-deactivation of Cgl-Options" << std::endl;
 	qbp->setUseCglRootCuts(false);
       }
-#ifndef NO_CGL
-      if (qbp->getUseCglRootCuts()) 
-	cbc->CutGenSolver->init(orgQlp, data::QpRhs::Responsibility::EXISTENTIAL);
-      if (qbp->getInfoLevel()>-8 && qbp->getUseCglRootCuts()) {
-	if(qbp->getShowInfo())cerr << "info: Initialized CBCSolver" << endl;
-      }
-      if (qbp->getInfoLevel()>-8) cerr << "Row Count is " << cbc->CutGenSolver->getRowCount() <<endl;
-  //    cbc->CutGenSolver->solve();
-//      cerr << "Solution at root: " << cbc->CutGenSolver->getObjValue() << endl;
-//      cbc->CutGenSolver->CreateCuts();
-#endif
+    if (qbp->getUseCglRootCuts()) 
+		cutGen.solver->CutGenSolver->init(orgQlp, data::QpRhs::Responsibility::EXISTENTIAL);
+    if (qbp->getInfoLevel()>-8 && qbp->getUseCglRootCuts()) {
+		if(qbp->getShowInfo())cerr << "info: Initialized CBCSolver" << endl;
+    }
+    if (qbp->getInfoLevel()>-8) cerr << "Row Count is " << cutGen.solver->CutGenSolver->getRowCount() <<endl;
+
+
       qbp->DepManagerInitGraph();
 
       if(qbp->getShowInfo()) cerr << "info: begin scan dependencies" << endl;
@@ -2220,9 +2214,8 @@ for(int g=0;g<conVecU.size();g++){
 
       //QlpStSolve = new utils::QlpStageSolver(qlpRelax,true,false);
       qbp = new QBPSolver(qlpRelax);
-#ifndef NO_CGL
-      cbc = new CBCSolver();
-#endif
+      cutGen.solver = new CBCSolver();
+
       qbp->setyIF(this);
       qbp->determineFixedUniversalVars(l_cU); // not used, gives the possiblity to restrict the number of universal variables and leads to a relaxation
       yReadInput(yParamMaxHashSize);
@@ -2235,17 +2228,19 @@ for(int g=0;g<conVecU.size();g++){
 	 if(qbp->getShowInfo()) std::cerr << "info: auto-deactivation of Cgl-Options" << std::endl;
 	qbp->setUseCglRootCuts(false);
       }
-#ifndef NO_CGL
+
       if (qbp->getUseCglRootCuts()) 
-	cbc->CutGenSolver->init(*binQlpPt, data::QpRhs::Responsibility::EXISTENTIAL);
+		cutGen.solver->CutGenSolver->init(*binQlpPt, data::QpRhs::Responsibility::EXISTENTIAL);
       if (qbp->getInfoLevel()>-8 && qbp->getUseCglRootCuts()) {
 	if(qbp->getShowInfo())cerr << "info: Initialized CBCSolver" << endl;
       }
-      if (qbp->getInfoLevel()>-8) cerr << "Row Count is " << cbc->CutGenSolver->getRowCount() <<endl;
+      if (qbp->getInfoLevel()>-8) cerr << "Row Count is " << cutGen.solver->CutGenSolver->getRowCount() <<endl;
   //    cbc->CutGenSolver->solve();
 //      cerr << "Solution at root: " << cbc->CutGenSolver->getObjValue() << endl;
 //      cbc->CutGenSolver->CreateCuts();
-#endif
+
+
+
       qbp->DepManagerInitGraph();
 
       if(qbp->getShowInfo()) cerr << "info: begin scan dependencies" << endl;
@@ -3129,11 +3124,7 @@ for(int g=0;g<conVecU.size();g++){
 
 	std::vector<double> getFirstStageSolution();
 	~yInterface() {
-	  //std::cerr << "delete CBC" << std::endl;
-#ifndef NO_CGL
-	  delete cbc;
-#endif
-	  //std::cerr << "delete QBP" << std::endl;
+
 	  delete qbp;
 	  //delete QlpStSolve;
 	}

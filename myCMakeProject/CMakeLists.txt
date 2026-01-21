@@ -43,7 +43,7 @@ endif()
 # Set standard compile options
 set(CMAKE_CXX_STANDARD 11)
 
-set(CMAKE_CXX_FLAGS                 "${CMAKE_CXX_FLAGS} -std=c++11 -DIL_STD -m64 -DNO_MPI -fno-omit-frame-pointer -fno-builtin-malloc -fmessage-length=0")
+set(CMAKE_CXX_FLAGS                 "${CMAKE_CXX_FLAGS} -std=c++11 -DIL_STD -m64 -fno-omit-frame-pointer -fno-builtin-malloc -fmessage-length=0")
 set(CMAKE_CXX_FLAGS                 "${CMAKE_CXX_FLAGS} -Wno-write-strings -Wno-return-type")
 set(CMAKE_CXX_FLAGS_DEBUG           "${CMAKE_CXX_FLAGS_DEBUG} -Og -ggdb")
 set(CMAKE_CXX_FLAGS_RELEASE         "${CMAKE_CXX_FLAGS_RELEASE} -DNDEBUG -O3 -flto")
@@ -139,10 +139,6 @@ if(USE_COIN)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DUSE_CBC -DUSE_NBD_CLP -DCOMPILE_WITH_CLP -DCOMPILE_WITH_CBC")
 
 endif()
-if(NOT USE_CGL AND NOT USE_COIN)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DNO_CGL")
-endif()
-
 
 add_executable(MyYasol ${CMAKE_SOURCE_DIR}/src/myYasol.cpp)
 
