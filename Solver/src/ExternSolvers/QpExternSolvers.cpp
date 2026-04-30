@@ -55,7 +55,15 @@
 
 namespace extSol {
 
+std::function<QpExternSolver*()> user::factory;
+bool user::hasFactory = false;
+
 QpExternSolver* initExternSolver(int UseExtension) {
+
+	if (user::isConfigured()) {
+		return user::get();
+	}
+
 	QpExternSolver* solver = NULL;
 
 	if(UseExtension==1){

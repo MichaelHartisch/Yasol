@@ -30,6 +30,15 @@
 
 namespace extSol {
 
+class user {
+    static std::function<QpExternSolver*()> factory;
+    static bool hasFactory;
+public:
+    static void setExternSolver(const std::function<QpExternSolver*()>& factory) { user::hasFactory = true; user::factory = factory; }
+    static bool isConfigured() { return hasFactory; }
+    static QpExternSolver* get() { return factory(); }
+};
+
 QpExternSolver* initExternSolver(int UseExtension = 0); 
 
 QpExternSolver* initNbdExternSolver();
