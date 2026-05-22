@@ -31,6 +31,8 @@
 *.out
 *.app
 *.DS_Store
-.DS_Store
-.DS_Store
 Yasol/.DS_Store
+.DS_Store
+Solver/.DS_Store
+Solver/include/.DS_Store
+Solver/.DS_Store
