@@ -365,6 +365,11 @@ namespace extSol {
 #endif
 	base.constraints.resize(this->getRowCount(), extSol::QpExternSolver::NotABasicStatus);
 	return;
+      } else if (base.constraints.size() < this->getRowCount()) {
+	while(base.constraints.size() < this->getRowCount()) {
+	  base.constraints.push_back(extSol::QpExternSolver::
+				     NotABasicStatus);
+	}
       }
     }
 
@@ -1518,6 +1523,29 @@ namespace extSol {
     std::vector<double> coefficient(1, coeff.asDouble());
     HighsStatus status = highs.changeColsCost(ind,ind,coefficient.data());
     assert(return_status==HighsStatus::kOk);
+    return true;
+  }
+  bool QpExtSolHighs::changeObjFuncCoeffVec(unsigned int from, unsigned int to, const data::QpNum* coeff_pt) {
+    const int n = highs.getNumCol();
+    if (n!=fullObj.size()) {
+      if (n <= 0) return false;
+      fullObj.resize(n);
+      fullObj.assign(n, 0.0);
+      const HighsLp& lp = highs.getLp();
+      if ((int)lp.col_cost_.size() == n) {
+        std::copy(lp.col_cost_.begin(), lp.col_cost_.end(), fullObj.begin());
+      }
+    }
+
+    if (from > to) return false;
+    if ((int)to >= n) return false;
+    for (unsigned int j = from; j <= to; ++j) {
+      fullObj[j] = coeff_pt[j - from].asDouble();
+    }
+    HighsStatus st = highs.changeColsCost((int)from, (int)to, fullObj.data() + from);
+    //HighsStatus st = highs.changeColsCost(0, n - 1, fullObj.data());
+    if (st != HighsStatus::kOk) return false;
+
     return true;
   }
 

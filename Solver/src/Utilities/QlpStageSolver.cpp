@@ -628,6 +628,25 @@ bool QlpStageSolver::getBendersCut(unsigned int stage, std::vector<data::Indexed
 	#endif
 	}
 
+	extSol::QpExternSolver::QpExtSolSolutionStatus solutionStatus = extSol.getSolutionStatus();
+        if (solutionStatus == extSol::QpExternSolver::UNSOLVED) {
+	  std::cerr << "Error in get benders cut." << std::endl;
+	  for (int j = 0; j < Inds.size(); j++) {
+	    if (Inds[j].index >= orgN) { continue; }
+	    if (Inds[j].value < 0.5) {
+	      mVars[Inds[j].index].setUpperBound(Inds[j].value);
+	      this->varFixationUB[Inds[j].index] = Inds[j].value;
+	    } else {
+	      mVars[Inds[j].index].setLowerBound(Inds[j].value);
+	      this->varFixationLB[Inds[j].index] = Inds[j].value;
+	    }
+	  }
+	  lhs.clear();
+	  sign = data::QpRhs::greaterThanOrEqual;
+	  rhs.setZero();
+	  return false;
+	}
+	
 	this->getBendersCutNew(stage, lhs, sign, rhs);
 
 	for (int j = 0; j < Inds.size(); j++) {

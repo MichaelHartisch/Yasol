@@ -85,6 +85,10 @@ public:
 	void setNumberType(NumberSystem n);
 	NumberSystem getNumberSystem() const;
 
+	//set and get information on whether variable appears in a constraint of the universal constraint system (constraint with responsibility UNIVERSAL)
+	void setIsInUnivConstraint(bool b);
+        bool getIsInUnivConstraint() const;
+	
 	//comparison operators
 	bool operator ==(const QpVar&) const;
 	bool operator !=(const QpVar&) const;
@@ -146,6 +150,7 @@ private:
 	std::vector<data::QpRational> vDistr;
 	Quantifier q;
 	NumberSystem n;
+	bool isInUnivConstraint;
 };
 }
 

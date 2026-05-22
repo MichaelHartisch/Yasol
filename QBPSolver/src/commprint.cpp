@@ -53,7 +53,6 @@ void CommPrint::itoa(int n, char s[])
 
 int CommPrint::mefprint(int ID, char *fmt ...)
 {
-   return 0;
    char fname[200];
    char ending[10];
    char IDStr[10];

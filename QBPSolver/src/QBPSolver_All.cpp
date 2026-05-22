@@ -30,7 +30,7 @@
 #include <queue>
 #include <vector>
 #include <set>
-
+#include <random>
 	#include "FeasibilityPump.h"
 #define NO_DEBUG 1
 	#define PRINT_PROP 0
@@ -942,8 +942,10 @@ bool QBPSolver::PropagateForScenario(int va, extbool val){
 				}
 			}
 		}
+		static std::mt19937 gen(std::random_device{}());
 		for(int k=0;k<PermutationOfAllStages.size();k++){
-			std::random_shuffle ( PermutationOfAllStages[k].begin(), PermutationOfAllStages[k].end() );
+			std::shuffle(PermutationOfAllStages[k].begin(), PermutationOfAllStages[k].end(), gen);
+			//std::random_shuffle ( PermutationOfAllStages[k].begin(), PermutationOfAllStages[k].end() );
 			if(Print){
 				cerr << "Permutation of All Block " <<k<< endl;
 				for (int i=0;i<PermutationOfAllStages[k].size();i++){

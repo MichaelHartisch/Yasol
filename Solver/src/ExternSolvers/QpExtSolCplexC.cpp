@@ -283,6 +283,11 @@ void QpExtSolCplexC::setBase(extSol::QpExternSolver::QpExtSolBase& base) {
 			//throw utils::ExternSolverException("QpExtSolCplexC::setBase(const extSol::QpExternSolver::QpExtSolBase& base) -> (base.constraints.size() != this->getRowCount()) || (base.variables.size()!=this->getVariableCount())");
 			base.constraints.resize(CPXXgetnumrows(iloEnvCl, iloLpCl), extSol::QpExternSolver::NotABasicStatus);
 			//base.constraints.resize(this->getRowCount(),extSol::QpExternSolver::NotABasicStatus);
+		} else if (base.constraints.size() < this->getRowCount()) {
+		  while(base.constraints.size() < this->getRowCount()) {
+		    base.constraints.push_back(extSol::QpExternSolver::\
+NotABasicStatus);
+		  }
 		}
 	}
 
@@ -1167,6 +1172,25 @@ bool QpExtSolCplexC::changeObjFuncCoeff(unsigned int ind, const data::QpNum& coe
 		return false;
 	}
 	return true;
+}
+bool QpExtSolCplexC::changeObjFuncCoeffVec(unsigned int from, unsigned int to, const data::QpNum* coeff_pt) {
+  int nCols = getVariableCount();
+  if (fullObj.size() != nCols) {
+    fullObj.resize(nCols);
+    fullObjInds.resize(nCols);
+    CPXXgetobj(iloEnvCl, iloLpCl, fullObj.data(), 0, nCols-1);
+    for (int i=0;i<nCols;i++)
+      fullObjInds[i] = i;
+  }
+  
+  for (unsigned int j = from; j <= to; ++j) {
+    fullObj[j] = coeff_pt[j - from].asDouble();
+  }
+
+  int status = CPXXchgobj(iloEnvCl, iloLpCl, nCols, fullObjInds.data(), fullObj.data());
+  if (status) return false;
+  
+  return true;
 }
 
 void QpExtSolCplexC::getUB(std::vector<data::QpNum>& ubVec) {

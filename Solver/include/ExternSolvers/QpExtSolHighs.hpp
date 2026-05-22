@@ -202,7 +202,8 @@ public:
 	void getBendersCutNew(unsigned int stage, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool check, std::vector<double>& mRhs, std::vector<double>& lbs, std::vector<double>& ubs);
 
 	bool changeObjFuncCoeff(unsigned int index, const data::QpNum& coeff);
-
+        bool changeObjFuncCoeffVec(unsigned int from, unsigned int to, const data::QpNum* coeff_pt);
+  
 protected:
 	QpExtSolHighs(const QpExtSolHighs&);
 	QpExtSolHighs& operator=(const QpExtSolHighs&);
@@ -217,6 +218,7 @@ private:
 	unsigned int num_its;
 
 	unsigned int origConstraints;
+        std::vector<double> fullObj;
 	std::vector<data::QpRhs> RHSs;
 	std::vector< std::vector<data::IndexedElement> > LHSs;
 	std::vector<data::QpRhs> RHSsSaved;

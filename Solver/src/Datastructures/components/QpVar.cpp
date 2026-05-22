@@ -25,14 +25,14 @@
 #include "Datastructures/components/QpVar.hpp"
 namespace data {
 
-QpVar::QpVar():name("no_name"), index(0), vRange(), vDistr(), q(exists), n(real){
+QpVar::QpVar():name("no_name"), index(0), vRange(), vDistr(), q(exists), n(real), isInUnivConstraint(false) {
 	vRange.push_back(data::QpNum(true));
 	vRange.push_back(data::QpNum(false));
 }
 
 QpVar::QpVar(const std::string& n, unsigned int i, const QpNum& l,
 		const QpNum& u, NumberSystem ns, Quantifier q) :
-		name(n), index(i), vRange(), vDistr(), q(q), n(ns) {
+		name(n), index(i), vRange(), vDistr(), q(q), n(ns), isInUnivConstraint(false) {
 	vRange.push_back(l);
 	vRange.push_back(u);
 }
@@ -40,7 +40,7 @@ QpVar::QpVar(const std::string& n, unsigned int i, const QpNum& l,
 QpVar::QpVar(const std::string& n, unsigned int i,
 		const std::vector<data::QpNum>& vr,
 		const std::vector<data::QpRational>& vd, NumberSystem ns) :
-		name(n), index(i), vRange(), vDistr(), q(random), n(ns) {
+		name(n), index(i), vRange(), vDistr(), q(random), n(ns), isInUnivConstraint(false) {
 	this->setVariableRange(vr, vd);
 }
 
@@ -49,7 +49,7 @@ QpVar::~QpVar() {
 
 QpVar::QpVar(const QpVar& qvar) :
 		name(qvar.name), index(qvar.index), vRange(qvar.vRange), vDistr(
-				qvar.vDistr), q(qvar.q), n(qvar.n) {
+				qvar.vDistr), q(qvar.q), n(qvar.n), isInUnivConstraint(qvar.isInUnivConstraint) {
 }
 
 QpVar& QpVar::operator=(const QpVar& qvar) {
@@ -60,6 +60,7 @@ QpVar& QpVar::operator=(const QpVar& qvar) {
 	this->vRange = qvar.vRange;
 	this->vDistr = qvar.vDistr;
 	this->q = qvar.q;
+	this->isInUnivConstraint = qvar.isInUnivConstraint;
 	return *this;
 }
 
@@ -129,6 +130,14 @@ void QpVar::setNumberType(NumberSystem n) {
 }
 QpVar::NumberSystem QpVar::getNumberSystem() const {
 	return this->n;
+}
+
+void QpVar::setIsInUnivConstraint(bool b) {
+        isInUnivConstraint = b;
+}
+
+bool QpVar::getIsInUnivConstraint() const {
+        return this->isInUnivConstraint;
 }
 
 bool QpVar::operator ==(const QpVar& qvar) const {

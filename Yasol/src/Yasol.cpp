@@ -49,6 +49,10 @@ void printUsage(const std::string& programName) {
               << " --isSimplyRestricted=b - binary to turn off/on the exploitation of a simple structure\n"
               << "                          of the universal constraints (the uncertainty set) (default 0)\n"
               << " --useCglRootCuts=b     - binary to turn off/on cut generation from CGL library (default 0)\n"
+              << "\n========Extra Option=====================================================================\n"
+              << " --reduce=filename      - use this option if you want to reduce an instane containing universal\n"
+              << "                          constraints to an instance without universal constrains. The created\n"
+              << "                          file will be stored in the provided path.\n"
               << "\n========For Developers===================================================================\n"
               << " --showInfo=b               - binary to turn off/on info from solution process (default 0) \n"
               << " --showWarning=b            - binary to turn off/on warning from solution process (default 0)\n"
@@ -79,7 +83,6 @@ int main(int argc, char** argv) {
       return 0;
   }
 
-
   MPI_Init(&argc,&argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
 
@@ -89,6 +92,9 @@ int main(int argc, char** argv) {
   time_t ini_time;
   int timeLimit=-1;
 
+  bool only_reduction=false;
+  string reduce_filename="";
+  
   while(argc > 0 && argv[argc-1][0]=='-' && argv[argc-1][1]=='-') {
     char buf[100];
     strcpy(buf,&(argv[argc-1][2]));
@@ -173,6 +179,14 @@ int main(int argc, char** argv) {
     else if (strncmp(buf,"isSimplyRestricted=",19)==0) {
       yasol.yip.isSimplyRestricted = buf[19] - '0';      
     }
+    else if (strncmp(buf,"reduce=",7)==0) {
+      only_reduction=true;
+      reduce_filename = buf + 7;
+      if(reduce_filename==""){
+        cerr<< "Please provide a filename for the resulting reduced istance!" <<endl;
+	return 0;
+      }
+    }
     else cout << "Warning: Unknown option " << buf << endl;
     
     argc--;
@@ -219,8 +233,9 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  if(argc>2 &&(string)argv[2]=="Reduce"){
-    yasol.Reduce(in);
+
+  if (only_reduction){
+    yasol.Reduce(in,reduce_filename);
     cerr << "created reduced QIP from QIPID " <<endl;
     delete yasolPt;
     return 0;
@@ -325,7 +340,10 @@ int main(int argc, char** argv) {
       char input[1000];
       bool finished=false;
       while (!finished) {
-	fgets(input,999,stdin);
+        if (fgets(input, 999, stdin) == nullptr) {
+          std::cerr << "Error: failed to read input\n";
+          return 0;
+        }
 	if (!strncmp(input,"quit",4)) {
 	  cerr << "info quit" << endl;
 	  finished = true;

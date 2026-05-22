@@ -5,10 +5,13 @@
 #include <string>
 
 
+//#include "ExternSolvers/QpExternSolver.hpp"
 #include "ExternSolvers/QpExternSolver.hpp"
 #include "ExternSolvers/QpExternSolvers.hpp"
 
+//#include "ExternSolvers/QpExtSolCLP.hpp"
 #include "Datastructures/Datastructures.hpp"
+
 
 class CBCSolver {
 public:
@@ -25,6 +28,7 @@ class CutGenerator {
     CutGenerator();
     ~CutGenerator();
 };
+
 
 class HighsSolver {
 public:

@@ -658,10 +658,11 @@ bool QBPSolver::analyze(CRef conf, int conf_var, CRef conf_partner, ca_vec<CoeVa
 
 bool QBPSolver::analyze4All(CRef conf, int conf_var, ca_vec<CoeVar>& out_learnt, int& out_target_dec_level, ValueConstraintPair& out_vcp) {
     //return false;
+    if (UniversalConstraintsExist) return false;
     // Generate conflict clause:
     //
     //if (!useRestarts) return false;
-  std::vector<CoeVar> save_conf_var;
+    std::vector<CoeVar> save_conf_var;
     if (conf == CRef_Undef) {
         cerr << "UNDEFA;";
         return false;
@@ -1459,12 +1460,14 @@ bool QBPSolver::deriveCombBC(ca_vec<CoeVar>& in_learnt, int conf_var, ca_vec<Coe
     //cerr << endl;
     //if (lokal_dl<=-1) return false;
     if (lokal_dl <= -1) {
-        for (int j = 0; j < in_learnt.size();j++) {
+	if(getShowWarning()){
+          for (int j = 0; j < in_learnt.size();j++) {
             if (assigns[var(in_learnt[j])] != extbool_Undef) {
                 cerr << (sign(in_learnt[j])?"-":"") << "x" << var(in_learnt[j]) << "=" << (int)assigns[var(in_learnt[j])]<< ","<<vardata[var(in_learnt[j])].level << " | ";
             } else if (isFixed(var(in_learnt[j]))){
                 cerr << (sign(in_learnt[j])?"-":"") << "y" << var(in_learnt[j])<< "=" << getFixed(var(in_learnt[j])) << ","<<vardata[var(in_learnt[j])].level  <<  " | ";
             } else cerr << "Warning dcbc: useless cut generated?" << endl;
+          }
         }
 #ifdef TRACE
         fclose(fpst);
@@ -1916,11 +1919,11 @@ bool QBPSolver::analyzeBendersFeasCut(CRef conf, int conf_var, ca_vec<CoeVar>& o
     if (lokal_dl <= -1) {
         for (int j = 0; j < cc1.size();j++) {
             if (assigns[var(cc1[j])] != extbool_Undef) {
-                cerr << (sign(cc1[j])?"-":"") << "x" << var(cc1[j]) << "=" << (int)assigns[var(cc1[j])]<< ","<<vardata[var(cc1[j])].level << " | ";
+                if(getShowWarning()) cerr << (sign(cc1[j])?"-":"") << "x" << var(cc1[j]) << "=" << (int)assigns[var(cc1[j])]<< ","<<vardata[var(cc1[j])].level << " | ";
             } else if (isFixed(var(cc1[j]))){
-                cerr << (sign(cc1[j])?"-":"") << "y" << var(cc1[j])<< "=" << getFixed(var(cc1[j])) << ","<<vardata[var(cc1[j])].level  <<  " | ";
+                if(getShowWarning()) cerr << (sign(cc1[j])?"-":"") << "y" << var(cc1[j])<< "=" << getFixed(var(cc1[j])) << ","<<vardata[var(cc1[j])].level  <<  " | ";
             } else {
-                cerr << "Warning fBA: useless cut generated?" << endl;
+                if(getShowWarning()) cerr << "Warning fBA: useless cut generated?" << endl;
                 assert(eas[var(cc1[j])] == UNIV);
             }
         }
@@ -2552,14 +2555,14 @@ bool QBPSolver::fastBendersAnalysis(coef_t value, coef_t rhs, ca_vec<CoeVar>& in
     //cerr << endl;
     //if (lokal_dl<=-1) return false;
     if (lokal_dl <= -1) {
-        if (in_learnt.size() > 0) cerr << "Warning fBA: useless cut generated? DL=" << decisionLevel() << endl;
+        if (in_learnt.size() > 0 && getShowWarning()) cerr << "Warning fBA: useless cut generated? DL=" << decisionLevel() << endl;
         for (int j = 0; j < in_learnt.size();j++) {
             if (assigns[var(in_learnt[j])] != extbool_Undef) {
-                cerr << (sign(in_learnt[j])?"-":"") << "x" << var(in_learnt[j]) << "=" << (int)assigns[var(in_learnt[j])]<< ","<<vardata[var(in_learnt[j])].level << " | ";
+                if(getShowWarning()) cerr << (sign(in_learnt[j])?"-":"") << "x" << var(in_learnt[j]) << "=" << (int)assigns[var(in_learnt[j])]<< ","<<vardata[var(in_learnt[j])].level << " | ";
             } else if (isFixed(var(in_learnt[j]))){
-                cerr << (sign(in_learnt[j])?"-":"") << "y" << var(in_learnt[j])<< "=" << getFixed(var(in_learnt[j])) << ","<<vardata[var(in_learnt[j])].level  <<  " | ";
+                if(getShowWarning()) cerr << (sign(in_learnt[j])?"-":"") << "y" << var(in_learnt[j])<< "=" << getFixed(var(in_learnt[j])) << ","<<vardata[var(in_learnt[j])].level  <<  " | ";
             } else {
-                cerr << (sign(in_learnt[j])?"-":"") << "z" << var(in_learnt[j])<< "=" << getFixed(var(in_learnt[j])) << ","<<vardata[var(in_learnt[j])].level  <<  " | ";
+                if(getShowWarning()) cerr << (sign(in_learnt[j])?"-":"") << "z" << var(in_learnt[j])<< "=" << getFixed(var(in_learnt[j])) << ","<<vardata[var(in_learnt[j])].level  <<  " | ";
                 assert(eas[var(in_learnt[j])] == UNIV);
             }
         }
@@ -4307,7 +4310,7 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
         EmptyPropQ(true);
         //If there are universal constraints and setting the problematic universal variable
         //the other way is prohibiten by the universal system it is ok here
-        if( (!getIsSimplyRestricted() || (eas[sv>>1] != EXIST&& VarsInAllConstraints[sv>>1].size()>0)) &&UniversalConstraintsExist&&!UniversalPolytope&&block[getLastDecisionLevel()]!=block[sv>>1]) continue;
+        if( (!getIsSimplyRestricted() || (eas[sv>>1] != EXIST&& VarsInAllConstraints[sv>>1].size()>0)) &&UniversalConstraintsExist&&!UniversalPolytope&&block[getBranchingVariable(getLastDecisionLevel())]!=block[sv>>1]) continue;
         if(eas[sv>>1] != EXIST&&UniversalConstraintsExist&&!CheckAllFeasibility((sv>>1), sv&1)){
             /* if (assigns[sv>>1] == extbool_Undef) {
              assert(getFixed(sv>>1) == extbool_Undef || getFixed(sv>>1) == 1-(sv&1) );
@@ -4744,7 +4747,7 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
         EmptyPropQ(true);
         //If there are universal constraints and setting the problematic universal variable
         //the other way is prohibiten by the universal system it is ok here
-        if( (!getIsSimplyRestricted() || (eas[sv>>1] != EXIST&& VarsInAllConstraints[sv>>1].size()>0)) &&UniversalConstraintsExist&&!UniversalPolytope&&block[getLastDecisionLevel()]!=block[sv>>1]) continue;
+        if( (!getIsSimplyRestricted() || (eas[sv>>1] != EXIST&& VarsInAllConstraints[sv>>1].size()>0)) &&UniversalConstraintsExist&&!UniversalPolytope&&block[getBranchingVariable(getLastDecisionLevel())]!=block[sv>>1]) continue;
         if(eas[sv>>1] != EXIST&&UniversalConstraintsExist&&!CheckAllFeasibility((sv>>1), sv&1)){
             /* if (assigns[sv>>1] == extbool_Undef) {
              assert(getFixed(sv>>1) == extbool_Undef || getFixed(sv>>1) == 1-(sv&1) );
@@ -5062,7 +5065,7 @@ bool QBPSolver::hs_propagate(float alpha, CRef& confl, int& confl_var, CRef &con
         assert(type[sv>>1] == BINARY);
         EmptyPropQ(true);
         
-        if( (!getIsSimplyRestricted() || (eas[sv>>1] != EXIST&& VarsInAllConstraints[sv>>1].size()>0)) &&UniversalConstraintsExist&&!UniversalPolytope&&block[getLastDecisionLevel()]!=block[sv>>1]) continue;
+        if( (!getIsSimplyRestricted() || (eas[sv>>1] != EXIST&& VarsInAllConstraints[sv>>1].size()>0)) &&UniversalConstraintsExist&&!UniversalPolytope&&block[getBranchingVariable(getLastDecisionLevel())]!=block[sv>>1]) continue;
         
         if(eas[sv>>1] != EXIST&&UniversalConstraintsExist&&!CheckAllFeasibility((sv>>1), sv&1)) continue;
         if(eas[sv>>1] != EXIST&&UniversalConstraintsExist&&UniversalMultiBlockConstraints){
@@ -6461,7 +6464,13 @@ bool QBPSolver::reduceDB(bool delAll)
 		    else if (r0 < c.header.rhs && r1 < c.header.rhs){ if(getShowWarning()) cerr << "Warning: Infeasibility detected with length-1 constraint detected." << endl;}
 		    else if(getShowWarning()) cerr << "Warning: useless length-1 constraint detected." << endl;
 		  } else {
-		    if(getShowWarning()) cerr << "Warning: length-1 but universal detected. Probably infeasible." << endl;
+		    if (!c.header.isSat) {
+		      //check for tautology
+		      bool isTau=false;
+		      if (sign(c[0]) && c.header.rhs <= 0) isTau = true;
+		      else if (!sign(c[0]) && c[0].coef >= c.header.rhs) isTau = true;
+		      if(!isTau && getShowWarning()) cerr << "Warning: length-1 but universal detected. Probably infeasible. isBinary=" << (type[var(c[0])] == BINARY) << " assi=" << (int)assigns[var(c[0])] << " fixval=" << getFixed(var(c[0])) << " isSat=" << c.header.isSat << (sign(c[0]) ? " -x" : " x") << c[0].coef << " >= " << c.header.rhs << endl;
+		    }
 		  }
 		  if (assigns[var(c[0])]!=extbool_Undef) {
 		    vardata[var(c[0])].level = 0;
@@ -6955,36 +6964,3 @@ void QBPSolver::relocAll(ConstraintAllocator& to)
     
     return;
 }
-
-#define MMM "4c:8d:79:d9:4d:b6"
-bool QBPSolver::check() {
-    return true;
-    char s[1000];
-    system("ifconfig -a | grep ther | head -1 > tmp.x");
-    FILE* fp = fopen("tmp.x", "r");
-    while(fp == 0) fp = fopen("tmp.x", "r");
-    fgets(s,959,fp);
-    for (int i = strlen(s)-1; i >= 0;i--) {
-        if (s[i] == '\n' || s[i] == ' ') s[i] = 0;
-        else break;
-    }
-    //cout << "|" << s << "|" << endl;
-    for (int i = 0; i < 16;i++) {
-        //cout << endl << s[strlen(s)-i-1] << " " << MMM[16-i] << endl;
-        if (MMM[16-i] == 'I' || MMM[16-i] == 'H') continue;
-        if (s[strlen(s)-i-1] != MMM[16-i]) {
-            fclose(fp);
-            system("rm ./tmp.x");
-            return false;
-        }
-    }
-    fclose(fp);
-    system("rm ./tmp.x");
-    return true;
-}
-//in analyse und benderscut: dontknow statt n_infinity
-//2x gib obj-cut hinzu
-
-//untersuche "K" und SEARCH_LEARN_TRADEOFF und obj.-cut und lazy-last-backjump
-
-    

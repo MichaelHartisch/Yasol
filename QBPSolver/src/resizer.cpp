@@ -1897,8 +1897,19 @@ Ltry_again:;
         }
     }
 
-        numConstraints = (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();//qlp.getConstraintCount();
-    
+    numConstraints = (*QlpStSolvePt)->getExternSolver(maxLPStage).getLProws_snapshot();//qlp.getConstraintCount();
+    vector< vector< data::IndexedElement > > dummylistOfCutsLhs;
+    vector< data::QpNum > dummylistOfCutsRhs;
+    vector<double> colLower;
+    vector<double> colUpper;
+    for (int i = 0;i < numCols;i++) {
+      int idx;
+      if (i < N) idx = i;
+      else idx = v_ids[i];
+      colLower.push_back(qbp->getLowerBound(idx));
+      colUpper.push_back(qbp->getUpperBound(idx));      
+    }
+      
     for (int i = 0; i < numConstraints;i++) {
         data::QpRhs &org_rhs = (*(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowRhs_snapshot())[i];
         std::vector<data::IndexedElement> &org_lhs = *(*QlpStSolvePt)->getExternSolver(maxLPStage).getRowLhs_snapshot(i);
@@ -1911,7 +1922,23 @@ Ltry_again:;
 	    hasBigX=true;
 	}
 	assert(!hasBigX);
+	if (!hasBigX) {
+	  dummylistOfCutsLhs.clear();
+	  dummylistOfCutsRhs.clear();	  
+	  bool res = qbp->detectAndStrengthenBigM(org_lhs, org_rhs, dummylistOfCutsLhs, dummylistOfCutsRhs, colLower.data(), colUpper.data(), 1e-6, 2*1e-6, 10*1e-6, nullptr/*xlp.data()*/);
+	  if (res) {
+	    data::QpRhs rhs;
+	    org_lhs = dummylistOfCutsLhs[0];
+	    rhs.setValue(dummylistOfCutsRhs[0]);
+	    rhs.setRatioSign(data::QpRhs::equal);
+	    org_rhs = rhs;
+	  }
+	}
     }
+    dummylistOfCutsLhs.clear();
+    dummylistOfCutsRhs.clear();
+    colLower.clear();
+    colUpper.clear();
     
     if(qbp->getShowInfo()) cerr << "Info: Preprocessing made " << decreaseOccured << " changes." << endl;
     if (decreaseOccured>1000) {

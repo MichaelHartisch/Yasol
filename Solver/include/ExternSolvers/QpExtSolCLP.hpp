@@ -136,6 +136,7 @@ public:
 	void updateModel(){}
 
 	bool changeObjFuncCoeff(unsigned int index, const data::QpNum& coeff);
+        bool changeObjFuncCoeffVec(unsigned int from, unsigned int to, const data::QpNum* coeff_pt);
 
 	void getQlpFromLpFile(const std::string&, data::Qlp&){
 		throw utils::ExternSolverException("getQlpFromLpFile( ... ) --> NOT YET IMPLEMENTED");
@@ -186,7 +187,7 @@ private:
 	CoinPackedMatrix rowMatrix;
 	ClpSolve options;
 	unsigned int origConstraints;
-
+        std::vector<double> fullObj;
 	std::vector<data::QpRhs> RHSs;
 	std::vector< std::vector<data::IndexedElement> > LHSs;
 	std::vector<data::QpRhs> RHSsSaved;

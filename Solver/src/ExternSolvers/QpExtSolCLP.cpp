@@ -172,6 +172,28 @@ bool QpExtSolCLP::changeObjFuncCoeff(unsigned int index, const data::QpNum& coef
 	return true;
 }
 
+bool QpExtSolCLP::changeObjFuncCoeffVec(unsigned int from, unsigned int to, const data::QpNum* coeff_pt) {
+    int n = getVariableCount();
+    if (fullObj.size() != n) {
+      if (n <= 0) return false;
+      fullObj.assign(n, 0.0);
+
+      const double * obj = model.getObjCoefficients();      
+      if (obj) {
+        std::copy(obj, obj + n, fullObj.begin());
+      }
+    }
+
+    if (from > to) return false;
+    if ((int)to >= n) return false;
+
+    for (unsigned int j = from; j <= to; ++j) {
+      fullObj[j] = coeff_pt[j - from].asDouble();
+    }
+    model.chgObjCoefficients(fullObj.data());
+    return true;
+  }
+
 void QpExtSolCLP::init(const std::string& lpfile) {
 	this->readFromFile(lpfile);
 	noDual = noPrimal = true;
@@ -278,6 +300,11 @@ void QpExtSolCLP::setBase(extSol::QpExternSolver::QpExtSolBase& base) {
 		  //std::cerr << "Error: (base.constraints.size() != this->getRowCount()) )" << std::endl;
 		  //return;
 		  //throw utils::ExternSolverException("QpExtSolCplexC::setBase(const extSol::QpExternSolver::QpExtSolBase& base) -> (base.constraints.size() != this->getRowCount()) || (base.variables.size()!=this->getVariableCount())");
+		} else if (base.constraints.size() < this->getRowCount()) {
+		  while(base.constraints.size() < this->getRowCount()) {
+		    base.constraints.push_back(extSol::QpExternSolver::\
+NotABasicStatus);
+		  }
 		}
 	}
 

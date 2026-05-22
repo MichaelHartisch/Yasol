@@ -1534,7 +1534,6 @@ void QBPSolver::hs_unassign(int vcon) {
         }
     } else {
         if (getFixed(var) != assigns[var]) {
-            assert(0);
             assert(eas[var] == EXIST);
             QlpStSolve->setVariableFixation(var, getFixed(var),type.getData());
             if (!isDirty[var]) {
@@ -1543,7 +1542,6 @@ void QBPSolver::hs_unassign(int vcon) {
             }
         } else  assert(eas[var] == EXIST);
     }
-    
     assigns[var] = extbool_Undef;
 }
 

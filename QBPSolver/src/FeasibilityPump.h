@@ -663,6 +663,7 @@ public:
 								c++;
 							}*/
 							else if(PerturbIntSolution){
+								if(ImprovementFinder.size()==0) break;
 								if(i==ImprovementFinder.size()) break;
 								if(ImprovementFinder[i].second>0){
 									StSolver->changeObjFuncCoeff(stage, ImprovementFinder[i].first,1);

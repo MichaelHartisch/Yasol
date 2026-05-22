@@ -484,7 +484,7 @@ int QBPSolver::dualCostFix(std::vector<data::QpNum> &solution, double a, double 
       return 0;
     }
   }
-  if (QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
+  if (!feasPhase && QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
     unsigned int lpt=time(NULL);
     if(getShowInfo()) cerr << "Info: re-solve for costFix." << endl;
     QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(),-1,/*-1*/feasPhase?-1:/*3*/3-4 /*simplex iterationen*/,false);
@@ -1589,9 +1589,9 @@ void QBPSolver::QLPSTSOLVE_SOLVESTAGE(double alpha, unsigned int stage, algorith
 	}
 	data::QpNum rhs = (*QlpStSolve->getExternSolver(stage).getRowRhs_snapshot())[i].getValue();
 	if (solution.size() >= nVars()) {
-	  cutsorter.push(pair<double,uint32_t>((double)-computeEfficacy(*QlpStSolve->getExternSolver(stage).getRowLhs_snapshot(i), rhs, solution)*computeObjParallelism(*QlpStSolve->getExternSolver(stage).getRowLhs_snapshot(i), rhs, constraints[0])/(double)(*QlpStSolve->getExternSolver(stage).getRowLhs_snapshot(i)).size(),i) );    
+	  cutsorter.push(pair<double,uint32_t>((double)-computeEfficacy(*QlpStSolve->getExternSolver(stage).getRowLhs_snapshot(i), rhs, solution)*computeObjParallelismApprox(*QlpStSolve->getExternSolver(stage).getRowLhs_snapshot(i), rhs, constraints[0])/(double)(*QlpStSolve->getExternSolver(stage).getRowLhs_snapshot(i)).size(),i) );    
 	} else {
-	  cutsorter.push(pair<double,uint32_t>(computeObjParallelism(*QlpStSolve->getExternSolver(stage).getRowLhs_snapshot(i), rhs, constraints[0])/(double)(*QlpStSolve->getExternSolver(stage).getRowLhs_snapshot(i)).size(),i) );    
+	  cutsorter.push(pair<double,uint32_t>(computeObjParallelismApprox(*QlpStSolve->getExternSolver(stage).getRowLhs_snapshot(i), rhs, constraints[0])/(double)(*QlpStSolve->getExternSolver(stage).getRowLhs_snapshot(i)).size(),i) );    
 	}
       }
       sort(cutsorter,psl);
@@ -1923,12 +1923,16 @@ void QBPSolver::QLPSTSOLVE_WEAKEN_OBJ_FUNC_BOUND(unsigned int stage, const data:
 
 bool QBPSolver::GETBENDERSCUT(unsigned int stage, std::vector<int> &saveUs, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool org, void *vpt, int *eas, int *types) {
   bool encodeScens = false;
+  if (QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
+    if (getShowWarning()) cerr << "Warning: in Benders cut: UNSOLVED but status==INFEASIBLE" << endl;
+    return false;
+  }
+  
   bool Bo = QlpStSolve->getBendersCut(stage,lhs,sign,rhs,org,resizer.v_ids, nVars(), vpt,eas, types);
   if (info_level >= 5) {
     if (Bo) ;//cerr << " ++ ";
     else cerr << " -- ";
   }
-  
   //rhs = rhs.asDouble() - fabs(rhs.asDouble()*0.004);
   double cnt=0.0;
   double llhs=0.0;
@@ -2298,6 +2302,11 @@ bool QBPSolver::GETBENDERSCUT(unsigned int stage, std::vector<int> &saveUs, std:
 
 bool QBPSolver::GETBENDERSCUT2(unsigned int stage, std::vector<int> &saveUs, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool org, void *vpt, int *eas, int* types) {
   bool encodeScens = false;
+  if (QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
+    if (getShowWarning()) cerr << "Warning: in Benders cut 2: UNSOLVED but status==INFEASIBLE" << endl;
+    return false;
+  }
+
   bool Bo = QlpStSolve->getBendersCut(stage,lhs,sign,rhs,org,resizer.v_ids, nVars(), vpt,eas,types);
   if (info_level >= 5) {
     if (Bo) ;//cerr << " ++ ";
@@ -2763,7 +2772,7 @@ bool QBPSolver::checkSolution(double a, bool free_uni_av, bool blockvar_av, int 
 	  } else if (isFixed(dirtyLPvars[hh])) {
 	    if (USE_EARLYVARFIX) QlpStSolve->setVariableFixation(dirtyLPvars[hh],(double)getFixed(dirtyLPvars[hh]),type.getData());
 	  }
-	  MPI_Send(recvBuf, 1, MPI_CHAR, processNo+1,UPD_CONSTRAINTS,MPI_COMM_WORLD);
+	  //MPI_Send(recvBuf, 1, MPI_CHAR, processNo+1,UPD_CONSTRAINTS,MPI_COMM_WORLD);
 	  updateStageSolver(converted_block[pick] >> CONV_BLOCK_RIGHT_SHIFT,dirtyLPvars[hh],dirtyLPvars[hh]);
 	  isDirty[dirtyLPvars[hh]] = false;
 	}
@@ -3067,6 +3076,14 @@ SearchResult QBPSolver::alphabeta_loop(int t, int lsd, coef_t a, coef_t b, bool 
 
     for (int i=0;i<nVars();i++) {
       if (type[i] != BINARY) continue;
+      int ismono = isMono(i);
+      if (ismono == 1) {
+	if (eas[i] == EXIST) 
+	  setFixed(i, 1);
+      } else if (ismono == -1) {
+	if (eas[i] == EXIST) 
+	  setFixed(i, 0);
+      }
       if (isFixed(i) && fixdata[i].level == 1) fixdata[i].level = 0; 
       if (isFixed(i) && fixdata[i].level > 1) {
 	if(getShowWarning()) cerr << "Warning: PRE : Rubbish fixing detected: x" << i<< "=" << getFixed(i) << " in level " << fixdata[i].level << endl;
@@ -3574,9 +3591,19 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
     }
 
     if (t > max_sd) {
-      if (isOnTrack()) cerr << "lost solution xyv18" << endl;
+      if (isOnTrack()) cerr << "lost solution xyv18 a" << endl;
       RESOLVE_FIXED(decisionLevel());
       return _StepResultLeaf(STACK,dont_know,p_infinity,false,"3");
+    }
+    if (isInMiniBC() && perc >= 0.8 && sfather_ix > 13 && miniS_time+(time(NULL)-deltaMiniS_time) > 0.5*(time(NULL)-ini_time)) {
+      if (isOnTrack()) cerr << "lost solution xyv18 b" << endl;
+      RESOLVE_FIXED(decisionLevel());
+      return _StepResultLeaf(STACK,dont_know,p_infinity,false,"3.5");
+    }
+    if (0&&isInMiniBC() && perc >= 1.0 && sfather_ix > 3 && miniS_time+(time(NULL)-deltaMiniS_time) > 0.5*(time(NULL)-ini_time)) {
+      if (isOnTrack()) cerr << "lost solution xyv18 b" << endl;
+      RESOLVE_FIXED(decisionLevel());
+      return _StepResultLeaf(STACK,dont_know,p_infinity,false,"3.5");
     }
     if (LimHorSrch==false && lsd < 0) {
       if (isOnTrack()) cerr << "lost solution xyw18" << endl;
@@ -4200,7 +4227,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 
 	//--- END GENERATE CUTS -----	
 
-	  if ((!feasPhase && statusOK == false) || QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED || status == algorithm::Algorithm::ERROR ||  status == algorithm::Algorithm::IT_LIMIT) {
+	  if (!feasPhase && ((!feasPhase && statusOK == false) || QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED || status == algorithm::Algorithm::ERROR ||  status == algorithm::Algorithm::IT_LIMIT)) {
 	    unsigned int lpt=time(NULL);
 	    QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(),-1,/*-1*/feasPhase?-1:/*3*/3-4 /*simplex iterationen*/);
 	    LPtim += time(NULL)-lpt;
@@ -5752,7 +5779,35 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	}
 	//assert(val_ix==val_ixII && val[0]==valII[0] && val[1]==valII[1]);
 	ismono = 0;
-	if (eas[pick]==UNIV && useMonotones) ismono = univIsMono(pick, feasPhase);
+	//if (eas[pick]==UNIV && useMonotones) ismono = univIsMono(pick, feasPhase);
+	//if (pick==1) cerr << "ismono=" << ismono << endl;
+
+	//New Monotones
+	if(useMonotones){
+	    ismono = isMono(pick);
+	    if (ismono != 0){
+	        if (ismono < 0 ) val[0] = 0; 
+                if (ismono > 0 ) val[0] = 1;
+	  //      cerr << "Detected monotone variable: x_"<<pick<< " is set to " << to_string(val[0]) << endl;
+	        val[1] = -1;
+	    }
+        }
+//Old Monotones
+if(0){
+	if (eas[pick]==UNIV && useMonotones && ismono < 0/*(CW.getCWatcher(pick+pick) == -1 || (feasPhase && CW.getCWatcher(pick+pick) == 0))*/ ) {
+          //cerr << "M";
+          bool lost=false;
+          if (/*isInObj[pick] >= nVars()+2 &&*/ !lost) {
+            if (eas[pick] != EXIST)
+              {  val[0] /*= valII[0]*/ = 0; val[1] /*= valII[1]*/ = -1; }
+            else
+              {  val[0] /*= valII[0]*/ = 1; val[1] /*= valII[1]*/ = -1; }
+            //cerr << "P";
+          }
+          //val[0] = val[1] = 1;
+          //cerr << "P";
+        }
+        
 	if (eas[pick]==UNIV && useMonotones && ismono<0/*(CW.getCWatcher(pick+pick) == -1 || (feasPhase && CW.getCWatcher(pick+pick) == 0))*/ ) {
 	  //cerr << "M";
 	  bool lost=false;
@@ -5775,6 +5830,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	    //cerr << "N";
 	  }
 	}
+}
 	if (eas[pick]==UNIV) {
 	  int out = 0;
 	  int blo = block[pick];
@@ -7129,7 +7185,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 		      coef_t gap;
 		      gap = fabs(100.0*(-global_dual_bound + score) / (fabs(score)+1e-10) );
 		      progressOutput("+++++", global_score, global_dual_bound, !LimHorSrch, objInverted,sfather_ix);
-		      if (0&&fabs(global_score+107) <= 1e-2) {
+		      if (0&&fabs(global_score+1148) <= 1e-2) {
 			CommPrint C;
 			C.mefprint(1,"RESULT: %f\n",score);
 			exit(0);
@@ -7906,6 +7962,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
   }
 
   coef_t QBPSolver::searchDual(int t, void *ifc) {
+    assert(0);
     CommPrint C;
     yIF = ifc;
     int iteration=1;
@@ -7947,18 +8004,18 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
       int flag = 0;
       //recv
       do {
-	MPI_Iprobe(processNo-1,MPI_ANY_TAG,MPI_COMM_WORLD,&flag,&status);
+	//MPI_Iprobe(processNo-1,MPI_ANY_TAG,MPI_COMM_WORLD,&flag,&status);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
       } while (!flag);
       C.mefprint(processNo,"get Message with TAG %d\n",status.MPI_TAG);
       switch (status.MPI_TAG) {
       case FINISH:
-	MPI_Recv(recvBuf, 1, MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
+	//MPI_Recv(recvBuf, 1, MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
 	setSolutionStatus(YASOL_UNSAT);
 	return n_infinity;
       case START_TRAIL:
-	MPI_Get_count(&status,MPI_CHAR,&size);
-	MPI_Recv(recvBuf, size, MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
+	//MPI_Get_count(&status,MPI_CHAR,&size);
+	//MPI_Recv(recvBuf, size, MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
 	ti_size = size / sizeof(trailInfo);
 	for (int i = 0; i < ti_size;i++) {
 	  //C.mefprint(processNo,"T:%d V:%d | ",recvBuf[i].var,recvBuf[i].value);
@@ -7975,7 +8032,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	//C.mefprint(processNo,"\n");
 	break;
       case UPD_CONSTRAINTS:
-	MPI_Recv(recvBuf, 1, MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
+	//MPI_Recv(recvBuf, 1, MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
 	do {
 	  cnt_runs++;
 	  int probe_pick=-1;
@@ -8066,11 +8123,11 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	coef_t rhs = constraintallocator[constraints[0]].header.rhs;
 	int trailsi = trail.size();
 	int rem_trail_size = trail.size();
-	MPI_Get_count(&status,MPI_CHAR,&size);
-	MPI_Recv(recvBuf, size, MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
-	MPI_Recv(&alpha, sizeof(coef_t), MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
-	MPI_Recv(&beta, sizeof(coef_t), MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
-	MPI_Recv(&remainD, sizeof(int), MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
+	//MPI_Get_count(&status,MPI_CHAR,&size);
+	//MPI_Recv(recvBuf, size, MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
+	//MPI_Recv(&alpha, sizeof(coef_t), MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
+	//MPI_Recv(&beta, sizeof(coef_t), MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
+	//MPI_Recv(&remainD, sizeof(int), MPI_CHAR, processNo-1,status.MPI_TAG,MPI_COMM_WORLD,&status);
 	ti_size = size / sizeof(trailInfo);
 	increaseDecisionLevel();
 	if (info_level > 0) cerr << "RECIEVE PS(" << ti_size << "), " << trail.size() << ":";
@@ -8131,7 +8188,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	}
 	if (trail.size() != rem_trail_size) cerr << "ts=" << trail.size() << " und rts=" << rem_trail_size << endl;
 	assert(trail.size() == rem_trail_size);
-	MPI_Send(&V, sizeof(SearchResult), MPI_CHAR, processNo-1,BOUGHT_BOUND,MPI_COMM_WORLD);
+	//MPI_Send(&V, sizeof(SearchResult), MPI_CHAR, processNo-1,BOUGHT_BOUND,MPI_COMM_WORLD);
 	global_score = rem_gs;
 	constraintallocator[constraints[0]].header.rhs = rhs;
 	reduceDB(true);
@@ -8145,6 +8202,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
   }
 
   coef_t QBPSolver::buyDualBound(int trail_start, coef_t a, coef_t b, int theMaxIx) {
+    assert(0);
     SearchResult V;
     MPI_Status status;
     //theMaxIx--;
@@ -8197,11 +8255,11 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
       recvBuf[j].value = assigns[trail[i]];
     }
     if (info_level >= 3) for (int fg=0;fg<j;fg++) cerr << "@" << recvBuf[fg].var << "(" << vardata[recvBuf[fg].var].level << "), ";
-    MPI_Send(recvBuf, j*sizeof(trailInfo), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
-    MPI_Send(&a, sizeof(coef_t), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
-    MPI_Send(&b, sizeof(coef_t), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
-    MPI_Send(&remainD, sizeof(int), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
-    MPI_Recv(&V, sizeof(SearchResult), MPI_CHAR, processNo+1,BOUGHT_BOUND,MPI_COMM_WORLD,&status);
+    //MPI_Send(recvBuf, j*sizeof(trailInfo), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
+    //MPI_Send(&a, sizeof(coef_t), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
+    //MPI_Send(&b, sizeof(coef_t), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
+    //MPI_Send(&remainD, sizeof(int), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
+    //MPI_Recv(&V, sizeof(SearchResult), MPI_CHAR, processNo+1,BOUGHT_BOUND,MPI_COMM_WORLD,&status);
     cerr << "RECEIVE BOUGHT RESULT [" << V.value << "," << V.u_bound << "]" << " <-> " << b << " in Level "<< theMaxIx << "/" << decisionLevel() << endl;
     coef_t mbnds = V.u_bound;//V.value;
     //if (V.u_bound < mbnds) mbnds = V.u_bound;
@@ -8226,6 +8284,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
   }
 
   coef_t QBPSolver::buyDualRootBound(int trail_start, coef_t a, coef_t b, int theMaxIx) {
+    assert(0);
     SearchResult V;
     MPI_Status status;
     //theMaxIx--;
@@ -8265,11 +8324,11 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
       recvBuf[j].value = assigns[trail[i]];
     }
     if (info_level >= 3) for (int fg=0;fg<j;fg++) cerr << "@" << recvBuf[fg].var << "(" << vardata[recvBuf[fg].var].level << "), ";
-    MPI_Send(recvBuf, j*sizeof(trailInfo), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
-    MPI_Send(&a, sizeof(coef_t), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
-    MPI_Send(&b, sizeof(coef_t), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
-    MPI_Send(&remainD, sizeof(int), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
-    MPI_Recv(&V, sizeof(SearchResult), MPI_CHAR, processNo+1,BOUGHT_BOUND,MPI_COMM_WORLD,&status);
+    //MPI_Send(recvBuf, j*sizeof(trailInfo), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
+    //MPI_Send(&a, sizeof(coef_t), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
+    //MPI_Send(&b, sizeof(coef_t), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
+    //MPI_Send(&remainD, sizeof(int), MPI_CHAR, processNo+1,UPD_TRAIL_SOLVE,MPI_COMM_WORLD);
+    //MPI_Recv(&V, sizeof(SearchResult), MPI_CHAR, processNo+1,BOUGHT_BOUND,MPI_COMM_WORLD,&status);
     cerr << "RECEIVE BOUGHT ROOT RESULT [" << V.value << "," << V.u_bound << "]" << " <-> " << b << " in Level "<< theMaxIx << "/" << decisionLevel() << endl;
     coef_t mbnds = V.u_bound;//V.value;
     //if (V.u_bound < mbnds) mbnds = V.u_bound;

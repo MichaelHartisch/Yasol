@@ -103,6 +103,7 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     isRevImpl.push(false);
     stack_restart_ready.push(false);
     listOfCuts_lim.push(0);
+    listOfCuts_lim.push(0);    
     listOfBoundMvs_lim.push(0);
     p_activity .push(0);  //activity .push(rnd_init_act ? drand(random_seed) * 0.00001 : 0);
     n_activity .push(0);  //activity .push(rnd_init_act ? drand(random_seed) * 0.00001 : 0);
@@ -167,8 +168,6 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     }
     data::QpRhs obj_rhs(data::QpRhs::smallerThanOrEqual,-constraintallocator[constraints[0]].header.rhs);
     QlpStSolve->getExternSolver(maxLPStage).addLPobj_snapshot(obj_lhs, obj_rhs);
-
-    if (check() == false) exit(0);
 
     varIsInMixedConstraint.clear();
     for (int i=0;i< nVars();i++) {
@@ -330,7 +329,7 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
       cpropQ.clear();
       if (old_lpls > QlpStSolve->getExternSolver(maxLPStage).getRowCount())
 	old_lpls = QlpStSolve->getExternSolver(maxLPStage).getRowCount();
-      MPI_Send(recvBuf, 1, MPI_CHAR, processNo+1,UPD_CONSTRAINTS,MPI_COMM_WORLD);
+      //MPI_Send(recvBuf, 1, MPI_CHAR, processNo+1,UPD_CONSTRAINTS,MPI_COMM_WORLD);
       if (info_level > -8) cerr << "Preproccessing I" << endl;
 
       ((yInterface*)yIF)->updateConstraints(((yInterface*)yIF)->qlp , *this->QlpStSolve, assigns.getData(), -constraintallocator[constraints[0]].header.rhs, type.getData(), maxLPStage, cpropQ, lowerBounds.getData(), upperBounds.getData(),feasPhase, constraintList, block.getData(),eas.getData());
@@ -873,7 +872,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		C.mefprint(processNo,"T:%d V:%d | ", trail[iiii], (int)assigns[trail[iiii]]);
 	      }
 	      C.mefprint(processNo,"\n");
-	      MPI_Send(recvBuf, trail.size()*sizeof(trailInfo), MPI_CHAR, processNo+1,START_TRAIL,MPI_COMM_WORLD);
+	      //MPI_Send(recvBuf, trail.size()*sizeof(trailInfo), MPI_CHAR, processNo+1,START_TRAIL,MPI_COMM_WORLD);
 	    }
 	    //utils::QlpStageSolver *QlpStageTmp = 0;
 	    QlpStageTmp = 0;
@@ -1182,6 +1181,9 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	    }
             if (!univVarsExist)
               UniversalConstraintsExist = false;
+
+	    if (getShowExtendedOutput())
+	      cerr << "Start with maximum depth " << lmax_sd << " use Restarts: " << useRestarts << " Alpha=" << start_a << " Beta=" << start_b << endl;
 
 	    V = alphabeta_loop(t,lmax_sd ,start_a, start_b,false,p_infinity,-1,0, true, true,0,0,false, true);
 	    if (1||!break_from_outside) {
@@ -1757,7 +1759,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	    cpropQ.clear();
 	    if (old_lpls > QlpStSolve->getExternSolver(maxLPStage).getRowCount())
 	      old_lpls = QlpStSolve->getExternSolver(maxLPStage).getRowCount();
-	    MPI_Send(recvBuf, 1, MPI_CHAR, processNo+1,UPD_CONSTRAINTS,MPI_COMM_WORLD);
+	    //MPI_Send(recvBuf, 1, MPI_CHAR, processNo+1,UPD_CONSTRAINTS,MPI_COMM_WORLD);
 	    if (info_level >= 2) cerr << "Preproccessing II" << endl;
 	    ((yInterface*)yIF)->updateConstraints(((yInterface*)yIF)->qlpRelax , *this->QlpStSolve, assigns.getData(), -constraintallocator[constraints[0]].header.rhs, type.getData(),
 						  maxLPStage, cpropQ, lowerBounds.getData(), upperBounds.getData(),feasPhase, constraintList, block.getData(),eas.getData());
@@ -1862,7 +1864,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
         cerr << endl;
     }
     if (0) {
-      MPI_Send(recvBuf, 1, MPI_CHAR, processNo+1,FINISH,MPI_COMM_WORLD);
+      //MPI_Send(recvBuf, 1, MPI_CHAR, processNo+1,FINISH,MPI_COMM_WORLD);
       C.mefprint(processNo,"sent Message with TAG %d\n",FINISH);
     }
     double PVval=0.0;

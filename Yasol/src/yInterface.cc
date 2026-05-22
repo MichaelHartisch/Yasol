@@ -286,7 +286,7 @@ void yInterface::yReadInput(int htable_size) {
 	//get qlp-handles for constraints and variables
 	int numVars = qlp.getVariableCount();
 	int numConstraints = qlp.getConstraintCount();
-	std::vector<const data::QpVar *> varVec = qlp.getVariableVectorConst();
+	std::vector<data::QpVar *> varVec = qlp.getVariableVector();
 	std::vector<const data::QpVar *> C_varVec = qlpRelax.getVariableVectorConst();
 	std::vector<const data::QpRhs *> rhsVec = qlp.getRhsVecConst();
 	std::vector<const data::Constraint *> conVec = qlp.getConstraintVecConst();
@@ -421,6 +421,9 @@ void yInterface::yReadInput(int htable_size) {
             isUniversal = true;
             if(qbp->getShowInfo())cerr << "Info: Found universal player responsibility." << endl;
 	    universalConstraintsExist=true;
+	    std::vector<data::IndexedElement> lhs = conVec[i]->getElements();
+	    for( j = 0; j < lhs.size(); j++) 
+                varVec[ lhs[j].index ]->setIsInUnivConstraint(true);
         } else if (rhsVec[i]->getResponsibility()==data::Constraint::UNDEF) {
             isUniversal = false;
             //cerr << "Error: Resonsibilty undefined." << endl;
@@ -683,6 +686,8 @@ int yInterface::GenerateCutAndBranchCuts( extSol::QpExternSolver& externSolver, 
 	  cuts_pt = CutAdder::getMIRsmartEQ( externSolver, types, assigns, treedepth, initime, solu, fixs, blcks, eass, orgN );
         } else if (cuttype & Cover) {
 	  cuts_pt = CutAdder::getCoverCuts( externSolver, types, assigns, treedepth, initime, solu, fixs, blcks, eass, orgN );
+        } else if (cuttype & ModK) {
+          cuts_pt = CutAdder::getMODKcuts( externSolver, candidates, types, assigns, treedepth, initime, listOfCutsVars, solu , fixs, blcks, eass, orgN);	  
 	} else if (cuttype & UserCut) {
 	  //cuts_pt = CutAdder::getAggCmirCuts( externSolver, types, assigns, treedepth, initime, solu, fixs, blcks,eass, orgN );
 	}
@@ -3349,8 +3354,10 @@ int yInterface::makeBinary(data::Qlp &qmip, data::Qlp &qbp) {
             if(varVec[i]->getQuantifier() == data::QpVar::exists){
 	  	data::Constraint& d = qbp.createRhsConstraint(data::QpRhs::smallerThanOrEqual, min(varVec[i]->getUpperBound()-varVec[i]->getLowerBound(),MAXABSINT), data::QpRhs::EXISTENTIAL);
                 d.setElements(artif_lhs);
- 		data::Constraint& d2 = qbp.createRhsConstraint(data::QpRhs::smallerThanOrEqual, min(varVec[i]->getUpperBound()-varVec[i]->getLowerBound(),MAXABSINT), data::QpRhs::UNIVERSAL);
-                d2.setElements(artif_lhs);
+		if(varVec[i]->getIsInUnivConstraint()){
+ 		    data::Constraint& d2 = qbp.createRhsConstraint(data::QpRhs::smallerThanOrEqual, min(varVec[i]->getUpperBound()-varVec[i]->getLowerBound(),MAXABSINT), data::QpRhs::UNIVERSAL);
+                    d2.setElements(artif_lhs);
+		}
 	    }
 	    else if( fabs(min(varVec[i]->getUpperBound().asDouble()-varVec[i]->getLowerBound().asDouble(),MAXABSINT)-(pow(2,num_bits)-1) ) > 1e-6 ){
                 //cerr << "Info: Added universal upper Bound Constraint with rhs "<<  min(varVec[i]->getUpperBound()-varVec[i]->getLowerBound(),MAXABSINT) << endl;

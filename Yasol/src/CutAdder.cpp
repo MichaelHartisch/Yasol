@@ -26,6 +26,11 @@
 #include "CutAdder.h"
 std::vector<std::pair<int,double>> CutAdder::globalConditionalLowerBounds{};
 std::vector<std::pair<int,double>> CutAdder::globalConditionalUpperBounds{};
+std::vector<uint8_t> CutAdder::boundTypes{};
+std::vector<data::QpNum> CutAdder::rootLBs{};
+std::vector<data::QpNum> CutAdder::rootUBs{};  
+double CutAdder::random_seed = 1234567;
+
 //#define USE_NBD_CLP
 //#undef USE_NBD_CPLEX_C
 
@@ -64,6 +69,9 @@ using namespace std;
 #define OneEM7 1e-7
 #define OneEM6 1e-6
 #define OneEM5 1e-5
+
+#define LIMIT_GMI_EXTSIZE (sqrt((double)n)+10000)
+#define LIMIT_GMI_SIZE (n)
 
 const int BUG_FINDER=0;
 const bool SHOW_COVER = (BUG_FINDER>=1?true:false);
@@ -190,8 +198,311 @@ void CutAdder::aggregate2RowsInFirst(vector<pair<unsigned int, double>> &aggRow 
   }
 }
 
-//#define LIFTING
-#ifdef LIFTING
+#define NEW_LIFTING
+#ifdef NEW_LIFTING
+// New cover cut generator (replace old getCoverCuts/createCover)
+vector<pair<vector<pair<unsigned int,double>>, double>>*
+CutAdder::getCoverCuts(extSol::QpExternSolver& extSolver,
+                       int* types,
+                       int8_t* assigns,
+                       int decLev,
+		       unsigned int initime,
+		       int* solu,
+		       int * fixs,
+		       int *blcks, int *eass, int orgN)
+{
+  static vector<pair<vector<pair<unsigned int,double>>, double>> cuts;
+  cuts.clear();
+
+  if (!(extSolver.getSolutionStatus() == extSol::QpExternSolver::OPTIMAL ||
+        extSolver.getSolutionStatus() == extSol::QpExternSolver::NUM_BEST ||
+        extSolver.getSolutionStatus() == extSol::QpExternSolver::OPTIMAL_INFEAS)) {
+    return &cuts;
+  }
+  
+  bool debug_output=false;
+  double feastol = 1e-9;
+  double eps=1e-9;
+  double violTol=1e-7;
+    
+  int m = extSolver.getRowCount();
+  int n = extSolver.getVariableCount();
+  std::vector<std::vector<std::pair<int,int>>> cols; cols.resize(n);
+  vector<data::QpRhs> rhsVec( m );
+  std::vector< std::vector< data::IndexedElement >  > allrows;
+  //extSolver.getRhs( rhsVec );
+  //bool success = getAllRows(extSolver, allrows);
+  bool success = getAllRows_snapshot(extSolver, allrows, rhsVec);
+  vector<double> xlp(n);
+  vector<data::QpNum> colLowerBound(n), colUpperBound(n);
+  vector<data::QpNum> obj(n);
+
+  extSolver.getValues(obj);
+  extSolver.getLB(colLowerBound);
+  extSolver.getUB(colUpperBound);
+
+  for (int i=0;i<n;i++) xlp[i] = obj[i].asDouble();
+  if(1)for (int i=0;i < orgN;i++) {
+    if (types[i] == 0 ) {
+      if (assigns[i] == 0) {
+	colLowerBound[i] = 0.0;
+	colUpperBound[i] = 0.0;
+      } else if (assigns[i] == 1) {
+	colLowerBound[i] = 1.0;
+	colUpperBound[i] = 1.0;
+      } else if (fixs[i] == 0 || fixs[i] == 1) {
+	colLowerBound[i] = (double)fixs[i];
+	colUpperBound[i] = (double)fixs[i];
+      } else {
+	
+      }  
+    } 
+  }
+  bool soluAlarm=true;
+
+  for (int i = 0; i < allrows.size();i++) {
+    if (rhsVec.at( i ).getRatioSign()==data::QpRhs::greaterThanOrEqual) {
+      for (int j = 0;j < allrows[i].size();j++) {
+	allrows[i][j].value = -allrows[i][j].value.asDouble();
+      }
+      rhsVec[i].setRatioSign(data::QpRhs::smallerThanOrEqual);
+      rhsVec[i].setValue( -rhsVec[i].getValue().asDouble() );
+    } else if (rhsVec.at( i ).getRatioSign()==data::QpRhs::equal) {
+      std::vector< data::IndexedElement > newrow;
+      data::QpRhs newrhs = rhsVec[i];
+      newrhs.setValue(-rhsVec[i].getValue().asDouble());
+      newrhs.setRatioSign(data::QpRhs::smallerThanOrEqual);
+      for (int j = 0;j < allrows[i].size();j++) {
+	newrow.emplace_back(allrows[i][j].index, -allrows[i][j].value.asDouble());
+      }	      
+      allrows.emplace_back(newrow);
+      rhsVec.push_back(newrhs);
+    }
+    rhsVec[i].setRatioSign(data::QpRhs::smallerThanOrEqual);	    
+    for (int j = 0;j < allrows[i].size();j++) {
+      cols[allrows[i][j].index].emplace_back(i,j);
+      // in cols we find the row numbers and the positions inside the row for this entry
+    }
+  }
+  // only LEQ rows from now in allrows!
+  m = allrows.size();
+
+  //std::vector<data::QpNum> duals( m );
+  //extSolver.getDuals(duals);
+
+  for (int r = 0; r < m; ++r) {
+    // 1) row holen
+    const auto& rowtmp =  allrows[r];//*extSolver.getRowLhs_snapshot(r);//(*extSolver.getRowLhs_snapshot())[r];   // so ähnlich hast du’s im alten Code
+    const auto& rhsObj = rhsVec[r];//(*extSolver.getRowRhs_snapshot())[r];//(*extSolver.getRowRhs_snapshot())[r];
+
+    //if (fabs(duals[r].asDouble()) < 1e-5) continue;
+    
+    // Nur <= (oder = wenn du später sauber in <= umformst)
+    if (rhsObj.getRatioSign() != data::QpRhs::smallerThanOrEqual) continue;
+
+    // Sparse bauen
+    vector<pair<unsigned int,double>> row;
+    row.reserve(rowtmp.size());
+
+    bool hasSlackOrExtra = false;
+    bool hasBigX = false;
+    double lhs=0.0;
+    bool fracEx=true;//false;
+
+    for (unsigned j=0;j<rowtmp.size();++j) {
+      unsigned idx = rowtmp[j].index;
+      double   c   = rowtmp[j].value.asDouble();
+
+      if ((int)idx >= n) { hasSlackOrExtra = true; break; } // <- für Cover erstmal strikt
+      if ((int)idx >= orgN) { hasBigX = true; break; }
+
+      if (fabs(c) > eps) row.emplace_back(idx, c);
+      lhs = lhs + c * xlp[idx];
+      if (types[idx]==0/*BINARY*/ && xlp[idx] > 1e-4 && xlp[idx] < 1.0-1e-4)
+	fracEx = true;
+    }
+    if (hasSlackOrExtra || hasBigX) continue;
+    if (row.size() < 2) continue;
+
+    const double rhs = rhsObj.getValue().asDouble();
+    //if (lhs < rhs - 1e-6*(fabs(rhs)+fabs(lhs))-1e-2) continue;
+    if (!fracEx) continue;
+
+    // 2) preprocess
+    CoverPrep prep;
+    bool conIn=false;
+    if (!preprocessForCoverFromRow(row, rhs,
+                                   data::QpRhs::smallerThanOrEqual,
+                                   colLowerBound.data(), colUpperBound.data(),
+                                   xlp.data(),
+                                   n, orgN, types, assigns, fixs,
+                                   prep, conIn, 
+                                   /*inf=*/1e15, /*eps=*/eps)) {
+      continue;
+    }
+
+    // 3) cover
+    vector<int> cover;
+    double coverweight=0.0, lambda=0.0;
+
+    if (!determineCoverHiGHSlike(prep, cover, coverweight, lambda,colLowerBound.data(), colUpperBound.data(),
+                                 /*lpSol=*/true,
+                                 /*feastol=*/feastol,
+                                 /*eps=*/eps)) {
+      continue;
+    }
+    if (!(lambda > feastol)) continue;
+
+    // 4) lifting selection
+    bool hasCont = conIn;//false;
+    for (int pos=0; pos<(int)prep.inds.size(); ++pos)
+      if (!prep.isintegral[pos] && fabs(prep.vals[pos]) > eps) { hasCont=true; break; }
+
+    vector<double> alpha;
+    double beta=0.0;
+    bool liftOk = false;
+
+    if (hasCont) {
+      liftOk = separateLiftedMixedBinaryCoverHiGHSlike(prep, cover, lambda, alpha, beta, eass, blcks, orgN, eps);
+    } else
+      liftOk = separateLiftedKnapsackCoverHiGHSlike(prep, cover, lambda, alpha, beta, colLowerBound.data(), colUpperBound.data(), eass, blcks, orgN, feastol, eps);
+
+    if (!liftOk) continue;
+
+    // 5) backtransform prep -> x
+    vector<pair<unsigned int,double>> cutSparse;
+    cutSparse.reserve(prep.inds.size());
+    double rhsCut = beta;
+
+    for (int pos=0; pos<(int)prep.inds.size(); ++pos) {
+      const double a = alpha[pos];
+      if (a == 0.0) continue;
+
+      const unsigned col = (unsigned)prep.inds[pos];
+      const double lbi = colLowerBound[col].asDouble();
+      const double ubi = colUpperBound[col].asDouble();
+
+      if (prep.complementation[pos] == 0) {
+        cutSparse.emplace_back(col, +a);
+        rhsCut += a * lbi;
+      } else {
+        cutSparse.emplace_back(col, -a);
+        rhsCut += a * ubi;
+      }
+      prep.inds[pos]=-1;
+    }
+
+    double Vmax = -rhsCut;
+    for (auto [j, c] : cutSparse) {
+      double Lj = 0;//globalLB[j]; // z.B. 0 oder ursprüngliches LB
+      double Uj = 1;//globalUB[j]; // z.B. 1 oder ursprüngliches UB
+      if (c >= 0.0) Vmax += c * Uj;
+      else          Vmax += c * Lj;
+    }
+    if (Vmax < 0.0) Vmax = 0.0;
+    double M = Vmax * (1.0 + 1e-6);
+
+    double rhsBigM = rhsCut; // start with beta
+
+    for (int k = 0; k < (int)prep.inds.size(); ++k) {
+      int j = prep.inds[k]; // Spaltenindex im Original-Modell
+
+      if (j < 0) continue;
+      if (j >= orgN) continue;          // keine BigX / künstlichen Variablen
+      if (types[j] != 0) continue;       // wir koppeln nur an binäre
+      assert(colUpperBound[j] >= colLowerBound[j]);
+      if (colUpperBound[j]-colLowerBound[j] > 1e-7) continue;    // nur lokal fixierte
+      
+      int fj = (colUpperBound[j] >= 0.5 ? 1 : 0);
+      if (fj == 1) {
+        // Term M*(1 - x_i): Koeff -M auf x_i, RHS += M
+        cutSparse.emplace_back(j, +M);
+        rhsBigM += M;
+      } else {
+        // fi == 0: Term M*( x_i): Koeff +M auf x_i, RHS unverändert
+        cutSparse.emplace_back(j, -M);
+      }
+    }
+    rhsCut = rhsBigM;
+    
+    // 6) violation
+    double act=0.0;
+    for (auto [j,c] : cutSparse) act += c * xlp[j];
+    if (act <= rhsCut + (fabs(rhsCut)+fabs(act)) * 1e-5 + 1e-5) continue;
+
+    if (solu) {
+      soluAlarm=true;
+      for (int ii=0;ii < row.size();ii++) {
+	int i = row[ii].first;
+	assert(colUpperBound[i].asDouble() >= colLowerBound[i].asDouble());
+	if (colUpperBound[i].asDouble()- colLowerBound[i].asDouble() < 1e-8)
+	  if (fabs(colUpperBound[i].asDouble() - solu[i]) > 0.2)
+	    soluAlarm=false;
+      }
+    }
+    /*
+    cerr << "raw row" << endl;
+    for (int h = 0; h < rowtmp.size();h++) {
+      cerr << rowtmp[h].value.asDouble() << "x" << rowtmp[h].index << "[" << xlp[rowtmp[h].index] << "," << solu[rowtmp[h].index] << "," << blcks[rowtmp[h].index] << "," << colLowerBound[rowtmp[h].index].asDouble() << "," <<  colUpperBound[rowtmp[h].index].asDouble() << "]";
+      if (types[rowtmp[h].index] != 0) cerr << "**";      
+      if (h < rowtmp.size()-1) cerr << " + ";
+    }
+    cerr << " <= " << rhsObj.getValue().asDouble() << endl; 
+    cerr << "old lifted cut" << endl;
+
+    vector<pair<unsigned int, double> > reslhs;
+    double resrhs;
+    vector<pair<double, unsigned int> > rowsparse;
+    for (int h=0;h<rowtmp.size();h++)
+      rowsparse.emplace_back(rowtmp[h].value.asDouble(), rowtmp[h].index);
+    double rhstmp = rhsObj.getValue().asDouble();
+    if( createCover( xlp, rowsparse, rhstmp, CCT_EPS, reslhs, resrhs, types, assigns, decLev, colLowerBound.data(), colUpperBound.data(), solu, fixs, blcks, orgN ) ){
+      for (int h = 0; h < reslhs.size();h++) {
+	cerr << reslhs[h].second << "x" << reslhs[h].first << "[" << xlp[reslhs[h].first] << "," << solu[reslhs[h].first] << "," << blcks[reslhs[h].first] << "]";
+	if (types[reslhs[h].first] != 0) cerr << "**";
+	if (h < reslhs.size()-1) cerr << " + ";
+      }
+      cerr << " <= " << resrhs << endl; 
+    }
+    
+    cerr << "lifted cut" << endl;
+    for (int h = 0; h < cutSparse.size();h++) {
+      cerr << cutSparse[h].second << "x" << cutSparse[h].first << "[" << xlp[cutSparse[h].first ] << "," << solu[cutSparse[h].first ] << "," << blcks[cutSparse[h].first ] << "]";
+      if (types[cutSparse[h].first] != 0) cerr << "**";
+      if (h < cutSparse.size()-1) cerr << " + ";
+    }
+    cerr << " <= " << rhsCut << endl; 
+
+    for (int h = 0; h < cutSparse.size();h++) {
+      cout << cutSparse[h].second << "x" << cutSparse[h].first;
+      if (h < cutSparse.size()-1) cout << " + ";
+    }
+    cout << " <= " << rhsCut << endl; 
+
+    extSolver.writeToFile("./", "myLPCut" + std::to_string(0) + ".lp");
+    */
+    if (solu) {
+      soluAlarm=true;
+      for (int ii=0;ii < cutSparse.size();ii++) {
+	int i =cutSparse[ii].first;
+	assert(colUpperBound[i].asDouble() >= colLowerBound[i].asDouble());
+	if (colUpperBound[i].asDouble()- colLowerBound[i].asDouble() < 1e-8)
+	  if (fabs(colUpperBound[i].asDouble() - solu[i]) > 0.2)
+	    soluAlarm=false;
+      }
+    }
+    
+    if (soluAlarm)
+      debugCheckSol(cutSparse, rhsCut, solu, n, false);
+
+    // 7) einhängen (du speicherst >=)
+    cuts.emplace_back();
+    for (auto [j,c] : cutSparse) cuts.back().first.emplace_back(j, -c);
+    cuts.back().second = -rhsCut;
+  }
+
+  return &cuts;
+}
 #else
 vector< pair< vector< pair<unsigned int, double> >, double > >* CutAdder::getCoverCuts( extSol::QpExternSolver &extSolver, int *types, int8_t *assigns, int decLev, unsigned int initime, int * solu, int* fixs, int *blcks, int* eass, int orgN ){
   //vector< pair< vector< pair<unsigned int, double> >, double > > CutAdder::getCoverCuts( CPXENVptr env, CPXCLPptr lp ){
@@ -436,7 +747,7 @@ vector< pair< vector< pair<unsigned int, double> >, double > >* CutAdder::getCov
 		return &cuts;
 
 	}
-
+#endif
 
 #define COVER_RHS_EPS (1e-9 * org_rowsparse.size() + 1e-7)
 
@@ -1690,7 +2001,7 @@ bool CutAdder::createCover( vector<double>& xlpopt, const vector<pair<double, un
 #else //FIND_BUG
 #endif //FIND_BUG
 
-#endif
+//#endif createCover
 
 
 void CutAdder::refreshVariableBndConstraintsEQ(std::vector<std::pair<int, double>>& gclbs,std::vector<std::pair<int, double>> &gcubs, const std::vector< std::vector< data::IndexedElement >  >& allRows, const vector<data::QpRhs>& rhsVec, int * types, int numCols, int orgN ) {
@@ -1835,10 +2146,42 @@ std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double >
     const data::QpNum qpNumInf(1e15);
     
     extSolver.getValues( objVals );
-    extSolver.getLB(colLowerBound);
+    if (decLev < 1) { 
+      extSolver.getLB(colLowerBound);
+      extSolver.getUB(colUpperBound);
+      for (int i=0;i < orgN;i++) {
+	if (types[i] == 0 ) {
+	  if (assigns[i] == 0) {
+	    colLowerBound[i] = 0.0;
+	    colUpperBound[i] = 0.0;
+	  } else if (assigns[i] == 1) {
+	    colLowerBound[i] = 1.0;
+	    colUpperBound[i] = 1.0;
+	  } else if (fixs[i] == 0 || fixs[i] == 1) {
+	    colLowerBound[i] = (double)fixs[i];
+	    colUpperBound[i] = (double)fixs[i];
+	  } else {
+	    
+	  }  
+	} 
+      }
+      CutAdder::rootLBs.resize(n);
+      CutAdder::rootUBs.resize(n);
+      for (int i=0; i < n;i++) {	
+	CutAdder::rootLBs[i] = colLowerBound[i];
+	CutAdder::rootUBs[i] = colUpperBound[i];
+      }
+    } else {
+      if (CutAdder::rootLBs.size() < n)
+      	return &cuts;
+      assert(CutAdder::rootLBs.size() >= n); // means: DEP at root, but only orgN variables in tree
+      for (int i=0; i < n;i++) {
+	colLowerBound[i] = CutAdder::rootLBs[i];
+	colUpperBound[i] = CutAdder::rootUBs[i];
+      }
+    }
     while (colLowerBound.size() < n+aggregationDepth)
       colLowerBound.push_back(qpNumNull);
-    extSolver.getUB(colUpperBound);
     while (colUpperBound.size() < n+aggregationDepth)
       colUpperBound.push_back(qpNumInf);
     extSolver.getDuals(duals);
@@ -1847,23 +2190,6 @@ std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double >
       if (DEBUG_OUT_EQ) cerr << "x" << i <<"=" << xlpopt[i] << ", ";
     }
     if (DEBUG_OUT_EQ) cerr << endl;
-    
-    for (int i=0;i < orgN;i++) {
-      if (types[i] == 0 ) {
-	if (assigns[i] == 0) {
-	  colLowerBound[i] = 0.0;
-	  colUpperBound[i] = 0.0;
-	} else if (assigns[i] == 1) {
-	  colLowerBound[i] = 1.0;
-	  colUpperBound[i] = 1.0;
-	} else if (fixs[i] == 0 || fixs[i] == 1) {
-	  colLowerBound[i] = (double)fixs[i];
-	  colUpperBound[i] = (double)fixs[i];
-	} else {
-
-	}  
-      } 
-    }
 
     double tol=1e-8;
     // start generating cuts
@@ -1926,14 +2252,18 @@ std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double >
 	    double lhs=0.0;
 	    bool hasBigX=false;
 	    double rhs = rhsVec[rowSelected].getValue().asDouble();
+	    bool fracEx=true;//false;    
 	    for (int ii=0;ii<allrows[rowSelected].size();ii++) {
 	      int idx=allrows[rowSelected][ii].index;
 	      double coeff=allrows[rowSelected][ii].value.asDouble();
 	      rowAggregated.emplace_back(idx,coeff);
 	      lhs = lhs + coeff * xlpopt[idx];
 	      if (idx>=orgN) hasBigX=true;
+	      if (types[idx]==0/*BINARY*/ && xlpopt[idx] > 1e-8 && xlpopt[idx] < 1.0-1e-8)
+		fracEx = true;
 	    }
-	    if (hasBigX) {
+	    if (hasBigX || !fracEx) {
+	      hasBigX = true; //ensure the same handling as with hasBigX
 	      break;
 	    }
 	    rhsAggregated = rhsVec[rowSelected];
@@ -2079,7 +2409,7 @@ std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double >
 	      lhs_o = lhs_o + rowAggregated.at( j ).second * xlpExtra[rowAggregated.at( j ).first-n];		
 	  }
 	  assert(contanisDEPv==false);
-	  if (fabs(lhs_o - rhsAggregated.getValue().asDouble()) > 1e-7 + 1e-7*(fabs(lhs_o) + fabs(rhsAggregated.getValue().asDouble())) ) {
+	  if (fabs(lhs_o - rhsAggregated.getValue().asDouble()) > 1e-6 + 1e-6*(fabs(lhs_o) + fabs(rhsAggregated.getValue().asDouble())) ) {
 	    std::cerr << "Error in aggregation. lhs != rhs:" << lhs_o << " " << rhsAggregated.getValue().asDouble() << std::endl;
 	      break;
 	  }	    
@@ -2159,9 +2489,1515 @@ std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double >
   return &cuts;
 }
 
+template <int k, typename FoundModKCut>
+static bool separateModKCuts(const std::vector<int64_t>& intSystemValue,
+                             const std::vector<int>& intSystemIndex,
+                             const std::vector<int>& intSystemStart,
+                             const std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >& cutpool, int numCol,
+                             FoundModKCut&& foundModKCut) {
+  GFkSolveClass GFkSolve;
+  
+  int numCuts = cutpool.size();
+
+  GFkSolve.fromCSC<k>(intSystemValue, intSystemIndex, intSystemStart,
+                      numCol + 1);
+  GFkSolve.setRhs<k>(numCol, 1);
+  GFkSolve.solve<k>(foundModKCut);
+  //cerr << "[modk separateModKCuts] cutpool.size=" << cutpool.size() << endl;
+  return cutpool.size() != numCuts;
+}
+
+std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* CutAdder::getMIRsmartFlexiCore( extSol::QpExternSolver &extSolver, std::vector<std::vector<data::IndexedElement>> &allrows, std::vector<data::QpRhs> &rhsVec, int *types, int8_t *assigns, int decLev, unsigned int initime, int * solu, int* fixs, int *blcks, int *eass, int orgN, int aggregationDepth, AggregationMode AggMode ){
+  static vector< pair< vector< pair<unsigned int, double> >, double > > cuts;
+  cuts.clear();
+
+  if (AggMode == CutAdder::AggregationMode::FromCMIRize || AggMode == CutAdder::AggregationMode::RowWiseCMIR || decLev > 0) aggregationDepth = 1;
+  else if (AggMode == CutAdder::AggregationMode::ModK_GFk) aggregationDepth = rhsVec.size();
+  
+  if( extSolver.getSolutionStatus() == extSol::QpExternSolver::OPTIMAL ||
+      extSolver.getSolutionStatus() == extSol::QpExternSolver::NUM_BEST ||
+      extSolver.getSolutionStatus() == extSol::QpExternSolver::OPTIMAL_INFEAS){
+    unsigned int m = rhsVec.size();//extSolver.getRowCount();
+    unsigned int n = extSolver.getVariableCount();
+    int bestVar = -1;
+    double bestFrac = 0.0;
+    
+    vector<double> xlpopt( n );
+    vector<data::QpNum> colLowerBound(n);
+    vector<data::QpNum> colUpperBound(n);
+    vector<data::QpNum> objVals( n );
+    std::vector<data::QpNum> duals( m );
+    const data::QpNum qpNumNull(0.0);
+    const data::QpNum qpNumInf(1e15);
+    
+    extSolver.getValues( objVals );
+    extSolver.getLB(colLowerBound);
+    while (colLowerBound.size() < n+aggregationDepth)
+      colLowerBound.push_back(qpNumNull);
+    extSolver.getUB(colUpperBound);
+    while (colUpperBound.size() < n+aggregationDepth)
+      colUpperBound.push_back(qpNumInf);
+    extSolver.getDuals(duals);
+    for( unsigned int i = 0; i < n; ++i ){
+      xlpopt[i] = objVals[i].asDouble();
+      if (DEBUG_OUT_EQ) cerr << "x" << i <<"=" << xlpopt[i] << ", ";
+    }
+    if (DEBUG_OUT_EQ) cerr << endl;
+    
+    for (int i=0;i < orgN;i++) {
+      if (types[i] == 0 ) {
+	if (assigns[i] == 0) {
+	  colLowerBound[i] = 0.0;
+	  colUpperBound[i] = 0.0;
+	} else if (assigns[i] == 1) {
+	  colLowerBound[i] = 1.0;
+	  colUpperBound[i] = 1.0;
+	} else if (fixs[i] == 0 || fixs[i] == 1) {
+	  colLowerBound[i] = (double)fixs[i];
+	  colUpperBound[i] = (double)fixs[i];
+	} else {
+
+	}  
+      } 
+    }
+
+    double tol=1e-8;
+    // start generating cuts
+    
+    // create a vector with the columns that were used in the aggregation
+    //std::vector<int> listColsSelected(aggregationDepth);
+    // create a vector with the rows that were aggregated
+    //std::vector<int> listRowsAggregated(aggregationDepth);
+    // create a vector with the LP solutions of the slack variables
+    //std::vector<double> xlpExtra(aggregationDepth);
+
+    std::vector<std::pair<int, double>> &gclbs = CutAdder::globalConditionalLowerBounds;
+    std::vector<std::pair<int, double>> &gcubs = CutAdder::globalConditionalUpperBounds;    
+
+    refreshVariableBndConstraintsEQ(gclbs, gcubs, allrows, rhsVec, types, n, orgN );
+    // --- init/reset global bound interpretation arrays ---
+    if (CutAdder::boundTypes.size() < (size_t)n) {
+      CutAdder::boundTypes.assign(n, (uint8_t)CutAdder::yNone);
+    } else {
+      std::fill(CutAdder::boundTypes.begin(),
+		CutAdder::boundTypes.begin() + n,
+		(uint8_t)CutAdder::yNone);
+    }    
+    if (CutAdder::globalConditionalLowerBounds.size() < (size_t)n)
+      CutAdder::globalConditionalLowerBounds.resize(n, {-1, 0.0});
+    if (CutAdder::globalConditionalUpperBounds.size() < (size_t)n)
+      CutAdder::globalConditionalUpperBounds.resize(n, {-1, 0.0});
+    
+    if (DEBUG_OUT_EQ) {
+      cerr << endl;
+      for (int i=0; i < allrows.size();i++) {
+	int rowSelected=i;
+	if (allrows[rowSelected].size()>5) continue;
+	std::cerr << "ROW " << i << ":";
+	
+	for (int ii=0;ii<allrows[rowSelected].size();ii++) {
+	  int idx = allrows[rowSelected][ii].index;
+	  double value = allrows[rowSelected][ii].value.asDouble();
+	  cerr << value << (types[idx]==0?"x":"y") << idx << "("<< xlpopt[idx] << ")"<< (ii == allrows[rowSelected].size()-1?"":" + ");
+	}
+	if (rhsVec[rowSelected].getRatioSign() == data::QpRhs::smallerThanOrEqual ) {
+	  cerr << " <= " << rhsVec[rowSelected].getValue().asDouble() << endl; 
+	} else if (rhsVec[rowSelected].getRatioSign() == data::QpRhs::greaterThanOrEqual ) {
+	  cerr << " >= " << rhsVec[rowSelected].getValue().asDouble() << endl; 	
+	} else
+	  cerr << " == " << rhsVec[rowSelected].getValue().asDouble() << endl; 
+	
+      }
+    }
+
+    vector< pair<unsigned int, double> > rowAggregated;
+    vector< pair<unsigned int, double> > rowToAggregate;
+    vector< pair<unsigned int, double> > rowToUse;
+    vector< pair<unsigned int, double> > setRowsAggregated;  //welche zeile mit welchem Gewicht
+
+    // runs: k=0 (non-modk) or k in {2,3,5,7} for mod-k
+    std::vector<int> runs;
+    if (AggMode == CutAdder::AggregationMode::ModK_GFk) {
+      runs.push_back(2);
+      runs.push_back(3);
+      runs.push_back(5);
+      runs.push_back(7);
+    } else {
+      runs.push_back(0);
+    }
+
+    std::vector<int>    rowCandidates;
+    std::vector<double> rowCandWeight;
+
+    // ------------------------------------------------------------
+    // loop over runs (k)
+    // ------------------------------------------------------------
+    for (int kk = 0; kk < (int)runs.size(); ++kk) {
+      const int k = runs[kk];
+
+      // For each k we will build one or multiple "solutionRuns".
+      // - k==0: exactly one solutionRun = all rows with weight 1
+      // - k>0 : one solutionRun per GF(k) solution
+      std::vector<std::vector<std::pair<int,int>>> solutionRuns; // each: (rowId, residue)
+      solutionRuns.clear();
+
+      if (k == 0) {
+	std::vector<std::pair<int,int>> all;
+	all.reserve((int)rhsVec.size());
+	for (int r = 0; r < (int)rhsVec.size(); ++r) all.emplace_back(r, 1);
+	solutionRuns.push_back(std::move(all));
+      } else {
+
+	// ---------- build GF(k) system (intSystem + integralScales) ----------
+	std::vector<std::pair<int,double>> integralScales; // (origRowId, intscale)
+	integralScales.reserve(m);
+
+	std::vector<int64_t> intSystemValue;
+	std::vector<int>     intSystemIndex;
+	std::vector<int>     intSystemStart;
+	intSystemStart.reserve(m + 1);
+	intSystemStart.push_back(0);
+
+	using SolutionEntry = GFkSolveClass::SolutionEntry;
+	std::unordered_set<std::vector<SolutionEntry>, VecHash, VecEq> usedWeights;
+	usedWeights.clear();
+
+	const double slackTol = 1e-7;
+	int numNonzeroRhs = 0;
+	std::vector<double> xlpXdummy(n, 0.0);
+	std::vector<char> skipRow(m, 0);
+	
+	// pre-scan rows: static filtering for mod-k
+	for (int row = 0; row < (int)m; ++row) {
+	  const auto& r = allrows[row];
+	  
+	  bool hasBigX = false;
+	  bool hasFreeContinuous = false;
+	  
+	  for (const auto& e : r) {
+	    const int col = e.index;
+	    
+	    if (col >= orgN) { hasBigX = true; break; }
+	    
+	    if (types[col] != 0 && assigns[col] == 2) { // continuous and nt assigned
+	      
+	      // compute tightened/current bounds like in selectRowToAggregateEQ:
+	      auto VLB = gclbs[col]; // or tightenedLoBnds[col] if that's your structure
+	      double LoB = (VLB.first >= 0) ? VLB.second * xlpopt[VLB.first]
+		: colLowerBound[col].asDouble();
+	      
+	      auto VUB = gcubs[col];
+	      double UpB = (VUB.first >= 0) ? VUB.second * xlpopt[VUB.first]
+		: colUpperBound[col].asDouble();
+	      
+	      double delta = fmin(xlpopt[col] - LoB, UpB - xlpopt[col]);
+	      if (delta > 1e-4) {
+		hasFreeContinuous = true;
+		break;
+	      }
+	    }
+	  }	  
+	  if (hasBigX || hasFreeContinuous)
+	    skipRow[row] = 1;
+	}
+	for (int row = 0; row < (int)m; ++row) {
+	  if (skipRow[row]) continue;
+	  // tightness (<=)
+	  double lhsVal = 0.0;
+	  for (const auto& e : allrows[row]) lhsVal += e.value.asDouble() * xlpopt[e.index];
+	  double rowUpper = rhsVec[row].getValue().asDouble();
+	  if (rowUpper - lhsVal > slackTol) continue;
+
+	  bool integralPositive = false;
+	  EqTransformForModk tr = transformEqForModkRow(
+							row, allrows, rhsVec, xlpopt, xlpXdummy,
+							colLowerBound, colUpperBound, gclbs, gcubs,
+							types, eass, /*feastol*/1e-9, n, integralPositive);
+
+	  if (!tr.ok) continue;
+	  for (int k = 0; k < (int)tr.intInds.size(); ++k) {
+	    const int col = tr.intInds[k];
+	    if (col < 0 || col >= (int)n) continue;
+	    
+	    const double a = tr.intVals[k];
+	    CutAdder::boundTypes[col] =
+	      (uint8_t)((a >= 0.0) ? CutAdder::ySimpleLb : CutAdder::ySimpleUb);
+	  }
+
+	  const std::vector<int>&    inds = tr.intInds;
+	  const std::vector<double>& vals = tr.intVals;
+	  const std::vector<double>& solv = tr.intDistance;
+	  const double rhs = tr.rhsAfterSubst;
+
+	  const double intscale = 1.0;
+	  const int64_t intrhs = nearestInteger(rhs);
+
+	  for (int ii = 0; ii < (int)inds.size(); ++ii) {
+	    if (solv[ii] > 1e-9) {
+	      intSystemIndex.push_back(inds[ii]);
+	      intSystemValue.push_back(nearestInteger(vals[ii]));
+	    }
+	  }
+
+	  numNonzeroRhs += (intrhs != 0);
+	  integralScales.emplace_back(row, intscale);
+
+	  // RHS column index n
+	  intSystemIndex.push_back((int)n);
+	  intSystemValue.push_back(intrhs);
+	  intSystemStart.push_back((int)intSystemIndex.size());
+	}
+
+	if (!integralScales.empty() && numNonzeroRhs > 0) {
+
+	  using SolutionEntry = GFkSolveClass::SolutionEntry;
+	  std::vector<std::vector<SolutionEntry>> solutions;
+	  solutions.clear();
+
+	  auto collectWeights = [&](std::vector<SolutionEntry>& weights, int rhsIndex) {
+				  (void)rhsIndex;
+				  if (weights.empty()) return;
+				  
+				  std::sort(weights.begin(), weights.end(),
+					    [](const SolutionEntry& a, const SolutionEntry& b) {
+					      if (a.index != b.index) return a.index < b.index;
+					      return a.weight < b.weight;
+					    });
+				  
+				  // DUPLICATE CHECK (HiGHS style)
+				  if (!usedWeights.insert(weights).second) return;
+				  
+				  solutions.push_back(weights);
+				};
+
+	  if      (k == 2) separateModKCuts<2>(intSystemValue, intSystemIndex, intSystemStart, cuts, (int)n, collectWeights);
+	  else if (k == 3) separateModKCuts<3>(intSystemValue, intSystemIndex, intSystemStart, cuts, (int)n, collectWeights);
+	  else if (k == 5) separateModKCuts<5>(intSystemValue, intSystemIndex, intSystemStart, cuts, (int)n, collectWeights);
+	  else if (k == 7) separateModKCuts<7>(intSystemValue, intSystemIndex, intSystemStart, cuts, (int)n, collectWeights);
+
+	  // convert ALL solutions to solutionRuns
+	  for (const auto& weights : solutions) {
+	    std::vector<std::pair<int,int>> one;
+	    one.reserve(weights.size());
+
+	    for (const auto& w : weights) {
+	      if (w.index < 0 || w.index >= (int)integralScales.size()) continue;
+	      const int rowId = integralScales[w.index].first;
+	      const int residue = (int)((w.weight * (k - 1)) % k);
+	      if (residue > 0) one.emplace_back(rowId, residue);
+	    }
+
+	    if (!one.empty()) solutionRuns.push_back(std::move(one));
+	  }
+	}
+
+	// fallback if no solutions
+	//if (solutionRuns.empty()) {
+	//  std::vector<std::pair<int,int>> all;
+	//  all.reserve((int)rhsVec.size());
+	//  for (int r = 0; r < (int)rhsVec.size(); ++r) all.emplace_back(r, 1);
+	//  solutionRuns.push_back(std::move(all));
+	//}
+	if (solutionRuns.empty())
+	  continue;
+      }
+    
+      // ------------------------------------------------------------
+      // loop over all GF(k) solutions (or single run for k==0)
+      // ------------------------------------------------------------
+      for (int ss = 0; ss < (int)solutionRuns.size(); ++ss) {
+	const auto& sol = solutionRuns[ss];
+
+	const int depthForThisSol = (AggMode == CutAdder::AggregationMode::ModK_GFk) ? (int)sol.size() : aggregationDepth;
+	
+	std::vector<int> listColsSelected(depthForThisSol);
+	std::vector<int> listRowsAggregated(depthForThisSol);
+	std::vector<double> xlpExtra(depthForThisSol);
+	
+	rowCandidates.clear();
+	rowCandWeight.clear();
+	rowCandidates.reserve(sol.size());
+	rowCandWeight.reserve(sol.size());
+
+	for (const auto& p : sol) {
+	  rowCandidates.push_back(p.first);
+	  rowCandWeight.push_back(((double)p.second) / ((double)k));
+	  //rowCandWeight.push_back((double)p.second);
+	}
+
+	// ------------------------------------------------------------
+	// Existing logic remains unchanged below:
+	// only iterate over rowCandidates / rowCandWeight
+	// ------------------------------------------------------------
+
+	// Existing logic remains unchanged below; we just iterate over rowCandidates instead of all rows.
+	//for (int aggIter=1; aggIter <= aggregationDepth;aggIter++) {
+	int startAggIter = 1;
+	int endAggIter   = aggregationDepth;
+	
+	if (AggMode == CutAdder::AggregationMode::ModK_GFk) {
+	  // wir wollen "alle GFk-Zeilen": genau einmal, mit aggIter = L
+	  const int L = (int)rowCandidates.size();      // oder sol.size()
+	  startAggIter = L;
+	  endAggIter   = L;
+	}
+	for (int aggIter = startAggIter; aggIter <= endAggIter; ++aggIter) {
+	  // Riesenblock bleibt unverändert
+	    for (int rr = 0; rr < (int)rowCandidates.size(); ++rr) { // go through candidate rows
+	      if (AggMode == CutAdder::AggregationMode::ModK_GFk && rr > 0) break;//continue;
+	      int i = rowCandidates[rr];
+	      int candW = rowCandWeight[rr];
+	      int rowSelected;  // row selected to be aggregated next
+	      int colSelected;  // column selected for pivot in aggregation
+	      rowAggregated.clear();
+	      data::QpRhs rhsAggregated;
+	      setRowsAggregated.clear();
+	      // loop until the maximum number of aggregated rows is reached
+	      double rhsAggVal = 0.0;
+
+	      for (int a = 0; a < aggIter; ++a) {
+            
+		if (AggMode == CutAdder::AggregationMode::ModK_GFk) {
+		  // ModK_GFk: deterministische Aggregation mit GF(k)-Gewichten
+		  rowSelected = rowCandidates[a];
+		  const double w = rowCandWeight[a];   // z.B. residue/k (empfohlen) oder residue
+		  
+		  listRowsAggregated[a] = rowSelected;
+		  listColsSelected[a] = -1;            // kein Pivot
+		  
+		  rowToAggregate.clear();
+		  
+		  // build rowToAggregate = original row + slack(n+a)
+		  double lhs = 0.0;
+		  bool hasBigX = false;
+		  const double rhsRow = rhsVec[rowSelected].getValue().asDouble();
+		  
+		  for (int ii = 0; ii < (int)allrows[rowSelected].size(); ++ii) {
+		    const unsigned int idx = allrows[rowSelected][ii].index;
+		    const double coeff     = allrows[rowSelected][ii].value.asDouble();
+		    
+		    rowToAggregate.emplace_back(idx, coeff);
+		    lhs += coeff * xlpopt[idx];
+		    
+		    if ((int)idx >= orgN) hasBigX = true;
+		  }
+		  if (hasBigX) break;
+		  
+		  // Slack hinzufügen, so dass wir eine Gleichung haben
+		  if (rhsVec[rowSelected].getRatioSign() == data::QpRhs::smallerThanOrEqual) {
+		    rowToAggregate.emplace_back((unsigned int)(n + a), 1.0);
+		    xlpExtra[a] = rhsRow - lhs;          // UNskaliert lassen!
+		  } else if (rhsVec[rowSelected].getRatioSign() == data::QpRhs::greaterThanOrEqual) {
+		    rowToAggregate.emplace_back((unsigned int)(n + a), -1.0);
+		    xlpExtra[a] = lhs - rhsRow;          // UNskaliert lassen!
+		  } else {
+		    // equality: keine Slack nötig
+		    xlpExtra[a] = 0.0;
+		  }
+		  
+		  // Jetzt addiere w * rowToAggregate in rowAggregated, ohne Pivot-Elimination
+		  double rhsAggregatedVal = rhsAggregated.getValue().asDouble(); // falls rhsAggregated schon initialisiert ist
+		  aggregate2RowsInFirst(rowAggregated, rhsAggregatedVal,
+					rowToAggregate, rhsRow, w, 1e-10, -1);
+		  rhsAggregated.setValue(rhsAggregatedVal);
+		  
+		  // Zwischenstände im ModK-Fall NICHT cmiren
+		  if (a + 1 < aggIter) continue;
+		  
+		  // Nach a==L-1 ist rowAggregated fertig -> danach laufen Checks + CMIR
+		} else {
+		  if (a == 0) {
+		    rowSelected = i;
+		
+		    int cntInt=0;
+		    // copy row rowSelected to rowAggregated such that we can act freely on the copy
+		    rowAggregated.clear();
+		    double lhs=0.0;
+		    bool hasBigX=false;
+		    double rhs = rhsVec[rowSelected].getValue().asDouble();
+		    for (int ii=0;ii<allrows[rowSelected].size();ii++) {
+		      int idx=allrows[rowSelected][ii].index;
+		      double coeff=allrows[rowSelected][ii].value.asDouble();
+		      rowAggregated.emplace_back(idx,coeff);
+		      lhs = lhs + coeff * xlpopt[idx];
+		      if (idx>=orgN) hasBigX=true;
+		    }
+		    if (hasBigX) {
+		      break;
+		    }
+		    rhsAggregated = rhsVec[rowSelected];
+		    listRowsAggregated[a] = rowSelected;
+		    // Add a slack variable
+		    if (rhsAggregated.getRatioSign() == data::QpRhs::smallerThanOrEqual ) {
+		      rowAggregated.emplace_back(n + a, 1.0);
+		      xlpExtra[a] = rhs - lhs;
+		    } else if (rhsAggregated.getRatioSign() == data::QpRhs::greaterThanOrEqual ) {
+		      rowAggregated.emplace_back(n + a, -1.0);
+		      xlpExtra[a] = lhs - rhs;
+		    }
+		    std::sort(rowAggregated.begin(), rowAggregated.end(),[](const pair<unsigned int, double> &a, const pair<unsigned int, double> &b) { return a.first < b.first; });
+		    if (DEBUG_OUT_EQ) {
+		      std::cerr << "START ROW" << std::endl;
+		      printRowEQ(rowAggregated, rhsAggregated.getValue().asDouble(), solu, n, xlpopt.data(), xlpExtra.data(),types);
+		      debugCheckSol(rowAggregated, rhsAggregated.getValue().asDouble() , solu, n, rhsAggregated.getRatioSign() == data::QpRhs::greaterThanOrEqual?true:false);
+		    }
+		  }
+		  else {
+		    // search for a row to aggregate
+		    bool foundRowToAggregate = selectRowToAggregateEQ( allrows, rowAggregated, colUpperBound.data(), colLowerBound.data(), setRowsAggregated, xlpopt.data(), rowSelected, colSelected, gclbs,gcubs, types, n, orgN );
+
+		    if (foundRowToAggregate) {
+		      bool hasBigX=false;
+		      double rhs = rhsVec[rowSelected].getValue().asDouble();
+		      for (int ii=0;ii<allrows[rowSelected].size();ii++) {
+			int idx=allrows[rowSelected][ii].index;
+			double coeff=allrows[rowSelected][ii].value.asDouble();
+			if (idx>=orgN) hasBigX=true;
+		      }
+		      assert (!hasBigX);
+		    }
+		    // if good row to aggregate exists -> do it
+		    if (foundRowToAggregate) {
+                    
+		      rowToAggregate.clear();
+		      data::QpRhs rhsToAggregate;
+                    
+		      listColsSelected[a] = colSelected;
+
+		      // copy row rowSelected to rowToAggregate such that we can freely work on copy
+		      rowToAggregate.clear();
+		      double lhs=0.0;
+		      double rhs = rhsVec[rowSelected].getValue().asDouble();
+		      for (int ii=0;ii<allrows[rowSelected].size();ii++) {
+			int idx=allrows[rowSelected][ii].index;
+			double coeff=allrows[rowSelected][ii].value.asDouble();
+			rowToAggregate.emplace_back(idx,coeff);
+			lhs = lhs + coeff * xlpopt[idx];
+		      }
+		      rhsToAggregate = rhsVec[rowSelected];
+		      listRowsAggregated[a] = rowSelected;
+		      // Add a slack variable -- a surprisingly good idea
+		      if (rhsToAggregate.getRatioSign() == data::QpRhs::smallerThanOrEqual ) {
+			rowToAggregate.emplace_back(n + a, 1.0);
+			xlpExtra[a] = rhs - lhs;
+		      } else if (rhsToAggregate.getRatioSign() == data::QpRhs::greaterThanOrEqual ) {
+			rowToAggregate.emplace_back(n + a, -1.0);
+			xlpExtra[a] = lhs - rhs;
+		      }
+		      if (DEBUG_OUT_EQ) {	    
+			std::cerr << "SECOND ROW" << std::endl;
+			printRowEQ(rowToAggregate, rhsToAggregate.getValue().asDouble(), solu, n, xlpopt.data(), xlpExtra.data(),types);
+			debugCheckSol(rowToAggregate, rhsToAggregate.getValue().asDouble(), solu, n, rhsAggregated.getRatioSign() == data::QpRhs::greaterThanOrEqual ? true : false);
+		      }
+		      // call aggregate row heuristic
+		      double coeffAgg=0.0;
+		      double coeffToAgg=0.0;
+		      bool hasBigX=false;
+		      for (int ii=0; ii < rowToAggregate.size();ii++ )
+			if (colSelected != rowToAggregate[ii].first && rowToAggregate[ii].first >= orgN && !(rowToAggregate[ii].first>=n)) hasBigX=true;
+		      if (hasBigX) {
+			std::cerr << "Warning: aggregated row has bigX." << std::endl;
+			break;
+		      }
+		      for (int ii=0; ii < rowAggregated.size();ii++ )
+			if (rowAggregated[ii].first == colSelected) {
+			  coeffAgg = rowAggregated[ii].second;
+			  break;
+			}
+		      for (int ii=0; ii < rowToAggregate.size();ii++ )
+			if (rowToAggregate[ii].first == colSelected) {
+			  coeffToAgg = rowToAggregate[ii].second;
+			  break;
+			}
+		      assert(coeffAgg!=0.0 && coeffToAgg!=0.0);
+		      double multiCoef = -coeffAgg / coeffToAgg;
+		      double rhsAggregatedVal=rhsAggregated.getValue().asDouble();
+		      double rhsToAggregateVal=rhsToAggregate.getValue().asDouble();
+		      aggregate2RowsInFirst(rowAggregated, rhsAggregatedVal,
+					    rowToAggregate, rhsToAggregateVal, multiCoef, 1e-10, colSelected);
+		      rhsAggregated.setValue(rhsAggregatedVal);
+		      //rowAggregated and rowToAggregate are equalities
+		      for (int ii=0; ii < rowAggregated.size();ii++ )
+			assert(rowAggregated[ii].first != colSelected);
+		    }
+		    else
+		      break;
+		  }
+		}
+		int cntInt=0;
+		bool hasBigX=false;
+		bool containsU=false;
+		bool isSave=false;
+		int minBlock=n+2;
+		int maxBlock=-1;
+		vector<bool> checkRow(n+aggregationDepth,false);
+		for (int ii=0;ii<rowAggregated.size();ii++) {
+		  if (rowAggregated[ii].first<n && types[rowAggregated[ii].first] == 0) cntInt++;
+		  assert(checkRow[rowAggregated[ii].first]==false);
+		  checkRow[rowAggregated[ii].first] = false;
+		  //assert(fabs(rowAggregated[ii].second) > 1e-10);
+		  if (rowAggregated[ii].first >= orgN && !(rowAggregated[ii].first>=n)) hasBigX=true;
+		  else if (rowAggregated[ii].first < orgN) {
+		    if (blcks[rowAggregated[ii].first] > minBlock && assigns[rowAggregated[ii].first]==2 && fixs[rowAggregated[ii].first]==2)
+		      minBlock = blcks[rowAggregated[ii].first];
+		    if (blcks[rowAggregated[ii].first] < maxBlock && assigns[rowAggregated[ii].first]==2 && fixs[rowAggregated[ii].first]==2)
+		      maxBlock = blcks[rowAggregated[ii].first];
+		    if (eass[rowAggregated[ii].first]==1 /*UNIV*/ /*&& assigns[rowAggregated[ii].first]==2 && fixs[rowAggregated[ii].first]==2*/)
+		      containsU=true;
+		  } else maxBlock = maxBlock>=minBlock ? maxBlock+1 : minBlock +1;
+		}
+		if (minBlock==maxBlock) isSave=true;
+		assert(hasBigX==false);
+
+		if (DEBUG_OUT_EQ) {
+		  for (int z=0;z<2;z++) {
+		    cerr << "Aggregation: " << z<< "-st row no.:"  << listRowsAggregated[z] << endl;
+     
+		  }
+		  std::cerr << "pivot is " << colSelected << std::endl;
+		  printRowEQ(rowAggregated, rhsAggregated.getValue().asDouble(), solu, n, xlpopt.data(), xlpExtra.data(),types);
+		}
+		double lhs_o=0.0;
+		bool contanisDEPv=false;
+		for( unsigned int j = 0; j < rowAggregated.size(); ++j ){
+		  if (rowAggregated.at( j ).first<n && rowAggregated.at( j ).first >= orgN)
+		    contanisDEPv=true;
+		  if (rowAggregated.at( j ).first<n) 
+		    lhs_o = lhs_o + rowAggregated.at( j ).second * xlpopt[rowAggregated.at( j ).first];
+		  else
+		    lhs_o = lhs_o + rowAggregated.at( j ).second * xlpExtra[rowAggregated.at( j ).first-n];		
+		}
+		assert(contanisDEPv==false);
+		if (fabs(lhs_o - rhsAggregated.getValue().asDouble()) > 1e-7 + 1e-7*(fabs(lhs_o) + fabs(rhsAggregated.getValue().asDouble())) ) {
+		  std::cerr << "Error in aggregation. lhs != rhs:" << lhs_o << " " << rhsAggregated.getValue().asDouble() << std::endl;
+		  break;
+		}	    
+		// construct cMIR with current rowAggregated
+		// and, if no unversal variable contained, construct also a cMIR with
+		// the current rowAggregated multiplied by -1
+		for (int i = 0; i < (!containsU?2:1); ++i) { 
+		  std::vector< std::pair<unsigned int, double>> rowToUse;
+		  rowToUse.clear();
+
+		  double rhsOfRowToUse;
+		  for (int ii=0; ii < rowAggregated.size();ii++)
+		    if (i==0) 
+		      rowToUse.emplace_back(rowAggregated[ii].first,rowAggregated[ii].second);
+		    else
+		      rowToUse.emplace_back(rowAggregated[ii].first,-rowAggregated[ii].second);		    
+
+		  if (i==0) {
+		    rhsOfRowToUse = rhsAggregated.getValue().asDouble();
+		  } else {
+		    rhsOfRowToUse  = - rhsAggregated.getValue().asDouble();
+		  }
+
+		  bool added = untransformAndGenerateCutEQ(
+							 rowAggregated,
+							 rhsAggregated.getValue().asDouble(),
+							 rowToUse,
+							 rhsOfRowToUse,
+							 xlpopt,
+							 xlpExtra,
+							 colLowerBound,
+							 colUpperBound,
+							 n,
+							 orgN,
+							 types,
+							 assigns,
+							 fixs,
+							 eass, blcks,
+							 cuts,
+							 DEBUG_OUT_EQ,
+							 /*feastol=*/1e-9,
+							 /*eps=*/1e-12,
+							 /*violTol=*/1e-7);
+		  /*		  
+		  bool comparisonOk=false;
+		  bool prepOk=false;
+		  bool coverOk=false;
+		  bool hasCover=false;
+		  bool hasContinuous = false;
+		  CoverPrep prep;
+		  std::vector<int> cover;
+		  double coverweight = 0.0;
+		  double lambda = 0.0;
+		  double ax = 0.0;
+		  */
+#ifdef BRAUCHTMANNICHT
+		  for (auto [idx,coef] : rowAggregated) {
+		    if ((int)idx < (int)n) ax += coef * xlpopt[idx];
+		    else ax += coef * xlpExtra[(int)idx - (int)n];   // falls du Gleichung prüfst
+		  }
+		  double s = rhsAggregated.getValue().asDouble() - ax;
+		  if (s < -1e-7) {
+		    // numerisch inkonsistent: eigentlich müsste s>=0 gelten
+		    comparisonOk=false;
+		  } else comparisonOk=true; 
+
+		  if (comparisonOk) { 
+		    prepOk = preprocessForCoverFromRow(rowToUse, rhsOfRowToUse, data::QpRhs::smallerThanOrEqual, colLowerBound.data(), colUpperBound.data(), xlpopt.data(), n, orgN, types, assigns, fixs, prep);
+		  }
+
+		  if (prepOk) {
+		    // 2) determine cover
+
+		    hasCover = determineCoverHiGHSlike(
+							    prep, cover, coverweight, lambda, colLowerBound.data(), colUpperBound.data(),
+							    /*lpSol=*/true, /*feastol=*/1e-9, /*eps=*/1e-12);
+
+		    if (!hasCover) {
+		      coverOk = false;
+		    } else coverOk = true;
+
+		  }
+
+		  for (int pos = 0; pos < (int)prep.inds.size(); ++pos) {
+		    if (prep.isintegral[pos]) continue;
+		    if (fabs(prep.vals[pos]) <= 1e-12) continue;
+
+		    const unsigned col = (unsigned)prep.inds[pos];
+		    const double lb = colLowerBound[col].asDouble();
+		    const double ub = colUpperBound[col].asDouble();
+
+		    if (ub - lb <= 1e-12) continue;  // effectively fixed -> ignore
+
+		    hasContinuous = true;
+		    break;
+		  }
+
+		  if (hasCover && !hasContinuous) {
+		    // 3) from cover -> build lifted knapsack cover cut on prep vars
+		    std::vector<double> alpha;
+		    double beta = 0.0;
+
+		    bool liftedOk = separateLiftedKnapsackCoverHiGHSlike(
+									 prep, cover, lambda, alpha, beta,
+									 /*feastol=*/1e-9, /*eps=*/1e-12);
+
+		    if (liftedOk) {
+		      // 4) backtransform to original vars:
+		      //    prep var x' = (not complemented) x - lb
+		      //              or (complemented)     ub - x
+		      std::vector<std::pair<unsigned, double>> cutSparse;
+		      cutSparse.reserve(prep.inds.size());
+
+		      double rhsCut = beta;
+
+		      for (int pos = 0; pos < (int)prep.inds.size(); ++pos) {
+			const double a = alpha[pos];
+			if (a == 0.0) continue;
+
+			const unsigned col = (unsigned)prep.inds[pos];
+			const double lb = colLowerBound[col].asDouble();
+			const double ub = colUpperBound[col].asDouble();
+
+			if (prep.complementation[pos] == 0) {
+			  // x' = x - lb  =>  +a*x <= rhs + a*lb
+			  cutSparse.push_back({col, +a});
+			  rhsCut += a * lb;
+			} else {
+			  // x' = ub - x  =>  -a*x <= rhs - a*ub   (=> rhs += a*ub, coeff -a)
+			  cutSparse.push_back({col, -a});
+			  rhsCut += a * ub;
+			}
+		      }
+
+		      // 5) violation check (<= cut)
+		      double act = 0.0;
+		      for (auto [j,c] : cutSparse) act += c * xlpopt[j];
+		      double viol = act - rhsCut;
+
+		      if (viol > 1e-7) {
+			if (1||DEBUG_OUT_EQ) {
+			  std::cerr << "Lifted knapsack cover cut violated by " << viol
+				    << " |cut|=" << cutSparse.size() << "\n";
+			}
+
+                        cuts.emplace_back();
+                        for (int ii=0;ii<cutSparse.size();ii++) {
+                          cuts[cuts.size()-1].first.emplace_back(cutSparse[ii].first,-cutSparse[ii].second);
+                        }
+                        cuts[cuts.size()-1].second = -rhsCut;
+      
+
+		      }
+		    }
+		  }
+
+		  else
+		    if (hasCover) {
+		      std::vector<double> alpha;
+		      double beta = 0.0;
+
+		      bool liftedMixBinOk = separateLiftedMixedBinaryCoverHiGHSlike(
+										    prep, cover, lambda, alpha, beta, /*epsilon=*/1e-12);
+
+		      if (liftedMixBinOk) {
+			// backtransform: from prep vars x' to original x
+			std::vector<std::pair<unsigned, double>> cutSparse;
+			cutSparse.reserve(prep.inds.size());
+
+			double rhsCut = beta;
+
+			for (int pos = 0; pos < (int)prep.inds.size(); ++pos) {
+			  const double a = alpha[pos];
+			  if (a == 0.0) continue;
+
+			  const unsigned col = (unsigned)prep.inds[pos];
+			  const double lb = colLowerBound[col].asDouble();
+			  const double ub = colUpperBound[col].asDouble();
+
+			  if (prep.complementation[pos] == 0) {
+			    // x' = x - lb  ->  +a*x <= rhs + a*lb
+			    cutSparse.push_back({col, +a});
+			    rhsCut += a * lb;
+			  } else {
+			    // x' = ub - x  ->  -a*x <= rhs + a*ub
+			    cutSparse.push_back({col, -a});
+			    rhsCut += a * ub;
+			  }
+			}
+
+			// violation check for <= cut
+			double act = 0.0;
+			for (auto [j,c] : cutSparse) act += c * xlpopt[j];
+			const double viol = act - rhsCut;
+
+			if (viol > 1e-7) {
+			  if (DEBUG_OUT_EQ) {
+			    std::cerr << "MixedBinaryCover cut violated by " << viol
+				      << " |cut|=" << cutSparse.size()
+				      << " lambda=" << lambda << "\n";
+			  }
+
+			  cuts.emplace_back();
+			  for (int ii=0;ii<cutSparse.size();ii++) {
+			    cuts[cuts.size()-1].first.emplace_back(cutSparse[ii].first,-cutSparse[ii].second);
+			  }
+			  cuts[cuts.size()-1].second = -rhsCut;
+			}
+		      }
+		    }
+#endif
+ 
+		  // UMSETZUNG COVER END
+		  
+		  std::pair< std::vector<std::pair<unsigned int, double>>,double >  cMirCut;
+		  //make cmir from aggregated row
+		  bool hasCut = cMirSeparationEQ( allrows, rowToUse, listRowsAggregated.data(), rhsVec, xlpopt.data(), colUpperBound.data(), colLowerBound.data(), rhsOfRowToUse, cMirCut, gclbs, gcubs,n, solu, xlpExtra.data(), types, eass, isSave, /*aggregationDepth*/aggIter);
+		  if (!hasCut)
+		    continue;
+		
+		  // if a cut was found, insert it into cuts
+		  if (hasCut)  { 
+		    if (DEBUG_OUT_EQ) {
+		      cerr << "CMIR: "; 
+		      printRowEQ(cMirCut.first, cMirCut.second, solu, n, xlpopt.data(), xlpExtra.data(),types);
+		    }
+		    // but only if stable
+		    const std::vector<std::pair<unsigned int, double>> & row = cMirCut.first;
+		    double largest = 0.0;
+		    double smallest = 1e100;
+		    bool hasBigX=false;
+		    for (int i=0;i<row.size();i++) {
+		      int idx = row[i].first;
+		      double value = fabs(row[i].second);
+		      largest=fmax(largest,value);
+		      smallest=fmin(smallest,value);
+		      //if (idx >= orgN) hasBigX=true;
+		    }
+		    if (!hasBigX) {
+		      if (DEBUG_OUT_EQ) {
+			{
+			  double lhs=0.0;
+			  for (int ii=0;ii<row.size();ii++) {
+			    lhs = lhs + xlpopt[row[ii].first]*row[ii].second;
+			  }
+			  cerr << "lhs=" << lhs << ">?" << cMirCut.second << endl;;
+			}
+			debugCheckSol(cMirCut.first, cMirCut.second, solu, n);
+			cerr << " +* ";
+		      }
+		      if (largest>1.0e8*smallest||largest>1.0e7||smallest<1.0e-5) {
+		      } else {
+			cuts.emplace_back();
+			for (int ii=0;ii<row.size();ii++) {
+			  cuts[cuts.size()-1].first.emplace_back(row[ii].first,-row[ii].second);
+			}
+			cuts[cuts.size()-1].second = -cMirCut.second;
+		      }
+		    }
+		  } 
+		}
+	      }
+	    }
+	  if (AggMode != CutAdder::AggregationMode::ModK_GFk && cuts.size() > 0) break;
+	}
+      }
+    }
+    if (DEBUG_OUT_EQ) cerr << endl;
+  }
+  //if (AggMode == CutAdder::AggregationMode::ModK_GFk && cuts.size() > 0)
+  //  cerr << "YUP mod-k. #=" << cuts.size() << endl;
+  return &cuts;
+}
+
+std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* CutAdder::getMODKcuts( extSol::QpExternSolver &extSolver, std::vector<unsigned int> candidateVariables, int *types, int8_t *assigns, int decLev, unsigned int initime, std::vector<int> &listOfCutsVars, int*solu, int *fixs, int* blcks, int* eass, int orgN ){
+          static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > > cuts;
+          cuts.clear();
+	  //return &cuts;
+	  int m = extSolver.getRowCount();
+	  int n = extSolver.getVariableCount();
+	  std::vector<std::vector<std::pair<int,int>>> cols; cols.resize(n);
+	  vector<data::QpRhs> rhsVec( m );
+	  std::vector< std::vector< data::IndexedElement >  > allrows;
+	  extSolver.getRhs( rhsVec );
+	  bool success = getAllRows(extSolver, allrows);
+	  int nonZeroes=0;
+	  int tr_ok=0, tr_fail=0;
+	  int dbg_totalRows = 0;
+	  int dbg_skipped_skipRow = 0;
+	  int dbg_skipped_notTight = 0;
+	  int dbg_transform_notOk = 0;
+	  int dbg_transform_ok = 0;
+	  int dbg_transform_ok_emptyInt = 0;
+ 
+	  if (!(extSolver.getSolutionStatus() == extSol::QpExternSolver::OPTIMAL)){
+	    return &cuts;
+	  }
+	  
+	  for (int i = 0; i < allrows.size();i++) {
+	    if (rhsVec.at( i ).getRatioSign()==data::QpRhs::greaterThanOrEqual) {
+	      for (int j = 0;j < allrows[i].size();j++) {
+		allrows[i][j].value = -allrows[i][j].value.asDouble();
+	      }
+	      rhsVec[i].setRatioSign(data::QpRhs::smallerThanOrEqual);
+	      rhsVec[i].setValue( -rhsVec[i].getValue().asDouble() );
+	    } else if (rhsVec.at( i ).getRatioSign()==data::QpRhs::equal) {
+	      std::vector< data::IndexedElement > newrow;
+	      data::QpRhs newrhs = rhsVec[i];
+	      newrhs.setValue(-rhsVec[i].getValue().asDouble());
+	      newrhs.setRatioSign(data::QpRhs::smallerThanOrEqual);
+              for (int j = 0;j < allrows[i].size();j++) {
+                newrow.emplace_back(allrows[i][j].index, -allrows[i][j].value.asDouble());
+              }	      
+	      allrows.emplace_back(newrow);
+	      rhsVec.push_back(newrhs);
+	    }
+	    rhsVec[i].setRatioSign(data::QpRhs::smallerThanOrEqual);	    
+	    for (int j = 0;j < allrows[i].size();j++) {
+	      cols[allrows[i][j].index].emplace_back(i,j);
+	      // in cols we find the row numbers and the positions inside the row for this entry
+	    }
+	    nonZeroes += allrows[i].size();
+	  }
+	  // only LEQ rows from now in allrows!
+	  m = allrows.size();
+
+	  // LP-Lösung einsammeln
+	  std::vector<data::QpNum> sol;
+
+	  extSolver.getValues(sol);
+	  if (sol.size() ==0) {
+	    cerr << "Error: got no solution in mod-k" << endl;
+	    return &cuts;
+	  }
+	  std::vector<double> xlp(n, 0.0);
+	  for (int j = 0; j < n && j < (int)sol.size(); ++j)
+	    xlp[j] = sol[j].asDouble();
+
+	  vector<data::QpNum> colLowerBound(n);
+	  vector<data::QpNum> colUpperBound(n);
+	  extSolver.getLB(colLowerBound);
+	  extSolver.getUB(colUpperBound);
+
+	  const double feastol     = 1e-7;   // Feasibility-Toleranz
+	  const double eps         = 1e-13;
+	  const double slackTol    = 1e-4;   // wie nah an der Schranke?
+	  const int    maxIntRowLen = 1000 + int(0.1 * n);
+	  const double maxIntScale = 1e6;
+
+	  // integerisiertes System in "Row-CSC" (wie bei HiGHS)
+	  boundTypes.resize(n + (int)allrows.size(), (uint8_t)yNone);
+	  std::vector<std::pair<int, double>> integralScales; // (origRow, scale)
+	  integralScales.reserve(m);
+
+	  std::vector<int64_t> intSystemValue;
+	  std::vector<int> intSystemIndex;
+	  std::vector<int> intSystemStart;
+
+	  std::vector<std::pair<int, double>> &gclbs = CutAdder::globalConditionalLowerBounds;
+	  std::vector<std::pair<int, double>> &gcubs = CutAdder::globalConditionalUpperBounds;    
+	  
+	  refreshVariableBndConstraintsEQ(gclbs, gcubs, allrows, rhsVec, types, n, orgN );
+	  // --- init/reset global bound interpretation arrays ---
+	  if (CutAdder::boundTypes.size() < (size_t)n) {
+	    CutAdder::boundTypes.assign(n, (uint8_t)CutAdder::yNone);
+	  } else {
+	    std::fill(CutAdder::boundTypes.begin(),
+		      CutAdder::boundTypes.begin() + n,
+		      (uint8_t)CutAdder::yNone);
+	  }
+	  if (CutAdder::globalConditionalLowerBounds.size() < (size_t)n)
+	    CutAdder::globalConditionalLowerBounds.resize(n, {-1, 0.0});
+	  if (CutAdder::globalConditionalUpperBounds.size() < (size_t)n)
+	    CutAdder::globalConditionalUpperBounds.resize(n, {-1, 0.0});
+	  
+	  // skip all rows that contain a non-fixed continuous variable
+	  // HiGHS-like: skip rows that contain a continuous variable
+	  // whose current solution is NOT on its (tightened) bounds.
+	  std::vector<char> skipRow(m, 0);
+
+	  for (int col = 0; col < n; ++col) {
+	    if (types[col] == 0) continue;              // skip binaries; we only check continuous
+	    if (assigns[col] != 2) continue;            // fixed is fine
+	    if (fabs(colUpperBound[col].asDouble() - colLowerBound[col].asDouble()) < 1e-9) continue;
+
+	    // compute tightened/current bounds like in selectRowToAggregateEQ:
+	    auto VLB = gclbs[col]; // or tightenedLoBnds[col] if that's your structure
+	    double LoB = (VLB.first >= 0) ? VLB.second * xlp[VLB.first]
+	      : colLowerBound[col].asDouble();
+
+	    auto VUB = gcubs[col];
+	    double UpB = (VUB.first >= 0) ? VUB.second * xlp[VUB.first]
+	      : colUpperBound[col].asDouble();
+
+	    double delta = fmin(xlp[col] - LoB, UpB - xlp[col]);
+	    if (delta <= feastol) continue;             // on bound => don't cause skipping
+
+	    // mark all rows containing this column
+	    for (const auto& rp : cols[col]) {
+	      int row = rp.first;
+	      skipRow[row] = 1;
+	    }
+	  }
+	  intSystemStart.reserve(m + 1);
+	  intSystemStart.push_back(0);
+	  
+	  std::vector<int> inds;
+	  std::vector<double> vals;
+	  std::vector<double> scaleVals;
+	  
+	  inds.reserve(n);
+	  vals.reserve(n);
+	  scaleVals.reserve(n);
+	  
+	  //std::vector<double> upper;
+	  //std::vector<double> solval;
+	  //double rhs;
+
+	  //const HighsSolution& lpSolution = lpRelaxation.getSolution();
+	  int numNonzeroRhs = 0;
+	  //int maxIntRowLen = 1000 + 0.1 * n;
+
+	  for (int row = 0; row < m; ++row) {
+	    ++dbg_totalRows;
+	    
+	    if (skipRow[row]) { ++dbg_skipped_skipRow; continue; }
+
+	    // Row-Aktivität und Integer-Zählung
+	    double lhsVal = 0.0;
+	    int integerCount = 0;
+	    const auto &r = allrows[row];
+	    for (const auto &e : r) {
+	      int col = e.index;
+	      lhsVal += e.value.asDouble() * xlp[col];
+	      if (types[col] == 0) integerCount++;  // 0 = binär (Annahme)
+	      if (col >= orgN || eass[col] == 1) {
+		skipRow[row] = 1;
+		break;
+	      }
+	    }
+	    
+	    //double slack = rhs - lhsVal;
+	    
+	    //bool leqRow;
+	    
+	    double rowUpper = rhsVec[row].getValue().asDouble();  // ax <= rowUpper
+	    double rowVal   = lhsVal;
+	    
+	    // In deinem ≤-universum gibt es keinen rowLower-Fall mehr:
+	    if (rowUpper - rowVal <= /*feastol*/slackTol) {
+	      //leqRow = true;
+	    } else {
+              ++dbg_skipped_notTight;   
+	      continue;
+	    }
+	    
+	    // "getRow": bei dir ist das einfach allrows[row]
+	    double rhs = rowUpper;
+	    inds.clear();
+	    vals.clear();
+	    inds.reserve(allrows[row].size());
+	    vals.reserve(allrows[row].size());
+	    
+	    for (const auto& e : allrows[row]) {
+	      inds.push_back(e.index);
+	      vals.push_back(e.value.asDouble());
+	    }
+	    
+	    // leqRow ist immer true, daher kein else-Zweig nötig (im Moment).
+	    bool integralPositive = false;
+	    
+	    // optional: wenn du skipRow so wie HiGHS nutzt, kannst du hier schon raus:
+	    if (skipRow[row]) continue;
+
+	    std::vector <double> xlpXdummy;
+	    EqTransformForModk tr = transformEqForModkRow(
+							  row, allrows, rhsVec, xlp, xlpXdummy, 
+							  colLowerBound, colUpperBound, gclbs, gcubs,
+							  types, eass, feastol, n, integralPositive);
+	    if (!tr.ok) { ++dbg_transform_notOk; continue; }	    
+	    ++dbg_transform_ok;
+	    if (tr.intInds.empty()) ++dbg_transform_ok_emptyInt;
+	    for (int k = 0; k < (int)tr.intInds.size(); ++k) {
+	      const int col = tr.intInds[k];
+	      if (col < 0 || col >= (int)n) continue;
+	      
+	      const double a = tr.intVals[k];
+	      CutAdder::boundTypes[col] =
+		(uint8_t)((a >= 0.0) ? CutAdder::ySimpleLb : CutAdder::ySimpleUb);
+	    }	    
+	    
+	    // --- NEW: use EQ-transform result 'tr' as the row representation for the rest of the block ---
+	    // Replace the old transformLiteVbds outputs by the EQ-transform outputs:
+	    std::vector<int>    inds;
+	    std::vector<double> vals;
+	    std::vector<double> solval;
+	    //double rhs = 0.0;
+	    
+	    inds   = tr.intInds;        // integer/binary columns only
+	    vals   = tr.intVals;        // corresponding coefficients
+	    solval = tr.intDistance;        // "active" measure, replaces HiGHS solval
+	    rhs    = tr.rhsAfterSubst;  // RHS after bound substitution / shifts
+	    
+	    int rowlen = (int)inds.size();
+	    
+	    if (rowlen > maxIntRowLen) {
+	      int intRowLen = 0;
+	      
+	      for (int i = 0; i < rowlen; ++i) {
+		if (solval[i] <= feastol) continue;   // HiGHS: only "active" entries
+		if (types[inds[i]] != 0) continue;    // skip continuous (binary-only policy)
+		++intRowLen;
+	      }
+	      
+	      // skip row if either too long or 0 = 0 row
+	      if (intRowLen > maxIntRowLen ||
+		  (intRowLen == 0 && fabs(rhs) <= eps)) {
+		continue;
+	      }
+	    }
+
+	    double intscale = 0.0;
+	    int64_t intrhs = 0;
+
+	    // helper: isRowIntegral(row) -> brauchst du (oder approximierst: "alle vals und rhs sind ganzzahlig")
+	    bool rowIntegral = false; // skaliert immer. isRowIntegralApprox(vals, rhs, rowlen, eps); // TODO
+
+	    if (!rowIntegral) {
+	      scaleVals.clear();
+
+	      for (int i = 0; i < rowlen; ++i) {
+		int col = inds[i];
+		if (types[col] != 0) continue;              // continuous skip (binary-only)
+		if (solval[i] > feastol) scaleVals.push_back(vals[i]);
+	      }
+
+	      if (fabs(rhs) > eps) scaleVals.push_back(-rhs);
+	      if (scaleVals.empty()) continue;
+
+	      intscale = integralScale(scaleVals, feastol, eps);
+	      if (intscale == 0.0 || intscale > maxIntScale) continue;
+
+	      intrhs = nearestInteger(intscale * rhs);                      // TODO
+
+	      for (int i = 0; i < rowlen; ++i) {
+		int col = inds[i];
+		if (types[col] != 0) continue;
+		if (solval[i] > feastol) {
+		  intSystemIndex.push_back(col);
+		  intSystemValue.push_back(nearestInteger(intscale * vals[i]));
+		}
+	      }
+	    } else {
+	      intscale = 1.0;
+	      intrhs = nearestInteger(rhs);
+
+	      for (int i = 0; i < rowlen; ++i) {
+		int col = inds[i];
+		//if (types[col] != 0) continue;              // (HiGHS lässt continuous hier drin; du willst binary-only)
+		if (solval[i] > feastol) {
+		  intSystemIndex.push_back(col);
+		  intSystemValue.push_back(nearestInteger(vals[i]));
+		}
+	      }
+	    }
+
+	    numNonzeroRhs += (intrhs != 0);
+
+	    // und wie in HiGHS: später
+	    integralScales.emplace_back(row, intscale);
+	    intSystemIndex.push_back(n);        // "extra col" für RHS (HiGHS macht numCol)
+	    intSystemValue.push_back(intrhs);
+	    intSystemStart.push_back((int)intSystemIndex.size());
+	  }
+
+	  if (integralScales.empty() || numNonzeroRhs == 0) return &cuts;
+
+	  std::vector<int> tmpinds;
+	  std::vector<double> tmpvals;
+
+	  //HighsHashTable<std::vector<HighsGFkSolve::SolutionEntry>> usedWeights;
+	  // std::unordered_set<std::vector<HighsGFkSolve::SolutionEntry>,
+	  //                   HighsVectorHasher, HighsVectorEqual>
+	  //    usedWeights;
+	  std::unordered_set<std::vector<GFkSolveClass::SolutionEntry>, VecHash, VecEq> usedWeights;
+	  int k;
+	  using SolutionEntry = GFkSolveClass::SolutionEntry;
+	  //GFkSolveClass GFkSolve;
+	  std::vector< std::pair<unsigned int, double> > rowAggregated;
+	  std::vector< std::pair<unsigned int, double> > rowToAggregate;
+	  data::QpRhs rhsAggregated;
+	  data::QpRhs rhsToAggregate;
+
+	  auto negateSparseRow = [&](std::vector<std::pair<unsigned int,double>>& r) {
+				   for (auto& e : r) e.second = -e.second;
+				 };
+
+	  auto buildRowWithSlackEQ = [&](int rowId, int pos,
+					 std::vector<std::pair<unsigned int,double>>& outRow,
+					 std::vector<int>& listRowsAggregated,
+					 std::vector<double>& xlpExtra) {
+				       outRow.clear();
+				       outRow.reserve(allrows[rowId].size() + 1);
+
+				       double lhs = 0.0;
+				       for (auto const& e : allrows[rowId]) {
+					 int idx = e.index;
+					 double a = e.value.asDouble();
+					 outRow.emplace_back((unsigned int)idx, a);
+					 lhs += a * xlp[idx];
+				       }
+
+				       double rhs = rhsVec[rowId].getValue().asDouble();
+				       listRowsAggregated[pos] = rowId;
+
+				       if (rhsVec[rowId].getRatioSign() == data::QpRhs::smallerThanOrEqual) {
+					 outRow.emplace_back((unsigned int)(n + pos),  1.0);
+					 xlpExtra[pos] = rhs - lhs;
+				       } else if (rhsVec[rowId].getRatioSign() == data::QpRhs::greaterThanOrEqual) {
+					 outRow.emplace_back((unsigned int)(n + pos), -1.0);
+					 xlpExtra[pos] = lhs - rhs;
+				       } else {
+					 // EQ ("==") kommt hier normalerweise nicht vor; falls doch:
+					 // du kannst es in <= umformen oder abbrechen
+					 outRow.emplace_back((unsigned int)(n + pos),  1.0);
+					 xlpExtra[pos] = rhs - lhs;
+				       }
+
+				       std::sort(outRow.begin(), outRow.end(),
+						 [](std::pair<unsigned int,double> const& A, std::pair<unsigned int,double> const& B){ return A.first < B.first; });
+				     };
+#ifdef OUTDATED
+	  auto buildEQCutFromAggregated = [&](const std::vector<std::pair<unsigned int,double>>& aggregatedRow, double rhsAggregatedVal, const double *xlp, double *xlpExtra, int numSlacks, const std::vector<std::pair<int,double>>& tightenedLoBnds, const std::vector<std::pair<int,double>>& tightenedUpBnds,  
+					      bool negate,
+					      int *listRowsAggregated,
+					      std::vector<std::pair<unsigned int,double>>& cutOrig,
+					      double& rhsOrig) -> bool
+					  {
+					    // (A) aggregatedRow -> rowAggregated (EQ sparse type: vector<pair<int,double>>)
+					    std::vector<std::pair<unsigned int,double>> rowAggEQ;
+					    rowAggEQ.reserve(aggregatedRow.size());
+
+					    double rhsAgg = rhsAggregatedVal; // WICHTIG: du musst hier die aggregierte RHS übergeben!
+					    // In foundCut aggregierst du rhsAggregatedVal separat,
+					    // also gib das als Parameter rein oder berechne es hier.
+
+					    for (auto [idxU, a] : aggregatedRow) {
+					      int idx = (int)idxU;
+					      double aa = negate ? -a : a;
+					      if (fabs(aa) < 1e-18) continue;
+					      rowAggEQ.emplace_back(idx, aa);
+					    }
+
+					    // (B) EQ transform / split
+					    std::vector<std::pair<unsigned int,double>> intPart;
+					    double rhsAfterSubst = rhsAgg;
+					    double sStar = 0.0;
+					    std::vector<std::pair<unsigned int,double>> sTerms;
+
+					    if (!substituteBoundsAndSplitIntS_EQ(rowAggEQ, xlp, xlpExtra,
+										 colUpperBound.data(), colLowerBound.data(),
+										 intPart, rhsAfterSubst, sStar, sTerms,
+										 n, types, tightenedLoBnds, tightenedUpBnds, numSlacks))
+					      return false;
+
+					    // (C) Separation: build best cut in (intPart + sTerms) world
+					    // -> Here we call your existing EQ cut generator, same as in MIRsmart.
+					    std::vector<double> bestCutLhsDense; // or sparse, depending on your implementation
+					    double bestCutRhs = 0.0;
+					    double sCoefBestCut = 0.0;
+					    std::vector<std::pair<int,double>> sStarTerms; // those are the S-term vars used in the cut
+					    std::pair<std::vector<std::pair<unsigned int,double>>, double> cMirCut;
+					    double rowRhs = rhsAggregatedVal;  // wird by-ref übergeben und intern weiterverwendet
+
+					    bool okSep = cMirSeparationEQ(
+									  allrows,
+									  rowAggEQ,
+									  listRowsAggregated,   // int*
+									  rhsVec,
+									  xlp,                  // const double*
+									  colUpperBound.data(),        // const data::QpNum*
+									  colLowerBound.data(),        // const data::QpNum*
+									  rowRhs,               // double&  (RHS der aggregierten Row)
+									  cMirCut,              // OUT
+									  tightenedLoBnds,
+									  tightenedUpBnds,
+									  n,
+									  solu,                 // int*
+									  xlpExtra,             // double*  (xlpxtra)
+									  types,                // int*
+									  eass,                 // int*
+									  /*isSave=*/false,
+									  /*maxAggr=*/numSlacks
+									  );
+
+					    if (!okSep) return false;
+					    cutOrig = cMirCut.first;
+					    rhsOrig = cMirCut.second;
+					    return !cutOrig.empty();
+					  };
+#endif
+	  auto foundCut = [&](std::vector<GFkSolveClass::SolutionEntry>& weights,
+			      int rhsIndex) {
+			    (void)rhsIndex; 
+
+			    static int dbg_calls = 0;
+			    ++dbg_calls;
+
+			    if (weights.empty()) return;
+
+			    std::sort(weights.begin(), weights.end(),
+				      [](const GFkSolveClass::SolutionEntry& a,
+					 const GFkSolveClass::SolutionEntry& b) {
+					if (a.index != b.index) return a.index < b.index;
+					return a.weight < b.weight;
+				      });
+
+			    // avoid duplicates
+			    if (!usedWeights.insert(weights).second) return;
+
+			    if (0&&dbg_calls <= 20) {
+			      std::cerr << "[modk] foundCut called: weights.size=" << weights.size()
+					<< " rhsIndex=" << rhsIndex << "\n";
+			    }
+
+			    // Workspace for EQ-compatible aggregation
+			    // pos = 0..(numUsedRows-1) is the slack index offset in n+pos
+			    std::vector<int>    listRowsAggregated(weights.size(), -1);
+			    std::vector<double> xlpExtra(weights.size(), 0.0);
+
+			    // helper to emit a cut using the EQ pipeline on an aggregated row
+			    auto tryEQCut = [&](const std::vector<std::pair<unsigned int,double>>& aggRow,
+						double rhsAggVal,
+						int maxAggr,
+						bool isSave,
+						const char* tag) {
+					      std::pair<std::vector<std::pair<unsigned int,double>>, double> cMirCut;
+
+					      // NOTE: cMirSep... expects:
+					      // - aggregated row (with slack indices n+pos)
+					      // - listRowsAggregated[0..maxAggr-1]
+					      // - xlpExtra[0..maxAggr-1]
+					      //
+					      // You must adjust the call signature to your actual function definition.
+					      bool ok = cMirSeparationEQ(
+									 allrows, // model rows
+									 aggRow, // aggregated row (with slacks n+pos)
+									 listRowsAggregated.data(), // maps pos -> original rowId
+									 rhsVec,   // rhs per original row
+									 xlp.data(), // lp solution for model vars
+									 colUpperBound.data(),            // bounds
+									 colLowerBound.data(),
+									 rhsAggVal,                       // rhs of aggregated row
+									 cMirCut,                         // OUT: cut (model vars) and rhs
+									 gclbs, gcubs,                    // tightened VLB/VUB info (pairs)
+									 n,
+									 solu,                            // your solution info (as in your pipeline)
+									 xlpExtra.data(),                 // OUT/IN: slack values per pos
+									 types,
+									 eass,                            // your assignments structure, if required
+									 isSave,
+									 maxAggr
+									 );
+
+					      if (!ok) {
+						if (0&&dbg_calls <= 50) {
+						  std::cerr << "[modk] " << tag << " cMirSep..EQ failed\n";
+						}
+						return;
+					      }
+
+					      // store as you already do: negate coefficients and rhs to match your cut sign convention
+					      cuts.emplace_back();
+					      cuts.back().first.clear();
+					      cuts.back().first.reserve(cMirCut.first.size());
+					      for (auto& e : cMirCut.first) {
+						cuts.back().first.emplace_back(e.first, -e.second);
+					      }
+					      cuts.back().second = -cMirCut.second;
+					      //std::cerr << "[modkdbg] cuts.size now = " << cuts.size() << "\n";
+					      if (0&&dbg_calls <= 50) {
+						std::cerr << "[modk] " << tag << " ok len=" << cMirCut.first.size()
+							  << " rhs=" << cMirCut.second << "\n";
+					      }
+					    };
+
+			    // ----------------------------
+			    // First aggregation (HiGHS-like): weight = scale * (((w*(k-1)) mod k)/k)
+			    // ----------------------------
+			    rowAggregated.clear();
+			    double rhsAggregatedVal = 0.0;
+			    int pos = 0;
+
+			    for (const auto& w : weights) {
+			      // map GFk-row-index -> original row id + scale
+			      int rowId  = integralScales[w.index].first;
+			      double scale  = integralScales[w.index].second;
+
+			      double weight = scale * (double((w.weight * (k - 1)) % k) / k);
+			      if (fabs(weight) <= 1e-15) continue;
+
+			      // build EQ-compatible row with slack index n+pos and fill xlpExtra[pos], listRowsAggregated[pos]
+			      buildRowWithSlackEQ(rowId, pos, rowToAggregate, listRowsAggregated, xlpExtra);
+
+			      double rhsToAgg = rhsVec[rowId].getValue().asDouble();
+
+			      aggregate2RowsInFirst(rowAggregated, rhsAggregatedVal,
+						    rowToAggregate, rhsToAgg,
+						    weight, 1e-10,
+						    -1);   // don't drop
+
+			      ++pos;
+			      if (pos >= (int)weights.size()) break;
+			    }
+
+			    if (pos > 0) {
+			      // optional debug: slack nonzeros
+			      if (0&&dbg_calls <= 50) {
+				int slack_nz = 0;
+				for (auto [idx,val] : rowAggregated)
+				  if ((int)idx >= n && fabs(val) > 1e-12) ++slack_nz;
+				std::cerr << "[modk] agg1 slack_nz=" << slack_nz
+					  << " total_nz=" << rowAggregated.size()
+					  << " pos=" << pos << "\n";
+			      }
+
+			      tryEQCut(rowAggregated, rhsAggregatedVal, pos,
+				       /*isSave=*/false, "cmir1");
+			    }
+
+			    // ----------------------------
+			    // Second aggregation (HiGHS-like for k!=2): weight = scale * (w/k)
+			    // For k==2, HiGHS often uses the same aggregation; you already guard with (k != 2)
+			    // ----------------------------
+			    if (k != 2) {
+			      std::vector<std::pair<unsigned int,double>> agg2;
+			      agg2.clear();
+			      double rhsAgg2 = 0.0;
+			      pos = 0;
+
+			      // re-init listRowsAggregated/xlpExtra (keep capacity)
+			      std::fill(listRowsAggregated.begin(), listRowsAggregated.end(), -1);
+			      std::fill(xlpExtra.begin(), xlpExtra.end(), 0.0);
+
+			      for (const auto& w : weights) {
+				int rowId = integralScales[w.index].first;
+				double sc = integralScales[w.index].second;
+
+				double weight = sc * (double(w.weight) / double(k));
+				if (fabs(weight) <= 1e-15) continue;
+
+				buildRowWithSlackEQ(rowId, pos, rowToAggregate, listRowsAggregated, xlpExtra);
+
+				double rhsToAgg = rhsVec[rowId].getValue().asDouble();
+
+				aggregate2RowsInFirst(agg2, rhsAgg2,
+						      rowToAggregate, rhsToAgg,
+						      weight, 1e-10, -1);
+
+				++pos;
+				if (pos >= (int)weights.size()) break;
+			      }
+
+			      if (pos > 0) {
+				if (0&&dbg_calls <= 50) {
+				  int slack_nz = 0;
+				  for (auto [idx,val] : agg2)
+				    if ((int)idx >= n && fabs(val) > 1e-12) ++slack_nz;
+				  std::cerr << "[modk] agg2 slack_nz=" << slack_nz
+					    << " total_nz=" << agg2.size()
+					    << " pos=" << pos << "\n";
+				}
+
+				// In your old code you passed negate=true for the second MIR cut.
+				// Here we do NOT "negate" the row; if you want the same effect,
+				// you can negate agg2.
+				// for (auto& e : agg2) e.second = -e.second; rhsAgg2 = -rhsAgg2;
+				//
+				// Start without negation to keep it simple. If you see missing cuts,
+				// add the negation.
+				tryEQCut(agg2, rhsAgg2, pos,
+					 /*isSave=*/false, "cmir2");
+			      }
+			    }
+
+			    rowAggregated.clear();
+			    rhsAggregated.setValue(0.0);
+			  }; //end lambda
+	  
+	  k = 2;
+	  if (separateModKCuts<2>(intSystemValue, intSystemIndex, intSystemStart,
+				  cuts, n, foundCut))
+	    { /*std::cerr << "YUP 2, mod-k-cuts. #:" << cuts.size() << std::endl;*/ return &cuts;}
+	  
+	  usedWeights.clear();
+	  k = 3;
+	  if (separateModKCuts<3>(intSystemValue, intSystemIndex, intSystemStart,
+				  cuts, n, foundCut))
+	    { /*std::cerr << "YUP 3, mod-k-cuts. #:" << cuts.size() << std::endl;*/ return &cuts;}
+	  
+	  
+	  usedWeights.clear();
+	  k = 5;
+	  if (separateModKCuts<5>(intSystemValue, intSystemIndex, intSystemStart,
+				  cuts, n, foundCut))
+	    { /*std::cerr << "YUP 5, mod-k-cuts. #:" << cuts.size() << std::endl;*/ return &cuts;}
+	  
+	  usedWeights.clear();
+	  k = 7;
+	  if (separateModKCuts<7>(intSystemValue, intSystemIndex, intSystemStart,
+				  cuts, n, foundCut))
+	    { /*std::cerr << "YUP 7, mod-k-cuts. #:" << cuts.size() << std::endl;*/ return &cuts;}
+	  if(0)std::cerr << "[modkdbg] totalRows=" << dbg_totalRows
+		    << " skipRow=" << dbg_skipped_skipRow
+		    << " notTight=" << dbg_skipped_notTight
+		    << " trNotOk=" << dbg_transform_notOk
+		    << " trOk=" << dbg_transform_ok
+		    << " trOkEmptyInt=" << dbg_transform_ok_emptyInt
+		    << "\n";
+	  
+	  //std::cerr << "[modk] transform ok="<<tr_ok<<" fail="<<tr_fail<<"\n";
+	  //std::cerr << "YUP, mod-k-cuts. #:" << cuts.size() << std::endl;
+	  //if (cuts.size() > 0) assert(0);
+	  return &cuts;
+}
 
 #define GMI4
 #ifdef GMI4
+#ifdef STDMATH
 vector< pair< vector< pair<unsigned int, double> >, double > >* CutAdder::getGMICuts( extSol::QpExternSolver &extSolver, vector<unsigned int> candidateVariables, int *types, int8_t *assigns, int decLev, unsigned int initime, std::vector<int> &listOfCutsVars, int*solu, int *fixs, int* blcks, int* eass, int orgN ){
 		//Accuracy
 		const double eps = 1e-9;
@@ -2799,7 +4635,8 @@ vector< pair< vector< pair<unsigned int, double> >, double > >* CutAdder::getGMI
 					//cerr<< "A "<<ai0<< " "<<objVals.at(ind).asDouble()<<endl;
 					// BETTER EPSILON???
 					// // ai0 = objVals.at(ind).asDouble();
-					if (fabs(ai0- objVals.at(ind).asDouble())>/*1e-12 * maxRhs +*/ 1e-9/*eps*/) {
+					if (fabs(ai0- objVals.at(ind).asDouble())>/*1e-12 * maxRhs +*/
+					    1e-6/*1e-9*//*eps*/) {
 						cerr << "Error: in GMI: " << abs(ai0- objVals.at(ind).asDouble()) <<
 						  " ai0=" << ai0 << " x=" << objVals.at(ind).asDouble() <<
 						  " and type is " << types[ind] << " ---";//endl;
@@ -2990,8 +4827,867 @@ vector< pair< vector< pair<unsigned int, double> >, double > >* CutAdder::getGMI
 					debugCheckSol(tempvec, beta , solu, n, true);
 					std::cerr << "vor CMIRize" << std::endl;
 					printRowEQ(tempvec, beta, solu, n, xlpopt.data(), (double*)0, types, true);					                   */
-					std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* subresCut;
-					subresCut = CMIRizeEQ( extSolver, tempvec, beta, types, assigns, decLev, initime, solu, fixs, blcks, eass, orgN, '>');
+					std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* subresCut=nullptr;
+					if (decLev</*1*/log(n) && tempvec.size() < 0.1*n+1000)
+					  subresCut = CMIRizeEQ( extSolver, tempvec, beta, types, assigns, decLev, initime, solu, fixs, blcks, eass, orgN, '>');
+					//output is '>'
+					if (subresCut && (*subresCut).size()>0) {
+					  //std::cerr << "Cmirize successful." << std::endl;
+					  //assert((*subresCut)[0].first.size() == tempvec.size());
+						cuts.push_back((*subresCut)[0]);	
+						listOfCutsVars.push_back(candidateVariables[iind]);
+					}
+					bool improve=false;//CMIRize(xlpopt.data(), tempvec, beta, 1e-8, cutvec, resrhs, types, assigns, -1, lbVec.data(), ubVec.data(), solu, eass, orgN, '>',nullptr,nullptr);//&CutAdder::globalConditionalLowerBounds,&CutAdder::globalConditionalUpperBounds);
+					/*
+					for (int j=0;j< cutvec.size();j++)
+					  cutvec[j].second = -cutvec[j].second;
+					resrhs = -resrhs;
+					if (improve && cutvec.size() > 0) {
+						cuts.push_back(make_pair(cutvec, resrhs));	
+						listOfCutsVars.push_back(candidateVariables[iind]);
+					}
+					*/
+				}
+			}
+			//cerr << "cmirize GMI cuts" << endl;
+			//CMIRizeFinalCutSet( cuts, xlpopt, types, assigns, lbVec.data(), ubVec.data(), solu, (int *)0, (int *)0 , eass, orgN);
+
+		}
+		else cerr << "LP status inappropriate for GMI cut generation. " << extSolver.getSolutionStatus() << endl;
+
+		return &cuts;
+	}
+#else
+vector< pair< vector< pair<unsigned int, double> >, double > >* CutAdder::getGMICuts( extSol::QpExternSolver &extSolver, vector<unsigned int> candidateVariables, int *types, int8_t *assigns, int decLev, unsigned int initime, std::vector<int> &listOfCutsVars, int*solu, int *fixs, int* blcks, int* eass, int orgN ){
+		//Accuracy
+		const double eps = 1e-9;
+		//Starting time of GMI generation
+		unsigned int gmistim = time(NULL);
+
+		// Vector for the final cuts
+		static vector< pair< vector< pair<unsigned int, double> >, double > > cuts(candidateVariables.size(), make_pair(vector< pair<unsigned int, double> >(), 0));
+		cuts.clear();
+		cuts.resize(candidateVariables.size(), make_pair(vector< pair<unsigned int, double> >(), 0));
+		listOfCutsVars.clear();
+
+		// We may need to call ClpModel::status()
+
+		// Unfortunately the status of Clp is hard coded ...
+		// -1 - did not run
+		//  0 - optimal
+		//  1 - primal infeasible
+		//  2 - dual infeasible
+		//  3 - stopped on iterations or time
+		//  4 - stopped due to errors
+		//  5 - stopped by event handler
+
+		if (extSolver.getSolutionStatus() == extSol::QpExternSolver::OPTIMAL){
+			const unsigned int m = extSolver.getRowCount();
+			const unsigned int n = extSolver.getVariableCount();
+
+			//Get solution values of the primal variables
+			/*static*/ vector<data::QpNum> objVals(n);
+			extSolver.getValues(objVals);
+			if (objVals.size() ==0) {
+			  cerr << "Error: got no solution in GMI" << endl;
+			  return &cuts;
+			}
+			vector<double> xlpopt( n );
+			for( unsigned int i = 0; i < n; ++i ){
+			  xlpopt[i] = objVals[i].asDouble();
+			}
+			double tol=1e-8;
+
+			//Vector for lower bounds; Default is 0, for binary Vars
+			std::vector<data::QpNum> lbVec(n);
+			extSolver.getLB(lbVec);
+
+			/*static*/ vector<double> l(m + n, 0);
+			if (l.capacity() < m + n) { l.reserve(m + n); l.resize(m + n); }
+			for (int z = 0; z<n; z++) l[z] = lbVec[z].asDouble();
+
+			//Vector for upper bounds; Default is 1, for binary Vars
+			std::vector<data::QpNum> ubVec(n);
+			extSolver.getUB(ubVec);
+			/*static*/ vector<double> u(m + n, 1);
+			if (u.capacity() < m + n) { u.reserve(m + n); u.resize(m + n); }
+			for (int z = 0; z< n; z++) u[z] = ubVec[z].asDouble();
+
+			//for(int i=0;i<n;i++)
+				//cerr << i << " " << (int)assigns[i] << " " << lbVec[i].asDouble() << " " << ubVec[i].asDouble()<<endl;
+			//cin.get();
+			//Vector for original RHS of the constraint system= Right hand side vector b; Used for Substitution Slacks and Calculation of A_B^{-1}b
+			/*static*/ vector<double> RHS(m, 0);
+			if (RHS.capacity() < m) { RHS.reserve(m ); RHS.resize(m); }
+
+			// Vector (Size n) for all non-basic-variables: N[i]=the i-th non-basic-variable
+			/*static*/ vector<int> N(n);
+			if (N.capacity() < n) { N.reserve( n); N.resize( n); }
+
+			// NInv[i]=number of non-basic-variable; and -1 if i is basic
+			/*static*/ std::vector<int> Ninv(m + n, -1);
+			if (Ninv.capacity() < m + n) { Ninv.reserve(m + n); Ninv.resize(m + n); }
+
+			// Vector (SIze m) for all Basic-Variables: B[i]=the i-th basic-variable
+			/*static*/ std::vector<int> B(m);
+			if (B.capacity() < m) { B.reserve(m); B.resize(m); }
+
+			// BInv[i]=number of basic-variable; and -1 if i is non-basic
+			/*static*/ std::vector<int> Binv(m + n, -1);
+			if (Binv.capacity() < m + n) { Binv.reserve(m + n); Binv.resize(m + n); }
+			for (int z = 0; z< m + n; z++) Binv[z] = -1;
+
+			// Information for each variable (normal and slack)
+			/*static*/ vector<int> basestat(n + m);
+			if (basestat.capacity() < m + n) { basestat.reserve(m + n); basestat.resize(m + n); }
+
+#ifdef USE_NBD_CLP
+			ClpSimplex *M;
+			M = (ClpSimplex*)extSolver.getSolverModel();
+			M->dual(0,7);
+#endif
+#ifdef USE_NBD_HIGHS_X
+			Highs *M;
+			M = (Highs*)extSolver.getSolverEnv();
+			M->setOptionValue("solver", kSimplexString);
+			M->setOptionValue("simplex_strategy", kSimplexStrategyDual);
+			M->run();
+#endif
+
+
+			/*static*/ extSol::QpExternSolver::QpExtSolBase base;
+			extSolver.getBase(base);
+			if (base.variables.size() < n) {
+			  cerr << "Error: got no base in GMI" << endl;
+			  return &cuts;
+			}
+
+			/*static*/ std::vector<data::QpRhs> rhsVec;
+			extSolver.getRhs(rhsVec);
+
+			for (unsigned int i = 0; i < m; ++i){
+				// For a slack variable either the upper, or lower bound is zero. Which one is used depends on ratiosign of corresponding row
+				l.at(n + i) = 0;
+				u.at(n + i) = 0;
+				RHS.at(i) = rhsVec.at(i).getValue().asDouble();	//It is simply the b_i entry of row i
+				if (rhsVec.at(i).getRatioSign() == data::QpRhs::greaterThanOrEqual){
+
+					// Switch Lower/upper bound, because cplex only returns "AtLower" of Slacks, even if they are <=0
+					// For CLP this should not do any harm, since CLP set it right in the first place
+					if (base.constraints.at(i) == extSol::QpExternSolver::AtLower){
+						base.constraints.at(i) = extSol::QpExternSolver::AtUpper;
+					}
+				}
+				if (rhsVec.at(i).getRatioSign() == data::QpRhs::smallerThanOrEqual){
+					if (base.constraints.at(i) == extSol::QpExternSolver::AtUpper){
+						base.constraints.at(i) = extSol::QpExternSolver::AtLower;
+					}
+				}
+			}
+
+			// Make sure that the "AtLower", and "AtUpper" is set correctly for binaries
+			for (unsigned int i = 0; i < n; ++i){
+				if (types[i]==0 && fabs(objVals[i].asDouble() - 1) < 0.5 && base.variables.at(i) == extSol::QpExternSolver::AtLower){
+					base.variables.at(i) = extSol::QpExternSolver::AtUpper;
+				}
+				if (types[i]==0 &&fabs(objVals[i].asDouble() - 1) > 0.5 && base.variables.at(i) == extSol::QpExternSolver::AtUpper){
+					base.variables.at(i) = extSol::QpExternSolver::AtLower;
+
+				}
+				if (types[i]!=0 && fabs(lbVec[i].asDouble()-objVals[i].asDouble()) < 1e-4 && (base.variables.at(i) == extSol::QpExternSolver::AtLower || base.variables.at(i) == extSol::QpExternSolver::AtUpper)) {
+				  base.variables.at(i) = extSol::QpExternSolver::AtLower;
+				}
+				if (types[i]!=0 && fabs(ubVec[i].asDouble()-objVals[i].asDouble()) < 1e-4 && (base.variables.at(i) == extSol::QpExternSolver::AtLower || base.variables.at(i) == extSol::QpExternSolver::AtUpper)) {
+				  base.variables.at(i) = extSol::QpExternSolver::AtUpper;
+				}
+				if (0&&fabs(lbVec[i].asDouble()-objVals[i].asDouble()) < 1e-9 && fabs(ubVec[i].asDouble()-objVals[i].asDouble()) < 1e-9 && (base.variables.at(i) == extSol::QpExternSolver::AtLower || base.variables.at(i) == extSol::QpExternSolver::AtUpper)) {
+				  if (base.variables.at(i) == extSol::QpExternSolver::AtLower)
+				    base.variables.at(i) = extSol::QpExternSolver::AtUpper;
+				  else
+				    base.variables.at(i) = extSol::QpExternSolver::AtLower;				    
+				}
+			}
+
+			// Save the (changed) "AtLower", "AtUpper" and "Basis" information in bastestat for both primal and slack variables
+			for (unsigned int i = 0; i < n; ++i)
+				basestat.at(i) = base.variables.at(i);
+
+			for (unsigned int i = 0; i < m; ++i)
+				basestat.at(n + i) = base.constraints.at(i);
+			//Find out which variables are non-basic
+			unsigned int ntmp = 0;
+			for (unsigned int i = 0; i < n + m; ++i){
+				if (basestat.at(i) != extSol::QpExternSolver::Basic){
+					N.at(ntmp) = i;
+					Ninv.at(i) = ntmp;
+					++ntmp;
+				}
+				else
+					Ninv.at(i) = -1;
+			}
+			//std::cerr << "regular n=" << n << " m=" << m << " nbasics=" << ntmp << std::endl;
+			if (ntmp != n)
+				throw runtime_error("Invalid basis size.");
+
+#ifdef USE_NBD_CLP
+			// GET THE ORDER OF THE BASIC VARIABLES
+
+			//static std::vector<int> basis(m);
+			//if (basis.capacity()<m) { basis.reserve(m); basis.resize(m); }
+			//basis.clear();
+
+            if (M->problemStatus() || M->algorithm()>=0) {
+	      //std::cerr << "Error: GMI in trouble: Stat:" << M->problemStatus() << " Alg:" << M->algorithm() << std::endl;
+	      //return cuts;
+	      std::cerr << "Warning: GMI in trouble: Stat:" << M->problemStatus() << " Alg:" << M->algorithm() << std::endl;
+                M->setAlgorithm(-1);
+                M->dual(0,7);
+                
+                if (M->problemStatus() || M->algorithm()>=0) {
+                    std::cerr << "Warning A: GMI in trouble: Stat:" << M->problemStatus() << " Alg:" << M->algorithm() << std::endl;
+                    M->allSlackBasis(true);   // reset basis
+                    M->dual(0,7);
+                }
+                if (M->problemStatus() || M->algorithm()>=0) {
+                    std::cerr << "Warning B: GMI in trouble: Stat:" << M->problemStatus() << " Alg:" << M->algorithm() << std::endl;
+                    M->allSlackBasis(true);   // reset basis
+                    M->primal(0,7);
+                }
+                if (M->problemStatus() || M->algorithm()>=0) {
+                    std::cerr << "Warning C: GMI in trouble: Stat:" << M->problemStatus() << " Alg:" << M->algorithm() << std::endl;
+                    M->allSlackBasis(true);   // reset basis
+                    M->primal(0,3);
+                } else std::cerr << "info: GMI ok" << std::endl;
+            
+
+
+                for (int z = 0; z< m + n; z++) Binv[z] = -1;
+                // Information for each variable (normal and slack)
+                ///*static*/ vector<int> basestat(n + m);
+                if (basestat.capacity() < m + n) { basestat.reserve(m + n); basestat.resize(m + n); }
+                ///*static*/ extSol::QpExternSolver::QpExtSolBase base;
+		{
+		  //ClpSimplex *M;
+		  //M = (ClpSimplex*)extSolver.getSolverModel();
+		  //M->setAlgorithm(-1);
+		  //M->dual(0,7);
+		}
+                extSolver.getBase(base);
+		if (base.variables.size() < n) {
+		  cerr << "Error: got no base in gmi ii" << endl;
+		  return &cuts;
+		}
+
+                ///*static*/ std::vector<data::QpRhs> rhsVec;
+                extSolver.getRhs(rhsVec);
+                for (unsigned int i = 0; i < m; ++i){
+                    // For a slack variable either the upper, or lower bound is zero. Which one is used depends on ratiosign of corresponding row
+                    l.at(n + i) = 0;
+                    u.at(n + i) = 0;
+                    RHS.at(i) = rhsVec.at(i).getValue().asDouble();	//It is simply the b_i entry of row i
+                    if (rhsVec.at(i).getRatioSign() == data::QpRhs::greaterThanOrEqual){
+                        
+                        // Switch Lower/upper bound, because cplex only returns "AtLower" of Slacks, even if they are <=0
+                        // For CLP this should not do any harm, since CLP set it right in the first place
+#ifdef DUMUSE_NBD_CPLEX_C
+                        if (base.constraints.at(i) == extSol::QpExternSolver::AtLower){
+                            base.constraints.at(i) = extSol::QpExternSolver::AtUpper;
+                        } else if (base.constraints.at(i) == extSol::QpExternSolver::AtUpper){
+                            base.constraints.at(i) = extSol::QpExternSolver::AtLower;
+                        }
+#endif
+                    }
+                }
+                // Make sure that the "AtLower", and "AtUpper" is set correctly for binaries
+                for (unsigned int i = 0; i < n; ++i){
+                    if (types[i]==0 && abs(objVals[i].asDouble() - 1) < 0.5 && base.variables.at(i) == extSol::QpExternSolver::AtLower){
+                        base.variables.at(i) = extSol::QpExternSolver::AtUpper;
+                    }
+                    if (types[i]==0 &&abs(objVals[i].asDouble() - 1) > 0.5 && base.variables.at(i) == extSol::QpExternSolver::AtUpper){
+                        base.variables.at(i) = extSol::QpExternSolver::AtLower;
+                        
+                    }
+                }
+                // Save the (changed) "AtLower", "AtUpper" and "Basis" information in bastestat for both primal and slack variables
+                for (unsigned int i = 0; i < n; ++i)
+                    basestat.at(i) = base.variables.at(i);
+                for (unsigned int i = 0; i < m; ++i)
+                    basestat.at(n + i) = base.constraints.at(i);
+                //Find out which variables are non-basic
+                ntmp = 0;
+                for (unsigned int i = 0; i < n + m; ++i){
+                    if (basestat.at(i) != extSol::QpExternSolver::Basic){
+                        N.at(ntmp) = i;
+                        Ninv.at(i) = ntmp;
+                        ++ntmp;
+                    }
+                    else
+                        Ninv.at(i) = -1;
+                }
+
+		//std::cerr << "n=" << n << " m=" << m << " nbasics=" << ntmp << std::endl;
+                
+                if (M->problemStatus() || M->algorithm()>=0) {
+                    std::cerr << "Warning II: GMI in trouble: Stat:" << M->problemStatus() << " Alg:" << M->algorithm() << std::endl;
+		    return &cuts;
+                    M->allSlackBasis(true);   // reset basis
+                    //extSolver.prepareMatrixRowForm();
+                    M->primal(0,7);
+                    //M->initialSolve();
+                    //ClpDualRowSteepest dualSteepest;
+                    //M->setDualRowPivotAlgorithm(dualSteepest);
+                    //M->allSlackBasis(true);   // reset basis
+                    //M->dual(0,1);
+                   if (M->problemStatus() || M->algorithm()>=0) {
+                      std::cerr << "Error: GMI not allowed." << std::endl;
+                      return &cuts;
+                   }
+                }
+            }
+
+            //CoinWarmStartBasis *wsb = M->getBasis();
+			std::vector<int> head(m);
+			if (head.capacity()<m) { head.reserve(m); head.resize(m); }
+			//std::cerr << "G";
+
+			M->getBasics(&(head.data()[0]));
+			//std::cerr << "g";
+			/*for (int i = 0; i < n; i++) {
+				if (wsb->getStructStatus(i) == CoinWarmStartBasis::basic) {
+					basis.push_back(i);
+				}
+			}
+			for (int i = 0; i < m; i++) {
+				if (wsb->getArtifStatus(i) == CoinWarmStartBasis::basic) {
+					basis.push_back(n + i);
+				}
+			}
+
+			//wsb->print();
+			delete wsb;
+			*/
+			for (unsigned int i = 0; i < m; ++i){
+							B.at(i) = head.at(i);
+							if (Ninv[B.at(i)]!=-1) {
+							  std::cerr << "Error in get GMI cuts. Ninv=" << Ninv[B.at(i)] << ", B[i]=" << B[i] << std::endl;
+								return &cuts;
+							}
+							assert(Ninv[B.at(i)]==-1);
+							Binv.at(B.at(i)) = i;
+			}
+#endif
+#ifdef USE_NBD_HIGHS
+	Highs *highsPt = (Highs*)extSolver.getSolverEnv();
+	Highs &highs = *highsPt;
+	const HighsInfo& info = highs.getInfo();
+	//const unsigned int m = getRowCount();
+	//const unsigned int n = getVariableCount();
+
+	//std::vector<int> B(m);
+	//std::vector<int> Binv(m + n, -1);
+	//std::vector<int> N(n);
+
+	//std::vector<int> Ninv(m + n, -1);
+	std::vector<int> basis(m);
+	basis.clear();
+	//lhs.clear();
+	const HighsBasis& highs_basis = highs.getBasis();
+	const bool has_basis = info.basis_validity;
+
+	if (!has_basis) {
+	  basis.clear();
+	  std::cerr << "Exception caught getting base. No basis in GMI. " << std::endl;
+	  return &cuts;
+	}
+	std::vector<HighsInt> head(m);
+	if (head.capacity()<m) { head.reserve(m); head.resize(m); }
+	/* getBasicVariablesArray:
+	 * Entries are indices of columns if in [0,num_col), and entries in [num_col,
+	 * num_col+num_row) are (num_col+row_index).
+	 */
+	/* getBasicVariables:
+	 * Non-negative entries are indices of columns,
+	 * and negative entries are -(row_index+1).
+	 */
+	//const HighsInt* head2 = highs.getBasicVariablesArray();
+	highs.getBasicVariables(&(head.data()[0]));
+
+
+	/*for (unsigned int i = 0; i < m; ++i){
+	  B.at(i) = head[i];
+	  if (Ninv[B.at(i)]!=-1) {
+	    std::cerr << "Error in get GMI cuts. Ninv=" << Ninv[B.at(i)] << ", B[i]=" << B[i] << std::endl;
+	    return cuts;
+	  }
+	  assert(Ninv[B.at(i)]==-1);
+	  Binv.at(B.at(i)) = i;
+	}*/
+	for (unsigned int i = 0; i < m; ++i){
+	  if (head[i] >= 0){
+	    //assert(head[i] == head2[i]);
+	    B.at(i) = head[i];
+	  }
+	  else {
+	    //assert(n-(head[i]+1) == head2[i]);
+	    B.at(i) = n - (head[i] + 1);    
+	  }
+	  Binv.at(B.at(i)) = i;
+	}
+	
+#endif
+#ifdef USE_NBD_CPLEX_C
+			// GET THE ORDER OF THE BASIC VARIABLES
+			std::vector<CPXDIM> head(m);
+			if (head.capacity()<m) { head.reserve(m); head.resize(m); }
+			/*
+			* An array. The array contains the indices of the variables in the resident basis,
+			* where basic slacks are specified by the negative of the corresponding row index minus 1 (one);
+			* that is, -rowindex - 1.
+			* The array must be of length at least equal to the number of rows in the LP problem object.
+			*/
+			if (CPXXgetbhead(*(CPXENVptr*)extSolver.getSolverEnv(), *(CPXLPptr*)extSolver.getSolverModel(), head.data(), NULL)){
+				throw utils::ExternSolverException("Unable to obtain basis.");
+			}
+
+			for (unsigned int i = 0; i < m; ++i){
+				if (head.at(i) >= 0){
+					B.at(i) = head.at(i);
+				}
+				else {
+				        B.at(i) = n - (head.at(i) + 1);    
+				}
+				Binv.at(B.at(i)) = i;
+			}
+#endif
+			std::vector< std::vector< data::IndexedElement >  > allrows2;
+#ifdef USE_NBD_CLP
+					//Needed later...
+			extSolver.prepareMatrixRowForm();
+			for (int i = 0; i < m;i++) {
+			  std::vector< data::IndexedElement > T;
+			  allrows2.push_back(T);
+			  extSolver.getRowLhs/*_prep*//*_rows*/(i, allrows2[i]);
+			}
+#endif
+#ifdef USE_NBD_HIGHS
+			//Needed later...
+			extSolver.prepareMatrixRowForm();
+			for (int i = 0; i < m;i++) {
+			  std::vector< data::IndexedElement > T;
+			  allrows2.push_back(T);
+			  extSolver.getRowLhs(i, allrows2[i]);
+			  /*for (int j = 0 ; j < allrows2[i].size();j++)
+			    cerr << allrows2[i][j].value.asDouble() << "y" << allrows2[i][j].index << " ";
+			  cerr << endl;
+			  */
+			}
+#endif
+#ifdef USE_NBD_CPLEX_C
+	      {
+		  //void QpExtSolCplexC::getRowLhs(unsigned int ri, std::vector<data::IndexedElement>& lhs) {
+		  int vars = n;
+
+		  static std::vector<double> rowtmp(vars);
+		  static std::vector<CPXDIM> rowindtmp(vars);
+		  /*static*/ std::vector<CPXNNZ> rowstarts(m);
+		  CPXNNZ size = 0, foo = 0, surplus = 0;
+		  int missing = CPXXgetrows(*(CPXENVptr*)extSolver.getSolverEnv(), *(CPXLPptr*)extSolver.getSolverModel(), &size, rowstarts.data(), rowindtmp.data(),rowtmp.data(), 0, &surplus, 0, m-1);
+		  assert(surplus < 0);
+		  missing = -surplus;
+		  rowtmp.resize(missing);
+		  rowindtmp.resize(missing);
+
+		  if ((missing=CPXXgetrows(*(CPXENVptr*)extSolver.getSolverEnv(), *(CPXLPptr*)extSolver.getSolverModel(), &size, rowstarts.data(), rowindtmp.data(), rowtmp.data(), rowtmp.size(), &surplus, 0, m-1))) {
+		  std::cerr << "Error: Extern Solver denies row."<< "all " << surplus << " " << missing << std::endl;
+		    return &cuts;
+		  }
+		  int crow=0;
+		  int i =0;
+		  while (i < size) {
+		      std::vector< data::IndexedElement > T;
+		      allrows2.push_back(T);
+		      do {
+		         data::IndexedElement e;
+                         e.index = rowindtmp[i];
+                         e.value = rowtmp[i];
+		         allrows2[crow].push_back(e);
+			 i++;
+		      } while ((crow < rowstarts.size()-1) ? i < rowstarts[crow+1] : i < size);
+		      crow++;
+		  }
+
+	   }
+#endif
+
+
+			// Try creating GMI-cut for each candidate
+			for (unsigned int iind = 0; iind < candidateVariables.size(); ++iind){
+			  //if ((double)(time(NULL) - gmistim) > 0.02*(double)(time(NULL) - initime)) break;
+			  //if(cuts.size()>sqrt(n)) break;
+				unsigned int ind = candidateVariables[iind];
+
+				//If variable is too close to being integer: continue
+				if (Binv[ind] == -1 || abs(objVals.at(ind).asDouble() - floor(objVals.at(ind).asDouble() + 0.5)) <= eps){
+                    if (Binv[ind] == -1 && abs(objVals.at(ind).asDouble() - floor(objVals.at(ind).asDouble() + 0.5)) > eps)
+                        cerr << "Warning: GMI-cut failed." << endl;
+				}
+				else {
+					assert(Binv[ind] != -1);
+					//Vector for the corresponding row of the (solved) simplex tableau. Equal to A_B^{-1}A
+#ifdef USE_NBD_HIGHS
+					std::vector<data::QpNum> SimplexRow(n + m);
+#endif
+#ifdef USE_NBD_CPLEX_C
+					std::vector</*data::QpNum*/double> SimplexRow(n + m);
+#endif
+#ifdef USE_NBD_CLP
+					std::vector<double> SimplexRow(n + m, 0);
+#endif
+					for (int i=0; i < n+m;i++)
+					  SimplexRow[i] = 0.0;
+
+					//Vector of the corresponding inverse-basic-part-matrix: A_B^{-1}
+					std::vector<double> BInvRow(m);
+
+					// Not sure why two different vectors are needed...
+					/*static*/ vector<double> gmicoeff(n);
+					/*static*/ vector<data::QpNum> gmicoeff2;
+					gmicoeff2.resize(n);
+					for (int i=0;i<n;i++)
+					  gmicoeff2[i] = 0.0;
+					//extSolver.getRowLhsOfTableauByColumn( ind, gmicoeff2 );
+#ifdef USE_NBD_HIGHS
+					HighsInt row_num_nz=0;
+					highs.getBasisInverseRow(Binv[ind], BInvRow.data(), &row_num_nz,NULL);
+					extSolver.getBinvArow(Binv[ind], SimplexRow);
+					
+					for (unsigned int i = 0; i < m; ++i){
+						if (Ninv[n + i] != -1)
+							SimplexRow[n + i] = BInvRow[i];
+					}
+
+					// Get the coefficients of the non-basic-variables of the row of interest
+					for (unsigned int i = 0; i < n; ++i){
+					  gmicoeff2[i] = SimplexRow[N[i]].asDouble();
+					}
+#endif
+#ifdef USE_NBD_CPLEX_C
+
+					if (CPXXbinvrow(*(CPXENVptr*)extSolver.getSolverEnv(), *(CPXLPptr*)extSolver.getSolverModel(), Binv[ind], BInvRow.data())){
+						throw utils::ExternSolverException("CPXXbinvrow error");
+					}
+
+					//extSolver.getBinvArow(Binv[ind], SimplexRow);
+					//This only returns A_B^{-1}A for primal variables; Slack part is still missing
+					if (CPXXbinvarow(*(CPXENVptr*)extSolver.getSolverEnv(), *(CPXLPptr*)extSolver.getSolverModel(), Binv[ind], SimplexRow.data())){
+						throw utils::ExternSolverException("CPXXbinvarow error");
+					}
+
+
+					//complete simplex row to (A_B^{-1}(A   I))= (A_B^{-1}A    A_B^{-1}), for slack columns
+					for (unsigned int i = 0; i < m; ++i){
+						if (Ninv[n + i] != -1)
+							SimplexRow[n + i] = BInvRow[i];
+					}
+
+					//ONCE USED FOR CHECKING CPLEX_SLACK PROPERTIES
+					/*static vector<double> slacks(m);
+					if (slacks.size() < m) slacks.resize(m);
+					int status = CPXXgetslack(
+						*(CPXENVptr*)extSolver.getSolverEnv(),
+						*(CPXLPptr*)extSolver.getSolverModel(),
+						slacks.data(), 0, m - 1);
+					for (int i = 0; i < m; i++)if (BInvRow[i] == 0){
+						cout << "SLACK-VALS " << BInvRow[i] << " " << rhsVec.at(i).getRatioSign() << " " << slacks.at(i) << endl;
+					}
+					cin.get();
+					*/
+
+
+					// Get the coefficients of the non-basic-variables of the row of interest
+					for (unsigned int i = 0; i < n; ++i){
+					  gmicoeff2[i] = SimplexRow[N[i]];//.asDouble();
+					}
+
+					//Each entry of basics should be zero, unless it is the candidate variable Just for checking
+					for (unsigned int i = 0; i < m; ++i){
+						if (B[i] != ind)
+							assert(SimplexRow[B[i]] == 0);
+
+						if (B[i] ==ind)
+							assert(SimplexRow[B[i]]==1);
+					}
+
+#endif
+#ifdef USE_NBD_CLP
+					//get complete simplex row (A_B^{-1}(A   I))= (A_B^{-1}A    A_B^{-1}) including slack columns
+
+					M->getBInvARow(Binv[ind], &(SimplexRow.data()[0]), &(SimplexRow.data()[n]));
+					M->getBInvRow(Binv[ind], &(BInvRow.data()[0]));
+
+					//Needed later...
+					//extSolver.prepareMatrixRowForm();
+
+					gmicoeff2.resize(n);
+
+					for (unsigned int i = 0; i < m; ++i){
+						if (Ninv[n + i] != -1)
+							SimplexRow[n + i] = BInvRow[i];
+					}
+					/*for (unsigned int i = 0; i < m; ++i){
+						assert(SimplexRow[n+i] == BInvRow[i]);
+						if (B[i] != ind){
+							assert(SimplexRow[B[i]] == 0);
+						}
+					}*/
+					for (unsigned int i = 0; i < n; ++i)
+						gmicoeff2[i] = SimplexRow[N[i]];
+#endif
+
+					if (gmicoeff2.size() != n){
+						continue;
+						//throw runtime_error( "unexpected" );
+					}
+
+					//gmicoeff stores the simplex row entries of the non-basic variables
+					for (unsigned int i = 0; i < n; ++i)
+						gmicoeff[i] = gmicoeff2[i].asDouble();
+
+					// Generate GMI Cut
+
+					long double ai0 = 0;
+                    double maxRhs=0.0;
+					//ai0=A_B^-1b
+                    for (int i = 0; i < m; i++) {
+                        if (fabs(RHS.at(i))>maxRhs) maxRhs = fabs(RHS.at(i));
+#ifdef USE_NBD_HIGHS
+			ai0 += (long double)SimplexRow.at(n+i).asDouble()*(long double)RHS[i];
+#endif
+#ifdef USE_NBD_CLP
+			ai0 += (long double)SimplexRow.at(n+i)*(long double)RHS[i];
+#endif
+#ifdef USE_NBD_CPLEX_C
+			ai0 += (long double)SimplexRow.at(n+i)/*.asDouble()*/*(long double)RHS[i];
+#endif
+                    }
+
+					//cerr<< "Bef "<<ai0<< " "<<objVals.at(ind).asDouble()<<endl;
+
+					//THE FOLLOWING STEPS ARE NEEDED, SINCE GMI CUTS ARE CREATED FOR Non-BASICS IN R+ AT LOWER BOUND 0
+					// Transform each non-basic-variable into a non-negative variable at it's lower bound with value 0
+					for (unsigned int k = 0; k < n; ++k){
+						unsigned int nind = N[k];
+						//if (nind>=n) continue;
+						if (basestat.at(nind) == extSol::QpExternSolver::AtLower){
+							// Lower Bound
+							// If X is at lower bound: replace X=LB+Xnew
+							ai0 -= (long double)gmicoeff[k] * (long double)l[nind];
+						}
+						else if (basestat.at(nind) == extSol::QpExternSolver::AtUpper) {
+							// Upper Bound
+							// If X is at upper bound: replace X=UB-Xnew
+							ai0 -= (long double)gmicoeff[k] * (long double)u[nind];
+							gmicoeff[k] *= -1;
+
+						}
+
+					}
+					//cerr<< "A "<<ai0<< " "<<objVals.at(ind).asDouble()<<endl;
+					// BETTER EPSILON???
+					// // ai0 = objVals.at(ind).asDouble();
+					if (fabs((double)ai0- objVals.at(ind).asDouble())>/*1e-12 * maxRhs +*/ 1e-9/*eps*/) {
+					  if (fabs((double)ai0- objVals.at(ind).asDouble())>/*1e-12 * maxRhs +*/ 1e-6/*eps*/) {
+					    cerr << "Error: in GMI: " << abs(ai0- objVals.at(ind).asDouble()) <<
+					      " ai0=" << ai0 << " x=" << objVals.at(ind).asDouble() <<
+					      " and type is " << types[ind] << " ---";//endl;
+					    
+					    for (unsigned int k = 0; k < n; ++k){
+					      unsigned int nind = N[k];
+					      if (basestat.at(nind) == extSol::QpExternSolver::AtLower){
+						// Lower Bound
+						// If X is at lower bound: replace X=LB+Xnew
+						std::cerr << (nind>=n?"S":"O") << gmicoeff[k] << "L" << l[nind] << " ";
+						//if (nind < n) assert(objVals[nind] < 0.01);
+					      }
+					      else if (basestat.at(nind) == extSol::QpExternSolver::AtUpper) {
+						// Upper Bound
+						// If X is at upper bound: replace X=UB-Xnew
+						std::cerr << (nind>=n?"S":"O") << gmicoeff[k] << "U" << u[nind] << " ";
+						//if (nind < n) assert(objVals[nind] > 0.99);
+					      }
+					      
+					    }
+					    std::cerr << std::endl;
+					    
+					    cuts.clear();
+					    break;
+					  }	
+					  continue;
+					}
+					ai0 = objVals.at(ind).asDouble();
+#ifdef USE_NBD_HIGHS 
+					//ai0 = -ai0;
+#endif
+
+					//assert(abs(ai0- objVals.at(ind).asDouble())<=eps);
+
+					// Maybe objVals is more accurate!? Calculating ai0 in the lines before is just used for checking; Could be omitted to safe time
+					if ((double)ai0<1e-9 || objVals.at(ind).asDouble() < 1e-9) {
+					  //cerr << "-1[" << ai0 <<"," << objVals[ind].asDouble() << "]";
+					  continue;
+					}
+		    //ai0 = objVals.at(ind).asDouble();
+					if ((double)ai0 < 0) {
+					  //cerr << "-2";		      
+					  continue;
+					}
+					assert(ai0 >= 0);
+
+					// Cut from row
+					vector<long double> cutcoeff(n);
+					long double fi0 = ai0 - floor(ai0);
+					if (fabs((double)fi0) <= eps){
+						// k-cut separation impossible
+					  //cerr << "-3";
+						continue;
+					}
+
+					// Here the well-known GMI formula is finally used
+					for (unsigned int k = 0; k < n; ++k){
+						unsigned int nind = N[k];
+						long double aij = (long double) gmicoeff[k];
+						if (0&&nind>=n) {
+						  cutcoeff[k] = 0.0;
+						  continue;
+						}
+						if (nind < n &&  types[nind]==0){
+							// Integer nonbasic Variables
+							long double fij = aij - floor(aij);
+							if (fij <= fi0){
+								cutcoeff[k] = fij;
+							}
+							else {
+								cutcoeff[k] = fi0*(1 - fij) / (long double)(1 - fi0);
+							}
+						}
+						else {
+							// Real nonbasic variables
+							if (aij >= 0){
+								cutcoeff[k] = aij;
+							}
+							else {
+								cutcoeff[k] = fi0*(-aij) / (long double)(1 - fi0);
+							}
+						}
+					}
+
+					// undo variable substititions
+					long double beta = fi0;// -OneEM12 - abs(fi0)*OneEM12;
+					for (unsigned int k = 0; k < n; ++k){
+						//get the k-th non-basic variable, which is then nind
+						unsigned int nind = N[k];
+						//if (nind>=n) continue;
+						if (basestat.at(nind) == extSol::QpExternSolver::AtLower){
+							// Lower Bound
+							// Re-Substitute Xnew=X-LB;
+						  beta += cutcoeff[k] * (long double)l[nind];
+						}
+						else if (basestat.at(nind) == extSol::QpExternSolver::AtUpper) {
+							// Upper Bound
+							// Re-Substitute Xnew=UB-X;
+						  beta -= cutcoeff[k] * (long double)u[nind];
+							cutcoeff[k] *= -1;
+						}
+					}
+
+					vector<long double> cut(n, 0);
+					for (int i = 0; i < n; i++) cut[i] = 0; //Just to be sure
+					{
+					  std::vector<data::IndexedElement> *rowtmp = NULL;
+					  for (unsigned int k = 0; k < n; ++k){
+					    unsigned int nind = N[k];
+					    if (nind < n){
+					      //If variable is primal
+					      cut[nind] += cutcoeff[k];
+					    }
+					    else {
+					      //If slack: substitute slack in terms of the corresponding row ax+s=b
+					      if (cutcoeff[k] != 0){ //Or too close to zero....
+						const unsigned int row = nind - n;
+						rowtmp = &allrows2[row];
+						//extSolver.getRowLhs/*_rows*/(row, rowtmp);
+						
+						for (unsigned int l = 0; l < rowtmp->size(); ++l){
+						  cut[rowtmp->at(l).index] -= cutcoeff[k] * (long double)rowtmp->at(l).value.asDouble();
+						}
+						beta -= cutcoeff[k] * (long double)RHS.at(row);
+					      }
+					    }
+					  }
+					  if (rowtmp ==NULL || rowtmp->size() == 0){
+					    break;
+					  }
+					}
+					
+					vector<pair<unsigned int, double> > cutvec;
+					double max_c = 0.0;
+					for( unsigned int i = 0; i < n; ++i ){
+					  if( fabs( cut.at( i ) ) > max_c ){
+					    max_c = fabs( cut.at( i ));
+					  }
+					}
+					//std::cerr << "cut before: ";
+					double scale = 2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0*2.0;
+					double unscale=0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5*0.5;
+					for( unsigned int i = 0; i < n; ++i ){
+					  if (0&&fabs(cut[i])>1e-20)
+					    std::cerr << cut[i] << "x" << i << " + ";
+					  // // cut[i] = ceil(cut[i] / max_c * scale) * unscale;
+					  //cutvec.push_back( make_pair( i, cut.at( i ) ) );
+					}
+					//std::cerr << endl;
+					//std::cerr << "cut after: ";
+					for( unsigned int i = 0; i < n; ++i ){
+					  if (0&&fabs(cut[i])>1e-20)
+					    std::cerr << cut[i] << "X" << i << " + ";
+					}
+					//std::cerr << endl;
+					//std::cerr << "beta before:" << beta << " maxC=" << max_c << " b/max=" << beta / max_c << std::endl;
+					// // beta = floor(beta / max_c * scale) * unscale;
+					//std::cerr << "beta after:" << beta << std::endl;
+					std::vector<std::pair<unsigned int,double>> tempvec;
+					if(1)for( unsigned int i = 0; i < n; ++i ){
+					  if (1||fabs( cut.at( i )) > 1e-20) {
+					    if(fabs( cut.at( i ) ) > /*max_c **/ 1e-12 ||
+					       (types[i] != 0
+						&& fabs( cut.at( i ) )*(fabs(ubVec[i].asDouble())+fabs(lbVec[i].asDouble())) > 1e-6) ){
+					      tempvec/*cutvec*/.push_back( make_pair( i, (double)cut.at( i ) ) );
+					    } else {
+					      //cutvec.push_back( make_pair( i, cut.at( i ) ) );
+					      if (types[i]==0) {
+						if (cut[i]>0) beta = beta - cut.at( i );
+					      } else {
+						if (cut[i]>0 && ubVec[i].asDouble()>0) beta = beta -cut[i]*ubVec[i].asDouble();
+						else if (cut[i]<0 && lbVec[i].asDouble()<0) beta = beta-cut[i]*lbVec[i].asDouble();
+					      }
+					    }
+					  }
+					}
+
+					if (tempvec.size() > 0 && tempvec.size() < LIMIT_GMI_SIZE) {
+					  cuts.push_back(make_pair(tempvec, (double)beta));	
+						listOfCutsVars.push_back(candidateVariables[iind]);
+					}
+
+					double resrhs=0.0;
+					/*
+					debugCheckSol(tempvec, beta , solu, n, true);
+					std::cerr << "vor CMIRize" << std::endl;
+					printRowEQ(tempvec, beta, solu, n, xlpopt.data(), (double*)0, types, true);					                   */
+					std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* subresCut=nullptr;
+					//if (decLev</*1*/log(n) && tempvec.size() < sqrt((double)n)+1000)
+					if (tempvec.size() < LIMIT_GMI_EXTSIZE) 
+					  subresCut = CMIRizeEQ( extSolver, tempvec, (double)beta, types, assigns, decLev, initime, solu, fixs, blcks, eass, orgN, '>');
 					//output is '>'
 					if (subresCut && (*subresCut).size()>0) {
 					  //std::cerr << "Cmirize successful." << std::endl;
@@ -3021,9 +5717,12 @@ vector< pair< vector< pair<unsigned int, double> >, double > >* CutAdder::getGMI
 	}
 
 #endif
+#endif
+
 
 #define LPCuts
 #ifdef LPCuts
+
 
 vector< pair< vector< pair<unsigned int, double> >, double > >* CutAdder::getLPCuts(extSol::QpExternSolver &extSolver, vector<unsigned int> candidateVariables, int *types, int8_t *assigns, int decLev, unsigned int initime, std::vector<int> &listOfCutsVars){
 

@@ -30,6 +30,9 @@
 #ifndef QBPSOLVER_H_
 #define QBPSOLVER_H_
 
+#define YPUBLIC public
+#define YPRIVATE private
+
 #define USE_FULL_BENDERS
 #define GUROBI_BENDERS
 
@@ -47,7 +50,11 @@
 #include <chrono>
 #include <thread>
 #include <bitset>
+//#ifndef NO_MPI
+//#include <mpi.h>
+//#else
 #include "../../mpiClass/nomp.h"
+//#endif
 #include "commprint.h"
 #include <string>
 #include <algorithm>
@@ -85,6 +92,8 @@
 #endif
 
 #define USEFRQUENTRESET 0
+
+//#define PSEUDO_DERIVATIVE
 
 #define DISTANCE2INT_R 1
 #define PSEUCO         2
@@ -152,7 +161,7 @@
 //#define TRACE
 
 #define BETA_EPS(a) (fabs(a)*1e-5+1e-5)
-#define LP_EPS         1e-8//1e-12    //1e-12
+#define LP_EPS         1e-7//1e-12    //1e-12
 #define RHS_EPS        1e-9 //0.00000005 //-00
 #define RHS_RELEPS     0 //1e-7 //0.00000001
 #define RHS_COVER_EPS        1e-6 // 0.0 //1e-6 //0.00000005 //-00
@@ -217,8 +226,8 @@
 #define RIGHTPART_COV   0
 //log2(nVars())
 //1000000000
-#define reducedStrongBranching ((reduceStrongBranching<2?reduceStrongBranching:(binVars()>2000)))
-#define LESS_STRB ((reduceStrongBranching<2?reduceStrongBranching:(binVars()>2000)))
+#define reducedStrongBranching ((reduceStrongBranching<2?reduceStrongBranching:(binVars()-trail.size()>2000 && !isInMiniBC())))
+#define LESS_STRB ((reduceStrongBranching<2?reduceStrongBranching:(binVars()-trail.size()>2000 && !isInMiniBC())))
 #define gotoLSTARTcode -3
 static const double var_decay = 0.95; //program parameters
 static const double constraint_decay = 0.999;
@@ -247,7 +256,7 @@ class QBPSolver;
 
 class lurkingBound {
   std::vector<std::pair<double, int>> DL_dependent_delta_lurking;
-public:
+YPUBLIC:
   lurkingBound() {
   }
   void iniLurkingBounds(std::vector<std::pair<double, int>> &L, int n) {
@@ -317,7 +326,7 @@ public:
 };
 
 class Scenario_t {
-public:
+YPUBLIC:
 	uint64_t H;
 	ca_vec<int> scen_var;
 	ca_vec<int> scen_val;
@@ -325,7 +334,7 @@ public:
 };
 
 struct pairSortLt {
-  public:
+  YPUBLIC:
    bool operator () (std::pair<double,uint32_t> x, std::pair<double,uint32_t> y) const {
      return (x.first < y.first);
    }
@@ -340,7 +349,7 @@ struct pairSortLt {
 };
 
 struct lpSortLt {
-  public:
+  YPUBLIC:
 	const ca_vec<double>&  p_activity;
 	const ca_vec<double>&  n_activity;
 	const ca_vec<double>&  p_implis;
@@ -410,6 +419,13 @@ struct lpSortLt {
 	      return p_pseudocostCnt[x] + n_pseudocostCnt[x] > p_pseudocostCnt[y] + n_pseudocostCnt[y];
 	    double pcx = ( p_pseudocostCnt[x] <= 0 || n_pseudocostCnt[x] <= 0 ? 0.0 : (p_pseudocost[x] * n_pseudocost[x]) / ((double)n_pseudocostCnt[x]*(double)p_pseudocostCnt[x]));
 	    double pcy = ( p_pseudocostCnt[y] <= 0 || n_pseudocostCnt[y] <= 0 ? 0.0 : (p_pseudocost[y] * n_pseudocost[y]) / ((double)n_pseudocostCnt[y]*(double)p_pseudocostCnt[y]));
+#ifdef PSEUDO_DERIVATIVE
+	    if (ssi) {
+	      pcx = ( p_pseudocostCnt[x] <= 0 || n_pseudocostCnt[x] <= 0 ? 0.0 : (p_pseudocost[x]*solution[x].asDouble() * n_pseudocost[x]*(1.0-solution[x].asDouble())) / ((double)n_pseudocostCnt[x]*(double)p_pseudocostCnt[x]));
+	      pcy = ( p_pseudocostCnt[y] <= 0 || n_pseudocostCnt[y] <= 0 ? 0.0 : (p_pseudocost[y]*solution[y].asDouble() * n_pseudocost[y]*(1.0-solution[y].asDouble())) / ((double)n_pseudocostCnt[y]*(double)p_pseudocostCnt[y]));
+	     
+	    }
+#endif
 	    pcx = pcx * (2.0-1.0/(1.0+sqrt((double)p_activity[x]*n_activity[x])));
 	    pcy = pcy * (2.0-1.0/(1.0+sqrt((double)p_activity[y]*n_activity[y])));
 	    double WX = p_avWeight[x] + n_avWeight[x];
@@ -523,7 +539,7 @@ sortmode(somo), brokenCnt(brocn), dm(d), lpVal(lpv), solution(sol), p_implis(pim
 };
 
 struct VarOrderLt {
-  public:
+  YPUBLIC:
     const ca_vec<double>&  p_activity;
     const ca_vec<double>&  n_activity;
     const ca_vec<int> &block;
@@ -548,7 +564,7 @@ struct VarOrderLt {
     VarOrderLt(const ca_vec<double>&  pact, const ca_vec<double>&  nact, const ca_vec<int>& blo, const ca_vec<int>& iIO, const ca_vec<int> &ty, DependManager &d) : p_activity(pact), n_activity(nact), block(blo), isInObj(iIO), type(ty), dm(d) { }
 };
 struct InsertOrderLt {
-  public:
+  YPUBLIC:
     ca_vec<int> * settime;
     bool operator () (CoeVar x, CoeVar y) const {
     	if ((*settime)[var(x)] == (*settime)[var(y)]) {
@@ -564,7 +580,7 @@ struct InsertOrderLt {
     // Falls beide gleich sind, wird gem刊 Block und dann gem刊 Index sortiert.
 };
 struct SearchOrderLt {
-  public:
+  YPUBLIC:
     const ca_vec<int> &block;
     bool operator () (CoeVar x, CoeVar y) const {
     	if (x.coef != y.coef) return x.coef > y.coef;
@@ -576,7 +592,7 @@ struct SearchOrderLt {
 };
 
 struct IndexLexOrderLt {
-  public:
+  YPUBLIC:
 	CoeVar *data;
     bool operator () (int x, int y) const {
     	return data[x].x < data[y].x;
@@ -586,7 +602,7 @@ struct IndexLexOrderLt {
 };
 
 struct IndexOrderLt {
-  public:
+  YPUBLIC:
     bool operator () (int x, int y) const {
     	return x < y;
     }
@@ -594,7 +610,7 @@ struct IndexOrderLt {
 };
 
 struct IndexOrder4StdPairsLt {
-  public:
+  YPUBLIC:
   bool operator () (std::pair<int,int> x, std::pair<int,int> y) const {
     	return x.first < y.first;
     }
@@ -602,7 +618,7 @@ struct IndexOrder4StdPairsLt {
 };
 
 class SearchResult {
-public:
+YPUBLIC:
 	coef_t value;
 	coef_t u_bound;
 	SearchResult(coef_t v, coef_t b) {value = v; u_bound = b; }
@@ -610,7 +626,7 @@ public:
 };
 
 struct TreeNode {
-public:
+YPUBLIC:
 	//std::vector<int> variables;
 	std::vector< std::pair<int, int> > successors;
 	std::vector<int> succIx;
@@ -620,10 +636,10 @@ public:
 };
 
 class Resizer_ {
-public:
+YPUBLIC:
 	std::vector<int> v_ids;
 	std::vector<data::IndexedElement> remObj;
-private:
+YPRIVATE:
 	std::vector<double> v_lbds;
 	std::vector<double> v_ubds;
 	std::vector<data::QpVar::NumberSystem> v_nsys;
@@ -631,7 +647,7 @@ private:
 	std::vector<data::IndexedElement> restrictlhs;
         double restrictrhs;
 
-public:
+YPUBLIC:
 	inline bool isZero(double x, double epsZero = 1e-20) {
 		return (x >= -epsZero && fabs(x) <= epsZero);
 	}
@@ -665,7 +681,7 @@ class Heuristic {
 	int cnt;
 	double random_seed;
 	double alpha;
-public:
+YPUBLIC:
 	Heuristic() {
 		a = b = a_ = b_ = y = y_ = 0.0;
 		sa = sb = sa_ = sb_ = sy = sy_ = 0.0;
@@ -718,9 +734,9 @@ public:
 };
 
 class QBPSolver {
-public:
+YPUBLIC:
 	class ConstraintPositionPair {
-	  public:
+	  YPUBLIC:
 		CRef cr;
 		int32_t pos;
 		union { coef_t best; int32_t watch1; } btch1;
@@ -735,7 +751,7 @@ public:
 		}
 	};
 	class ValueConstraintPair {
-	  public:
+	  YPUBLIC:
 		CRef cr;
 	    Var  v;
 	    uint32_t  pos;
@@ -743,19 +759,19 @@ public:
 	    ValueConstraintPair() {}
 	};
 	struct ASE {
-	  public:
+	  YPUBLIC:
 		CRef cr;
 		uint32_t var;
 		ASE(CRef _cr, int32_t _var) : cr(_cr), var(_var) {}
 	};
 	struct ScoInf {
-	  public:
+	  YPUBLIC:
 		double score;
 		double cval;
 		int32_t ix;
 	};
 	class uBndMmg {
-	  public:
+	  YPUBLIC:
 		coef_t ubs[2];
 		int variables[2];
 		int depth[2];
@@ -782,7 +798,7 @@ public:
 	};
 
   	struct BackJumpInfoStruct {
-	  public:
+	  YPUBLIC:
 		int32_t bj_level[2];
 		int32_t bj_reason[2];
 		coef_t bj_value[2];
@@ -800,12 +816,14 @@ public:
 	};
 
 	class stack_container {
-	public:
+	YPUBLIC:
 		SearchResult result;
 		int status;
 
                 int8_t   val_ix;
                 int8_t   val[2];
+
+	  int remote_code[2];
 	  
 	    int t;
 	    int lsd;
@@ -857,7 +875,7 @@ public:
 	};
 
 	class Sstack {
-	public:
+	YPUBLIC:
 		std::vector<stack_container> stack;
 		int stack_pt;
 		SearchResult result;
@@ -891,6 +909,8 @@ public:
 		stack.resize(stack_pt+1);
 		//stack.resize(stack_pt+1);
 	        stack_container &STACK = stack[stack_pt];
+		STACK.remote_code[0] = 0;
+		STACK.remote_code[1] = 0;
 	        STACK.status = START;
 			STACK.lUseLP = _lUseLP;
 			STACK.t = _t;
@@ -925,7 +945,7 @@ public:
 	};
 
         class ColChangeContainer {
-	public:
+	YPUBLIC:
 	  int depth;
 	  int col;
 	  double oldLB, oldUB;
@@ -934,7 +954,7 @@ public:
 	  bool infeasible;
 	};  
         class RowChangeContainer {
-	public:
+	YPUBLIC:
 	  int depth;
 	  int row;
 	  double oldMin, oldMax;
@@ -942,7 +962,7 @@ public:
 	  int causeCol;
 	};
 	class RowColStack {
-	public:
+	YPUBLIC:
 		std::vector<ColChangeContainer> colstack;
 	        std::vector<RowChangeContainer> rowstack;
 		int cstack_pt;
@@ -1016,8 +1036,8 @@ public:
 
 	struct VarData { CRef reason; int level; int bndMvBegL; int bndMvBegU;};
 	struct trailInfo { int var; int8_t value; };
-//public:
-private:
+//YPUBLIC:
+YPRIVATE:
     static inline VarData mkVarData(CRef cr, int l){ VarData d = {cr, l}; return d; }
     inline extbool value(Var x)    const   { return assigns[x]; }
     inline extbool value(CoeVar p) const   { return assigns[var(p)]; }
@@ -1142,7 +1162,7 @@ private:
     int blockSolutionAcceptLevel=-1;
     int blockLearnAcceptLevel=-1;
 
- public:
+ YPUBLIC:
     vector<int>		UpperBoundVar;
     vector<coef_t>VarLBval;
     vector<coef_t>VarUBval;
@@ -1160,7 +1180,7 @@ private:
     int remaining;
   
     void setyIF(void* f){yIF=f;}
- private:
+ YPRIVATE:
     bool isOrgUniv(int x) {
       //return false;
       if (isInMiniBC() && tmpBlock.size() >= eas.size() && (tmpBlock[x]&1)==UNIV)
@@ -1403,10 +1423,10 @@ private:
     int              num_vars;
     int              orgLPlines;
     ca_vec<bool>     level_finished;
-public:
+YPUBLIC:
     ca_vec<double>   p_activity;         // A heuristic measurement of the activity of a variable.
     ca_vec<double>   n_activity;         // A heuristic measurement of the activity of a variable.
-private:
+YPRIVATE:
     ca_vec<double>   p_implis;
     ca_vec<double>   n_implis;
     ca_vec<double>   p_pseudocost;       // A heuristic measurement of the activity of an lp variable.
@@ -1492,9 +1512,9 @@ private:
     ca_vec<BackJumpInfoStruct> BackJumpInfoII;
     ca_vec<int> components;
     std::vector< std::vector<int> > varsOfComponents;
- public:
+ YPUBLIC:
     void *yIF;
- private:
+ YPRIVATE:
    ca_vec<int> trivialCut;
    int tooMuchUndef;
    int trivCut(int d, int val) {
@@ -1516,14 +1536,14 @@ private:
 		return constraints.size()-1;
    }
 
-public:
+YPUBLIC:
 	void QLPSTSOLVE_SOLVESTAGE(double a,unsigned int stage, algorithm::Algorithm::SolutionStatus& status, data::QpNum &lb,
 			data::QpNum &ub, std::vector<data::QpNum>& solution,
 				   algorithm::Algorithm::SolutionCase SC, int dl, int maxSubProbToSolve= -1, int maxSimplexIt= -1, bool short_sol = true, bool allowBitMan = true, bool GetBase=true);
 
 	void QLPSTSOLVE_TIGHTEN_OBJ_FUNC_BOUND(unsigned int stage, const data::QpNum& newbound);
 	void QLPSTSOLVE_WEAKEN_OBJ_FUNC_BOUND(unsigned int stage, const data::QpNum& newbound);
-private:
+YPRIVATE:
 
 int GenerateReformulationCut( extSol::QpExternSolver& externSolver, vector< vector< data::IndexedElement > > &listOfCutsLhs,
 		       vector< data::QpNum > &listOfCutsRhs, vector<int> &listOfCutsVars,
@@ -1595,7 +1615,7 @@ int GenerateReformulationCut( extSol::QpExternSolver& externSolver, vector< vect
      }
    }
  }
- public:
+ YPUBLIC:
  void updateReplacement(double coefx, int x, vector< data::IndexedElement > &rep, double rhs, int mode, int cntReals) {
    if(fabs(coefx) < 1e-10) {
      if(getShowWarning()) cerr << "Warning: replacement coeficient < 1e-10. Abort replacement." << endl;
@@ -1622,7 +1642,7 @@ int GenerateReformulationCut( extSol::QpExternSolver& externSolver, vector< vect
      }
    }
  }
- private:
+ YPRIVATE:
  void writeDirtiesThrough() {
    //static int cnt=0;
    //cnt++;
@@ -1655,19 +1675,19 @@ int GenerateReformulationCut( extSol::QpExternSolver& externSolver, vector< vect
  bool CollectIntegerInfos(vector<data::IndexedElement>& Constraint,vector<OrgInfo>& USet, vector<OrgInfo>& TSet, vector<data::QpNum>& sol,vector<double>& NStar, int FirstSlack, const double& eps);
  bool CheckIfEquation(const CRef& c,CRef& cp,  const double & eps);
  bool CutVecOk(vector<std::pair<unsigned int,double>> vec, double eps, double ratio, int CutSize);
- public:
+ YPUBLIC:
  bool InputConstraintOk(Constraint& vec, double eps, double ratio, int CutSize);
  bool InputConstraintOk(vector<data::IndexedElement> vec, double eps, double ratio, int CutSize);
- private:
+ YPRIVATE:
  bool AggrValOk(vector<double> vec, double eps, double ratio);
  void ProcessConstraintWithIntKnowledge();
- public:
+ YPUBLIC:
  void IniBinarizedVec();
  vector<IntInfo> Binarized;
  bool PresentAsInt(Constraint& c, int First, int Last, bool sgn ,coef_t coef);
  bool PresentAsInt(vector<data::IndexedElement >& c, int First, int Last ,coef_t coef); 
  void WriteSolutionFile(coef_t value, double time, string status, string filename="", bool removeDummy=false);
-private:
+YPRIVATE:
 	//NEW FOR ALL-SYSTEM
 //_________________________________________________________________________________
  /*|*/ 	ConstraintAllocator  ALLconstraintallocator;
@@ -1705,7 +1725,7 @@ void PrintAssigns();
  int   ExistLegalUntil; //Last DecisionLevel where the satisfiability of the Existential System is guaranteed
  void KeepAllCleanUnassign(int var, extbool val);
  void KeepAllClean(int va, extbool val);
-public:
+YPUBLIC:
 	void BuildLegalScenario();
 	bool PropagateForScenario(int va, extbool val);
 
@@ -1730,7 +1750,7 @@ public:
 
 	_MCTS MCTS;
 
-private:
+YPRIVATE:
 
  //initExternSolver()
 /*#ifdef USE_NBD_CPLEX_C
@@ -1842,9 +1862,9 @@ private:
     int 		     trail_startlen;
     int 			 trail_last_len;
     int              info_level;
-    public:
+    YPUBLIC:
     double           random_seed;
-    private:
+    YPRIVATE:
     time_t           ini_time;
     time_t miniS_time=0;
     time_t deltaMiniS_time;
@@ -2192,6 +2212,9 @@ private:
       assert(type[vx] == BINARY && type[vy] == BINARY);
       if (optSol.size() > 0) assert(!(exx == (int)(optSol[vx]+0.5) && exy == (int)(optSol[vy]+0.5)  ) );
       CM.AddEdge(x,y);
+      //if (!CM.EdgeIsInContainer(x,y)) CM.AddEdge(x,y);
+      //if (!CM.EdgeIsInContainer(y,x)) CM.AddEdge(y,x);      
+
     }
 
     double computeProgress(std::vector<data::QpNum> solution, std::vector<data::QpNum> solutionh7) {
@@ -2211,30 +2234,104 @@ private:
         return sum;
     }
     double computeEfficacy(std::vector<data::IndexedElement>& lhs, data::QpNum & rhs, std::vector<data::QpNum> solution) {
-      if (solution.size()==0) {
-	if(getShowWarning()) cerr << "Warning: computeEfficavy not possible." << endl;
-	return 1.0;
-      }
-        double ax=0.0;
-        double a2=0.0;
-        for (int k = 0; k< lhs.size();k++) {
-	  int var = lhs[k].index;
-	  if (lhs[k].index >= nVars()) {
-	    if (lhs[k].index == resizer.v_ids[lhs[k].index]) continue;
-	    else var = resizer.v_ids[lhs[k].index];
-	  }
-        	ax += /*fabs*/(lhs[k].value.asDouble()) * solution[var].asDouble();
-        	a2 += lhs[k].value.asDouble() * lhs[k].value.asDouble();
+        if (solution.size()==0) {
+	  if(getShowWarning()) cerr << "Warning: computeEfficavy not possible." << endl;
+	  return 1.0;
         }
-        a2 = sqrt(a2);
-        return fabs(ax - rhs.asDouble()) / (a2);
+        int samplesize = lhs.size();
+	if (1||samplesize < 100) {
+	  double ax=0.0;
+	  double a2=0.0;
+	  for (int k = 0; k< lhs.size();k++) {
+	    int var = lhs[k].index;
+	    if (lhs[k].index >= nVars()) {
+	      if (lhs[k].index == resizer.v_ids[lhs[k].index]) continue;
+	      else var = resizer.v_ids[lhs[k].index];
+	    }
+	    ax += /*fabs*/(lhs[k].value.asDouble()) * solution[var].asDouble();
+	    a2 += lhs[k].value.asDouble() * lhs[k].value.asDouble();
+	  }
+	  a2 = sqrt(a2);
+	  return fabs(ax - rhs.asDouble()) / (a2);
+	} else {
+	  double ar=0.0;
+	  double sr=0.0;
+	  double a2=0.0;
+	  samplesize=100;
+	  std::vector<int> pos(samplesize);
+	  std::vector<int> r(samplesize);
+	  for (int k=0;k<samplesize;k++) {
+	    pos[k] = irand(random_seed,lhs.size());
+	    r[k] = irand(random_seed,3)-1;
+	  }
+	  for (int kk = 0; kk<samplesize;kk++) {
+	    int k = pos[kk];
+	    int var = lhs[k].index;
+	    if (lhs[k].index >= nVars()) {
+	      if (lhs[k].index == resizer.v_ids[lhs[k].index]) continue;
+	      else var = resizer.v_ids[lhs[k].index];
+	    }
+	    ar += /*fabs*/(lhs[k].value.asDouble() * (double)r[k]);
+	    a2 += lhs[k].value.asDouble() * lhs[k].value.asDouble();
+	  }
+	  a2 = sqrt(a2);
+
+	  for (int kk = 0; kk<samplesize;kk++) {
+	    int k = pos[kk];
+	    int var = lhs[k].index;
+	    if (lhs[k].index >= nVars()) {
+	      if (lhs[k].index == resizer.v_ids[lhs[k].index]) continue;
+	      else var = resizer.v_ids[lhs[k].index];
+	    }
+	    sr += /*fabs*/(r[k]) * solution[var].asDouble();
+	    //a2r += (double)r[k]*(double)r[k];
+	  }
+	  //a2r = sqrt(a2r);
+	  return fabs(ar*sr - rhs.asDouble())*(double)lhs.size() / (a2*(double)samplesize);
+	}
     }
 
-    double computeParallelism(std::vector<data::IndexedElement>& lhs1, data::QpNum & rhs1, std::vector<data::IndexedElement>& lhs2, data::QpNum & rhs2) {
+    double computeParallelismApprox(std::vector<data::IndexedElement>& lhs1O, data::QpNum & rhs1, std::vector<data::IndexedElement>& lhs2O, data::QpNum & rhs2) {
         double c1_norm = 0.0;
         double c2_norm = 0.0;
         double sprod = 0.0;
 	int maxVar=0;
+
+	std::vector<data::IndexedElement> lhs1;
+	std::vector<data::IndexedElement> lhs2;
+	int samplesize1=lhs1O.size();
+	int samplesize2=lhs2O.size();
+	/*
+	int loglen1=1;
+	int loglen2=1;
+	int expo=1;
+	if (lhs1O.size() > 1000000000 || lhs2O.size() > 1000000000) return 0.5;
+	for (int i=0;i<31;i++) {
+	  expo=expo<<1;
+	  if (expo >= lhs1O.size()) { loglen1 = i+1; break; }
+	}
+	expo=1;
+	for (int i=0;i<31;i++) {
+	  expo=expo<<1;
+	  if (expo >= lhs2O.size()) { loglen2 = i+1; break; }
+	}
+	if (loglen1 < 20) loglen1 = 20;
+	if (loglen2 < 20) loglen2 = 20;
+	*/
+	if (samplesize1 > 100) samplesize1 = 100;
+	if (samplesize2 > 100) samplesize2 = 100;
+	for (int i=0;i < samplesize1/*loglen1*/;i++) {
+	  int pos;
+	  if (samplesize1 == lhs1O.size()) pos = i; 
+	  else pos = irand(random_seed,lhs1O.size());
+	  lhs1.push_back(lhs1O[pos]);
+	}
+	for (int i=0;i < samplesize2/*loglen2*/;i++) {
+	  int pos;
+	  if (samplesize2 == lhs2O.size()) pos = i;
+	  else pos = irand(random_seed,lhs2O.size());
+	  lhs2.push_back(lhs2O[pos]);
+	}
 
         for (int k = 0; k< lhs1.size();k++) {
             //if (lhs1[k].index >= nVars()) continue;
@@ -2303,14 +2400,51 @@ private:
         return 1.0 - fabs(sprod) / (c1_norm * c2_norm);
     }
     
-    double computeObjParallelism(std::vector<data::IndexedElement>& lhs, data::QpNum & rhs, CRef obj) {
+    double computeObjParallelismApprox(std::vector<data::IndexedElement>& lhsO, data::QpNum & rhs, CRef obj) {
       double cop1, cop2;
       {
-        Constraint & objective_sparse = constraintallocator[obj];
+        Constraint & objective_sparseO = constraintallocator[obj];
         std::vector<double> &objective = generalTmp;
 	if (generalTmp.size() < nVars()) generalTmp.resize(nVars());
         double dr_norm = 0.0;
         double obj_norm = 0.0;
+
+	std::vector<data::IndexedElement> lhs;
+	std::vector<CoeVar> objective_sparse;
+	int samplesize1 = lhsO.size();
+	int samplesize2 = objective_sparseO.size();
+	/*
+	int loglen1=1;
+	int loglen2=1;
+	int expo=1;
+	if (lhsO.size() > 1000000000 || objective_sparseO.size() > 1000000000) return 0.5;
+	for (int i=0;i<31;i++) {
+	  expo=expo<<1;
+	  if (expo >= lhsO.size()) { loglen1 = i+1; break; }
+	}
+	expo=1;
+	for (int i=0;i<31;i++) {
+	  expo=expo<<1;
+	  if (expo >= objective_sparseO.size()) { loglen2 = i+1; break; }
+	}
+	if (loglen1 < 20) loglen1 = 20;
+	if (loglen2 < 20) loglen2 = 20;
+	*/
+	if (samplesize1 > 100) samplesize1 = 100;
+	if (samplesize2 > 100) samplesize2 = 100;	
+	for (int i=0;i < /*loglen1*/samplesize1;i++) {
+	  int pos;
+	  if (samplesize1 == lhsO.size()) pos = i;
+	  else pos = irand(random_seed,lhsO.size());
+	  lhs.push_back(lhsO[pos]);
+	}
+	for (int i=0;i < /*loglen2*/samplesize2;i++) {
+	  int pos;
+	  if (samplesize2 == objective_sparseO.size()) pos = i;
+	  else pos = irand(random_seed, objective_sparseO.size());
+	  objective_sparse.push_back(objective_sparseO[pos]);
+	}
+      
         //for (int i = 0; i < nVars();i++) {
         //    objective[i] = 0.0;
         //}
@@ -2336,33 +2470,6 @@ private:
             dc += /*fabs*/(lhs[k].value.asDouble()) * objective[lhs[k].index];
         }
 	cop1 = 1.0-fabs(dc)/(dr_norm*obj_norm);
-      }
-      if(0){
-        Constraint & objective_sparse = constraintallocator[obj];
-        std::vector<double> objective(nVars());
-        double dr_norm = 0.0;
-        double obj_norm = 0.0;
-        for (int i = 0; i < nVars();i++) {
-            objective[i] = 0.0;
-        }
-        for (int i = 0; i < objective_sparse.size();i++) {
-	    if (objective_sparse[i].x / 2 >= nVars()) continue;
-            objective[objective_sparse[i].x / 2] = objective_sparse[i].coef;
-            obj_norm = obj_norm + objective_sparse[i].coef * objective_sparse[i].coef;
-        }
-        for (int k = 0; k< lhs.size();k++) {
-	    if (lhs[k].index >= nVars()) continue;
-            dr_norm += lhs[k].value.asDouble() * lhs[k].value.asDouble();
-        }
-        //if (dr_norm < 1e-15) return 1e30;
-        dr_norm = sqrt(dr_norm);
-        obj_norm = sqrt(obj_norm);
-        double dc=0.0;
-        for (int k = 0; k< lhs.size();k++) {
-	  if (lhs[k].index < nVars())
-            dc += /*fabs*/(lhs[k].value.asDouble()) * objective[lhs[k].index];
-        }
-	cop2 = 1.0-fabs(dc)/(dr_norm*obj_norm);
       }
       if (0&&fabs(cop1-cop2) > 1e-9) {
 	cerr << "cop1!=cop2!! " << cop1 << "," << cop2 << endl;
@@ -2592,7 +2699,6 @@ private:
     bool checkSolution(double a, bool free_uni_av, bool blockvar_av, int best_cont_ix, int pick, double lpopt, int &lead, std::vector<data::QpNum> &solution);
     int  findViolation(std::vector<data::QpNum> &solution);
     bool checkRounding(double a, int pick, std::vector<data::QpNum> &solution, double lpopt, double &nlpopt);
-    bool check();
     bool probe(int &max_progress_var, int &max_progress_pol, bool fastProbe, bool oneVar=false, int theVar=-1, std::vector<int>* implisOn0 = nullptr, std::vector<int>* implisOn1 = nullptr);
     bool GETBENDERSCUT(unsigned int stage, std::vector<int> &saveUs, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool org, void *vpt, int *eas, int *types);
     bool GETBENDERSCUT2(unsigned int stage, std::vector<int> &saveUs, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool org, void *vpt, int *eas, int *types);
@@ -2644,49 +2750,93 @@ private:
     	cerr << "detected " << numCs << " native Cliques" << endl;
     }
 
-    int univIsMono(int va, bool feasPhase) {
-    	int pp=0,nn=0;
-       	for (int i=0; i < VarsInConstraints[va].size();i++) {
-			Constraint &c = constraintallocator[VarsInConstraints[va][i].cr];
-			if (c.header.learnt) continue;
-			if (VarsInConstraints[va][i].cr != constraints[0]) {
-				if (c.saveFeas(assigns)) continue;
-			} else {
-               //assert(0);
-			   //if (feasPhase) continue;
-			}
-			int pos = VarsInConstraints[va][i].pos;
-			int s = sign(c[pos]);
-			if (s) nn++;
-			else pp++;
-			}
-       	if(UniversalConstraintsExist){
-			for (int i=0; i < VarsInAllConstraints[va].size();i++) {
-				Constraint &ca = ALLconstraintallocator[VarsInAllConstraints[va][i].cr];
-				if (ca.header.learnt) continue;
-				if (ca.saveFeas(assigns)) continue;
 
-				int posa = VarsInAllConstraints[va][i].pos;
-				int sa = sign(ca[posa]);
-				if (!sa) nn++;
-				else pp++;
-				}
-			}
-
-
-        //Constraint &c = constraintallocator[constraints[0]];
-       	//cerr << "For x_" << va << " pp=" <<pp << " nn="<<nn << endl;
-       	if (pp > 0 && nn > 0) return 0;
-        //for (int u=0; u < c.size();u++)
-        //    if (var(c[u]) == va)  { //return 0;
-        //        if (sign(c[u])) nn++;
-        //        else pp++;
-        //        break;
-        //}
-        //cerr << "x_"<<va<< "IS MONO"<<endl;
-        if (pp == 0) return 1;
-       	return -1;
+int isMono(int va) {
+  //cerr <<"check mono for x_" <<va <<endl;
+  //if(eas[va]==UNIV) cerr << "It is a universal variable" <<endl;
+  //else cerr << "It is an existential variable" <<endl;
+    if (column_pos.size() == 0 || column_neg.size()==0) {
+      updateColumns();
+      if (getShowWarning()) cerr << "Warning: had no column-info. DL=" << decisionLevel() << endl; 
     }
+    int pp=0,nn=0;
+    for (int i=0; i < column_pos[va].size();i++) {
+        int row = column_pos[va][i].first;
+        Constraint &c = constraintallocator[constraints[row]];	
+        if (c.header.learnt) continue;
+        if (row != 0) {
+            if (c.saveFeas(assigns)) continue;
+        }
+        int pos = column_pos[va][i].second;
+        int s = sign(c[pos]);
+	assert(!s);
+        if (s) nn++;
+        else pp++;
+    }
+    for (int i=0; i < column_neg[va].size();i++) {
+        int row = column_neg[va][i].first;
+        Constraint &c = constraintallocator[constraints[row]];
+        if (c.header.learnt) continue;
+        if (row != 0) {
+            if (c.saveFeas(assigns)) continue;
+        }
+        int pos = column_neg[va][i].second;
+        int s = sign(c[pos]);
+	assert(s);
+        if (s) nn++;
+        else pp++;
+    }
+//cerr << "After Exist constraints: nn="<<nn<<" pp:"<<pp<<endl;
+    if(UniversalConstraintsExist){
+        Constraint &c = constraintallocator[constraints[0]];
+	if (hasObjective) {
+	  for (int j=0;j<c.size();j++) {
+	    int pos = j;
+	    int s = sign(c[pos]);
+	    if (var(c[pos]) == va) {
+	      if (s) nn++;
+	      else pp++;
+	    }
+	  }
+	}
+        for (int i=0; i < VarsInAllConstraints[va].size();i++) {
+            Constraint &ca = ALLconstraintallocator[VarsInAllConstraints[va][i].cr];
+            if (ca.header.learnt) continue;
+            if (ca.saveFeas(assigns)) continue;
+            int posa = VarsInAllConstraints[va][i].pos;
+            int sa = sign(ca[posa]);
+            if (!sa) nn++;
+            else pp++;
+        }
+    } else {
+      Constraint &c = constraintallocator[constraints[0]];
+      if (hasObjective) {
+	for (int j=0;j<c.size();j++) {
+	  int pos = j;
+	  int s = sign(c[pos]);
+	  if (var(c[pos]) == va) {	
+	    if (s) nn++;
+	    else pp++;
+	  }
+	}
+      }
+    }
+
+    if (pp > 0 && nn > 0) return 0;
+    if(eas[va]==UNIV){
+        if (pp == 0) return 1;
+        return -1;
+    }
+    else{
+        if (pp == 0) return -1;
+        return 1;
+    }
+// return 0  <=> no monotonicity
+// return 1  <=> monotone! set variable to 1
+// return -1 <=> monotone! set variable to 0
+}
+
+
 
     void printSolutionWithRealNames();
     void printTrailWithRealNames();
@@ -3261,17 +3411,17 @@ private:
 	void hs_PurgeTrail(int l, int dl);
 	void PurgeTrail(int l, int dl);
 	bool simplify1(ca_vec<CoeVar>& ps, bool SAT);
-public:
+YPUBLIC:
 	bool simplify1(ca_vec<CoeVar>& ps, bool SAT, bool useRed, bool &usedRed);
- private:
+ YPRIVATE:
   bool VarsInConstraintsAreWellFormed();
 	bool ConstraintIsWellFormed(Constraint &c);
 	int fastMergeIsUsefulTest(Constraint &c1, Constraint &c2, int conf_var);
 	void strengthenConstraint(Constraint &c, int p);
 	bool merge(Constraint &c1, Constraint &c2, int conf_var, ca_vec<CoeVar>& out_merged, bool isSAT=true);
- public:
+ YPUBLIC:
 	void updateStageSolver(unsigned int stage, unsigned int from, unsigned int to);
- private:
+ YPRIVATE:
     int computeDLD(ca_vec<CoeVar>& lhs);
     int computeDLD(std::vector<data::IndexedElement>& lhs);
     bool isInstable(std::vector<data::IndexedElement>& lhs) {
@@ -3891,16 +4041,18 @@ public:
 											  	global_dual_bound = theMax;
 												coef_t gap;
 												gap = abs(100.0*(-global_dual_bound + global_score) / (abs(global_score)+1e-10) );
-												if (!objInverted) {
-													cerr << "\n+++++ " << decisionLevel() << " ++++u score: " << -global_score << " | time: " << time(NULL) - ini_time << " | "
-														<< " dual: "<< -global_dual_bound << " gap=" << gap << "%"<< " " << num_decs << " + "<<num_props;
-												} else {
+												if (getShowInfo()){
+    												    if (!objInverted) {
+												        cerr << "\n+++++ " << decisionLevel() << " ++++u score: " << -global_score << " | time: " << time(NULL) - ini_time << " | "
+													<< " dual: "<< -global_dual_bound << " gap=" << gap << "%"<< " " << num_decs << " + "<<num_props;
+												    } else {
 													cerr << "\n+++++ " << decisionLevel() << " ++++u score: " << global_score << " | time: " << time(NULL) - ini_time << " | "
-														<< " dual: "<< global_dual_bound << " gap=" << gap << "%" << " " << num_decs << " + "<<num_props;
+													<< " dual: "<< global_dual_bound << " gap=" << gap << "%" << " " << num_decs << " + "<<num_props;
+												    }
 												}
 												if (info_level >= 2) cerr
 													<< ": DLD=" << DLD_sum / (DLD_num+1) << " density=" << density_sum / (density_num+1) << " #" << constraints.size() << " " << (int)val[0]<<(int)val[1] << ((int)val_ix);
-												cerr << endl;
+												if (getShowInfo()) cerr << endl;
 												if (info_level >= 2) printBounds(10);
 												if (gap < SOLGAP) break_from_outside = true;
 											    //cerr << "A) improved dual bound to " << global_dual_bound << endl;
@@ -3933,16 +4085,18 @@ public:
 											  global_dual_bound = theMax;
 												coef_t gap;
 												gap = abs(100.0*(-global_dual_bound + global_score) / (abs(global_score)+1e-10) );
-												if (!objInverted) {
+												if (getShowInfo()){
+												    if (!objInverted) {
 													cerr << "\n+++++ " << decisionLevel() << " ++++u score: " << -global_score << " | time: " << time(NULL) - ini_time << " | "
 														<< " dual: "<< -global_dual_bound << " gap=" << gap << "%"<< " " << num_decs << " + "<<num_props;
-												} else {
+												    } else {
 													cerr << "\n+++++ " << decisionLevel() << " ++++u score: " << global_score << " | time: " << time(NULL) - ini_time << " | "
 														<< " dual: "<< global_dual_bound << " gap=" << gap << "%"<< " " << num_decs << " + "<<num_props;
+												    }
 												}
 												if (info_level >= 2) cerr
 													<< ": DLD=" << DLD_sum / (DLD_num+1) << " density=" << density_sum / (density_num+1) << " #" << constraints.size() << " " << (int)val[0]<<(int)val[1] << ((int)val_ix);
-												cerr << endl;
+												if (getShowInfo()) cerr << endl;
 												if (info_level >= 2) printBounds(10);
 												if (gap < SOLGAP) break_from_outside = true;
 											  //cerr << "B) improved dual bound to " << global_dual_bound << endl;
@@ -3978,16 +4132,18 @@ public:
 											  global_dual_bound = theMax;
 												coef_t gap;
 												gap = abs(100.0*(-global_dual_bound + global_score) / (abs(global_score)+1e-10) );
-												if (!objInverted) {
+												if (getShowInfo()){
+												    if (!objInverted) {
 													cerr << "\n+++++ " << decisionLevel() << " ++++u score: " << -global_score << " | time: " << time(NULL) - ini_time << " | "
 														<< " dual: "<< -global_dual_bound << " gap=" << gap << "%";
-												} else {
+												    } else {
 													cerr << "\n+++++ " << decisionLevel() << " ++++u score: " << global_score << " | time: " << time(NULL) - ini_time << " | "
 														<< " dual: "<< global_dual_bound << " gap=" << gap << "%";
+												    }
 												}
 												if (info_level >= 2) cerr
 													<< ": DLD=" << DLD_sum / (DLD_num+1) << " density=" << density_sum / (density_num+1) << " #" << constraints.size() << " " << (int)val[0]<<(int)val[1] << ((int)val_ix);
-												cerr << endl;
+												if (getShowInfo()) cerr << endl;
 												if (info_level >= 2) printBounds(10);
 												if (gap < SOLGAP) break_from_outside = true;
 											  //cerr << "C) improved dual bound to " << global_dual_bound << endl;
@@ -4020,16 +4176,18 @@ public:
 											  global_dual_bound = theMax;
 												coef_t gap;
 												gap = abs(100.0*(-global_dual_bound + global_score) / (abs(global_score)+1e-10) );
-												if (!objInverted) {
+												if (getShowInfo()){
+												    if (!objInverted) {
 													cerr << "\n+++++ " << decisionLevel() << " ++++u score: " << -global_score << " | time: " << time(NULL) - ini_time << " | "
 														<< " dual: "<< -global_dual_bound << " gap=" << gap << "%";
-												} else {
+												    } else {
 													cerr << "\n+++++ " << decisionLevel() << " ++++u score: " << global_score << " | time: " << time(NULL) - ini_time << " | "
 														<< " dual: "<< global_dual_bound << " gap=" << gap << "%";
+												    }
 												}
 												if (info_level >= 2) cerr
 													<< ": DLD=" << DLD_sum / (DLD_num+1) << " density=" << density_sum / (density_num+1) << " #" << constraints.size() << " " << (int)val[0]<<(int)val[1] << ((int)val_ix);
-												cerr << endl;
+												if (getShowInfo()) cerr << endl;
 												if (info_level >= 2) printBounds(10);
 												if (gap < SOLGAP) break_from_outside = true;
 											  //cerr << "D) improved dual bound to " << global_dual_bound << endl;
@@ -4554,7 +4712,7 @@ cerr << " r-avail rows:" << realAvail<<endl;*/
     void SwapOut(int va, Constraint &c);
     void SwapAllIn(int va);
 
-public:
+YPUBLIC:
     coef_t search(int t, void *ifc) {
       coef_t v;
       recvBuf = (trailInfo*)malloc(sizeof(trailInfo)*nVars() + 100);
@@ -4758,7 +4916,7 @@ public:
 		if (cnt1 != 1) return false;
 		else return true;
 	}
-  inline void      increaseDecisionLevel() { trail_lim.push(trail.size()); listOfCuts_lim[trail_lim.size()] = listOfEnteredCuts.size(); listOfCuts_lim[trail_lim.size()+1] = listOfEnteredCuts.size(); assert(trail_lim.size()+1<=nVars()+2); }
+  inline void      increaseDecisionLevel() { trail_lim.push(trail.size()); listOfCuts_lim[trail_lim.size()] = listOfEnteredCuts.size(); listOfCuts_lim[trail_lim.size()+1] = listOfEnteredCuts.size(); assert(trail_lim.size()+1<=nVars()+3); }
   //inline void      decreaseDecisionLevel() { trail_lim.pop(); }
     inline void      decreaseDecisionLevel(bool isRoot=false) { if (!isRoot) resolveFixed(trail_lim.size(),true);trail_lim.pop(); }
     inline int       decisionLevel ()  const   { return trail_lim.size(); }
@@ -4983,6 +5141,227 @@ public:
          	}
          }*/
      }
+
+  std::pair<double,double> exploitRow(const int ii, const std::vector< data::IndexedElement > &row, const double* colLower, const double* colUpper, double *lhsMin, double*lhsMax) {
+    double maxColUb=-1e100;
+    double maxColLb=+1e100;
+    lhsMin[ii] = lhsMax[ii] = 0.0;
+    for (int jj=0;jj<row.size();jj++) {
+      int v = row[jj].index;
+      double coef = row[jj].value.asDouble();
+      if (coef >= 0.0) {
+	lhsMin[ii] = lhsMin[ii] + colLower[v]*coef;
+	lhsMax[ii] = lhsMax[ii] + colUpper[v]*coef;
+      } else {
+	lhsMax[ii] = lhsMax[ii] + colLower[v]*coef;
+	lhsMin[ii] = lhsMin[ii] + colUpper[v]*coef;
+      }
+      if (coef != 0.0) {
+        // mögliche Extrema-Beiträge dieser Variable:
+        double c1 = coef * colLower[v];
+        double c2 = coef * colUpper[v];
+
+        double localMin = std::min(c1, c2);
+        double localMax = std::max(c1, c2);
+
+        if (localMin < maxColLb)   // „am weitesten ins Negative“
+            maxColLb = localMin;
+        if (localMax > maxColUb)   // „am weitesten ins Positive“
+            maxColUb = localMax;
+      }
+    }
+    return std::make_pair(maxColLb,maxColUb);
+  }
+
+    bool detectAndStrengthenBigM(const std::vector< data::IndexedElement > &inRowLhs, data::QpRhs inRowRhs, vector< vector< data::IndexedElement > > &listOfCutsLhs, vector< data::QpNum > &listOfCutsRhs, const double* colLower, const double* colUpper, double tolEps, double relaxed2Tol, double relaxed10Tol, double *xlp)
+ {
+   double lhsMin, lhsMax;
+   double &rowLower=lhsMin;
+   double &rowUpper=lhsMax;
+
+   // -------------------------------------------------
+   // 0) vorab: Min/Max der ganzen Zeile mit exploitRow
+   // -------------------------------------------------
+
+   std::pair<double,double> mm = exploitRow(0, inRowLhs, colLower, colUpper, &lhsMin, &lhsMax);
+    // Zeile muss überhaupt eine sinnvolle Schranke haben
+   if (rowLower <= -1.0e20 && rowUpper >= 1.0e20)
+     return false;
+   
+   double maxColLb = mm.first;   // kann sehr negativ sein
+   double maxColUb = mm.second;  // kann sehr positiv sein
+   
+   const double BIG = 1.0e15;
+   
+   if (maxColLb <= -BIG) {
+     // Zeile potenziell nach unten unbounded
+     return false;
+   }
+   
+   if (maxColUb >= BIG) {
+     // Zeile potenziell nach oben unbounded
+     return false;
+   }
+
+    // -------------------------------------------------
+    // 1) Binärvariable mit größtem |Koeffizienten| suchen
+    // -------------------------------------------------
+    int    pivot         = -1;
+    double piv_coef      = 0.0;
+
+    for (const auto &elt : inRowLhs) {
+        int j = elt.index;
+        if (type[j] == BINARY) {
+            double a = elt.value.asDouble();
+            // typische 0/1-Variable: LB = 0, nicht fixiert
+            if (colUpper[j] > colLower[j] && fabs(colLower[j]) < 1e-7) {
+                if (fabs(a) > fabs(piv_coef)) {
+                    piv_coef = a;
+                    pivot    = j;
+                }
+            }
+        }
+    }
+
+    if (pivot < 0)
+        return false;  // keine geeignete Binärvariable
+
+    if (fabs(piv_coef) < 1e-12)
+        return false;  // trivialer Koeffizient
+
+
+    // -------------------------------------------------
+    // 2) Beitrag von pivot herausrechnen → dmin/dmax für Rest
+    // -------------------------------------------------
+    double lb_k = colLower[pivot];
+    double ub_k = colUpper[pivot];
+
+    double contribMin_k, contribMax_k;
+    if (piv_coef >= 0.0) {
+        contribMin_k = lb_k * piv_coef;
+        contribMax_k = ub_k * piv_coef;
+    } else {
+        contribMin_k = ub_k * piv_coef;
+        contribMax_k = lb_k * piv_coef;
+    }
+
+    // Rest ohne pivot
+    double dmin = lhsMin - contribMin_k;
+    double dmax = lhsMax - contribMax_k;
+
+    // Wenn der Rest alleine die Zeile immer erfüllt, lohnt sich kein Big-M
+    if (dmin >= rowLower - 1e-9 && dmax <= rowUpper + 1e-9)
+        return false;
+
+    // -------------------------------------------------
+    // 3) Erlaubter Bereich für den Big-M-Koeffizienten a'
+    //
+    //    Für z=1 soll gelten:
+    //      ∀R ∈ [dmin,dmax]: rowLower ≤ R + a' ≤ rowUpper
+    //
+    //    ⇒ rowLower ≤ dmin + a'  und  dmax + a' ≤ rowUpper
+    //       lowA  = rowLower - dmin
+    //       highA = rowUpper - dmax
+    //    a' muss in [lowA, highA] liegen.
+    // -------------------------------------------------
+    double lowA  = rowLower - dmin;
+    double highA = rowUpper - dmax;
+
+    if (lowA > highA)
+        return false;  // keine Zahl erfüllt das
+
+    // Der Originalkoeffizient muss (bis auf Toleranz) in diesem Intervall liegen,
+    // sonst ist die Zeile bei z=1 ohnehin nicht "immer erfüllt".
+    if (piv_coef < lowA - tolEps || piv_coef > highA + tolEps)
+        return false;
+
+    // -------------------------------------------------
+    // 4) Neues a' wählen:
+    //    - soll in [lowA, highA] liegen
+    //    - soll das Vorzeichen von piv_coef behalten
+    //    - und |a'| < |piv_coef| (echtes Tightening)
+    // -------------------------------------------------
+    double newValue;
+
+    if (piv_coef > 0.0) {
+        // positive Seite: möglichst nahe an 0, aber >0 und ≤ piv_coef
+        double lower = std::max(lowA, 0.0);
+        double upper = std::min(highA, piv_coef);
+
+        if (lower > upper - 1e-12)
+            return false;  // kein Spielraum, um |a| zu verringern
+
+        newValue = lower;  // kleinster positiver Wert im zulässigen Bereich
+    } else {
+        // negative Seite: möglichst nahe an 0, aber <0 und ≥ piv_coef
+        double lower = std::max(lowA, piv_coef);
+        double upper = std::min(highA, 0.0);
+
+        if (lower > upper - 1e-12)
+            return false;  // kein Spielraum
+
+        newValue = upper;  // größter (am wenigsten negativer) Wert im Bereich
+    }
+
+    if (fabs(newValue - piv_coef) <= 1e-12)
+        return false;  // keine echte Verbesserung
+
+    // -------------------------------------------------
+    // 5) Verschärfte Zeile aufbauen und zwei Cuts erzeugen
+    // -------------------------------------------------
+    std::vector<data::IndexedElement> strencon;
+    strencon.reserve(inRowLhs.size());
+
+    double sum = 0.0;
+    for (const auto &elt : inRowLhs) {
+        int j = elt.index;
+        double a = elt.value.asDouble();
+        data::IndexedElement e;
+
+        if (j != pivot) {
+            sum += xlp[j] * a;
+            e.index = j;
+            e.value = a;
+            strencon.emplace_back(e);
+        } else {
+            sum += xlp[j] * newValue;
+            e.index = j;
+            e.value = newValue;
+            strencon.emplace_back(e);
+        }
+    }
+
+    // Lücke der verschärften Zeile an der aktuellen LP-Lösung
+    double gap = 0.0;
+    if (sum < rowLower)
+        gap = rowLower - sum;
+    else if (sum > rowUpper)
+        gap = sum - rowUpper;
+
+    if (gap <= 1.0e-4)
+        return false;
+
+    // 1) Untere Seite:  sum >= rowLower
+    {
+        listOfCutsLhs.emplace_back(strencon);
+        listOfCutsRhs.emplace_back(data::QpNum(rowLower));
+    }
+
+    // 2) Obere Seite:  sum <= rowUpper  ⇔  -sum >= -rowUpper
+    {
+        std::vector<data::IndexedElement> strencon2;
+        strencon2.reserve(strencon.size());
+        for (const auto &e : strencon) {
+            data::IndexedElement ee;
+            ee.index = e.index;
+            ee.value = -e.value.asDouble();
+            strencon2.emplace_back(ee);
+        }
+        listOfCutsLhs.emplace_back(std::move(strencon2));
+        listOfCutsRhs.emplace_back(data::QpNum(-rowUpper));
+    }
+  return true;
+ }
 
   int generateImplicationCuts( vector< vector< data::IndexedElement > > &listOfCutsLhs,
 			       vector< data::QpNum > &listOfCutsRhs, vector<unsigned int> &candis, bool root) {
@@ -5496,7 +5875,7 @@ public:
 	  }
 	}
       }
-      if (isInt && decisionLevel() <= 1 && info_level > -8) cerr << "Objective is INTEGER with ggt=" << isInt << endl;
+      if (isInt && decisionLevel() <= 1 && getShowInfo()) cerr << "Objective is INTEGER with ggt=" << isInt << endl;
       return isInt;
     }
 
@@ -5769,7 +6148,7 @@ public:
 	    }
 	}
         
-        if (QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
+        if (!feasPhase && QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
              QLPSTSOLVE_SOLVESTAGE((double)constraintallocator[constraints[0]].header.rhs,maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE, -1,-1 /*simplex iterationen*/,false);
              if (status == algorithm::Algorithm::INFEASIBLE) {
 	       if (info_level > 0) cerr << "Root Relaxation in genCutsFromNearlyMonontoneVariables: " << "infeasable" << endl;
@@ -8609,7 +8988,7 @@ public:
     }
 
 	struct CoeVarSortLt {
-	public:
+	YPUBLIC:
 	  bool operator () (CoeVar x, CoeVar y) const {
 	    if (x.x / 2 == y.x / 2) {
 	      return x.coef > y.coef;
@@ -8880,7 +9259,7 @@ public:
 #include "debug.h"
   //end debug routines
 
-private:
+YPRIVATE:
     bool checkHeap(int pick) {
     	std::vector<bool> tmp;
     	int cnt=0;
@@ -8904,13 +9283,13 @@ private:
     }
 
     // Returns a random double 0 <= x < 1. Seed must never be 0.
-    public:
+    YPUBLIC:
     static inline double drand(double& seed) {
         seed *= 1389796;
         int q = (int)(seed / 2147483647);
         seed -= (double)q * 2147483647;
         return seed / 2147483647; }
-    private:
+YPRIVATE:
     // Returns a random integer 0 <= x < size. Seed must never be 0.
     static inline int irand(double& seed, int size) {
         return (int)(drand(seed) * size); }
@@ -8947,7 +9326,7 @@ private:
           cerr << " score: "/* << std::setfill('0') << std::setw(8)*/<<global_score;
           cerr << " | time: " << time(NULL) - ini_time << " | "
 		 << " dual: "<< global_dual_bound << " gap=" << gap << "%" << " ";
-          if (1||info_level >= 2) cerr << endl << "                                                  " <<  " Decs:" << num_decs << " Impl:" << num_props << " #C:" << constraints.size() << " #LP/#sbLP:" << LPcnt << "/" << LPcntSB;
+          if (getShowInfo()||info_level >= 2) cerr << endl << "                                                  " <<  " Decs:" << num_decs << " Impl:" << num_props << " #C:" << constraints.size() << " #LP/#sbLP:" << LPcnt << "/" << LPcntSB;
           cerr << endl;
           if (info_level >= 2) printBounds(10);
           if (gap < SOLGAP) break_from_outside = true;
@@ -9011,7 +9390,7 @@ private:
     //void inspection(int dl);
     bool exploreImplicationGraph();
     struct SearchOrderLexo {
-      public:
+      YPUBLIC:
         bool operator () (CoeVar x, CoeVar y) const {
         	return var(x) < var(y);
         }
