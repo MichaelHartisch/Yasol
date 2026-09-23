@@ -1410,9 +1410,9 @@ void QBPSolver::makeAsnapshot(std::vector< std::pair<int,int> > &clist) {
   ((yInterface*)yIF)->sortCols(maxLPStage);
 
   //if (nofS >= 10) nofS = 0;
-  if (nofS == 0) {
+  if (1||nofS == 0) {
     ((yInterface*)yIF)->findSymmetries(*QlpStSolve, maxLPStage, true, clist, type.getData(), block.getData(), assigns.getData(), eas.getData());
-    if (info_level > -8) cerr << "FIND SYMMS. # = " << clist.size() << endl;
+    if (getShowInfoInt()) cerr << "info: FIND SYMMS. # = " << clist.size() << endl;
   }
 
   nofS++;
@@ -3076,13 +3076,18 @@ SearchResult QBPSolver::alphabeta_loop(int t, int lsd, coef_t a, coef_t b, bool 
 
     for (int i=0;i<nVars();i++) {
       if (type[i] != BINARY) continue;
-      int ismono = isMono(i);
-      if (ismono == 1) {
-	if (eas[i] == EXIST) 
-	  setFixed(i, 1);
-      } else if (ismono == -1) {
-	if (eas[i] == EXIST) 
-	  setFixed(i, 0);
+      if ((useMonotones & 1) && ((useMonotones & 4) || !feasPhase) ) { // monotones for EXIST-variables in preprocessing
+	//&1 means: use in preprocessing
+	//&2 means: use in treesearch
+	//&4 means: use in feasPhase
+	int ismono = isMono(i);
+	if (ismono == 1) {
+	  if (eas[i] == EXIST) 
+	    setFixed(i, 1);
+	} else if (ismono == -1) {
+	  if (eas[i] == EXIST) 
+	    setFixed(i, 0);
+	}
       }
       if (isFixed(i) && fixdata[i].level == 1) fixdata[i].level = 0; 
       if (isFixed(i) && fixdata[i].level > 1) {
@@ -5779,58 +5784,39 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	}
 	//assert(val_ix==val_ixII && val[0]==valII[0] && val[1]==valII[1]);
 	ismono = 0;
-	//if (eas[pick]==UNIV && useMonotones) ismono = univIsMono(pick, feasPhase);
-	//if (pick==1) cerr << "ismono=" << ismono << endl;
-
-	//New Monotones
-	if(useMonotones){
+	if (eas[pick]==UNIV && useMonotones) {
+	  //use "Old Monotones"
+	  ismono = univIsMono(pick, feasPhase);
+	  //Old Monotones
+	  if (eas[pick]==UNIV && useMonotones && ismono<0 ) {
+	      if (eas[pick] != EXIST)
+		{  val[0] /*= valII[0]*/ = 0; val[1] /*= valII[1]*/ = -1; }
+	      else
+		{  val[0] /*= valII[0]*/ = 1; val[1] /*= valII[1]*/ = -1; }
+	  } else if (eas[pick]==UNIV && useMonotones && ismono>0 ) {
+	      if (eas[pick] != EXIST)
+		{  val[0] /*= valII[0]*/ = 1; val[1] /*= valII[1]*/ = -1; }
+	      else
+		{  val[0] /*= valII[0]*/ = 0; val[1] /*= valII[1]*/ = -1; }
+	  }	  
+	} else {
+	  // useMonotones meaning:
+	  //&1 means: use in preprocessing
+	  //&2 means: use in treesearch
+	  //&4 means: use in feasPhase
+	  // Michael prefers 7, Ulf prefers 5 
+	  //New Monotones
+	  if((useMonotones & 2) && ((useMonotones & 4) || !feasPhase) ){
 	    ismono = isMono(pick);
 	    if (ismono != 0){
-	        if (ismono < 0 ) val[0] = 0; 
-                if (ismono > 0 ) val[0] = 1;
-	  //      cerr << "Detected monotone variable: x_"<<pick<< " is set to " << to_string(val[0]) << endl;
-	        val[1] = -1;
+	      if (ismono < 0 ) val[0] = 0; 
+	      if (ismono > 0 ) val[0] = 1;
+	      //      cerr << "Detected monotone variable: x_"<<pick<< " is set to " << to_string(val[0]) << endl;
+	      val[1] = -1;
 	    }
-        }
-//Old Monotones
-if(0){
-	if (eas[pick]==UNIV && useMonotones && ismono < 0/*(CW.getCWatcher(pick+pick) == -1 || (feasPhase && CW.getCWatcher(pick+pick) == 0))*/ ) {
-          //cerr << "M";
-          bool lost=false;
-          if (/*isInObj[pick] >= nVars()+2 &&*/ !lost) {
-            if (eas[pick] != EXIST)
-              {  val[0] /*= valII[0]*/ = 0; val[1] /*= valII[1]*/ = -1; }
-            else
-              {  val[0] /*= valII[0]*/ = 1; val[1] /*= valII[1]*/ = -1; }
-            //cerr << "P";
-          }
-          //val[0] = val[1] = 1;
-          //cerr << "P";
-        }
-        
-	if (eas[pick]==UNIV && useMonotones && ismono<0/*(CW.getCWatcher(pick+pick) == -1 || (feasPhase && CW.getCWatcher(pick+pick) == 0))*/ ) {
-	  //cerr << "M";
-	  bool lost=false;
-	  if (/*isInObj[pick] >= nVars()+2 &&*/ !lost) {
-	    if (eas[pick] != EXIST)
-	      {  val[0] /*= valII[0]*/ = 0; val[1] /*= valII[1]*/ = -1; }
-	    else
-	      {  val[0] /*= valII[0]*/ = 1; val[1] /*= valII[1]*/ = -1; }
-	    //cerr << "P";
-	  }
-	  //val[0] = val[1] = 1;
-	  //cerr << "P";
-	} else if (eas[pick]==UNIV && useMonotones && ismono>0 /*(CW.getCWatcher(pick+pick+1) == -1 || (feasPhase && CW.getCWatcher(pick+pick+1) == 0))*/ ) {
-	  bool lost=false;
-	  if (/*isInObj[pick] >= nVars()+2 &&*/ !lost) {
-	    if (eas[pick] != EXIST)
-	      {  val[0] /*= valII[0]*/ = 1; val[1] /*= valII[1]*/ = -1; }
-	    else
-	      {  val[0] /*= valII[0]*/ = 0; val[1] /*= valII[1]*/ = -1; }
-	    //cerr << "N";
 	  }
 	}
-}
+	
 	if (eas[pick]==UNIV) {
 	  int out = 0;
 	  int blo = block[pick];
@@ -6145,7 +6131,7 @@ if(0){
 	  if (!isInMiniBC() && sonID >= 0 && MCTS.isClosed(sonID,l,u)) {
 	    if (val[0]==val[1] || val[1-val_ix]==-1) { 
 	      MCTS.setClosed(nodeID,l,u);
-	      cerr << "set node " << nodeID << " closed with mima=" << l << endl;
+	      if (getShowInfo()) cerr << "set node " << nodeID << " closed with mima=" << l << endl;
 	    } else {
 	      MCTS.updateFatherScore(sonID);
 	      assert(val[val_ix] >= 0 && val[val_ix] <= 1);
@@ -6208,7 +6194,7 @@ if(0){
 	if(oob==ASSIGN_UNIV_FAIL){
 	  if(val_ix==0) /*valII[1] =*/ val[1] = 1-val[0];
 	  else if((val_ix==1 ||(val_ix==0 && val[0]==val[1]) ) && score == AllInfeasible){
-	     std::cerr << "score="<<score << " " << AllInfeasible<< endl;
+	     if(getShowInfo()) std::cerr << "score is AllInfeasible: "<<score << " " << AllInfeasible<< endl;
 	     //In this case no legal universal variable assignment remains
 	     //It has to be checked, whether the existential constraint system is still feasible
 	     if(ExistIPStillFeasible())
@@ -6625,12 +6611,14 @@ if(0){
 		  setFixed( pick, 1-val[val_ix], -1, CRef_Undef);
 		  if(getShowInfo()) cerr << "Info: fixed x" << pick << " to " << 1-(int)val[val_ix] << endl;
 		} else {
-		  if(getShowWarning()) cerr << "Warning: could not dissolve missed implication." << endl;
-		  for (int i = 0; i < c.size();i++) {
-		    cerr << (sign(c[i]) ? "-" : "") << c[i].coef << "x" << (int)var(c[i]) << " + ";
-		  }
-		  cerr << " 0 >= " << c.header.rhs << endl;
-		  cerr << "wanted to set x" << pick << " to " << (int)val[val_ix]<< endl;
+		  if(getShowWarning()){ 
+                    cerr << "Warning: could not dissolve missed implication." << endl;
+		    for (int i = 0; i < c.size();i++) {
+		      cerr << (sign(c[i]) ? "-" : "") << c[i].coef << "x" << (int)var(c[i]) << " + ";
+		    }
+		    cerr << " 0 >= " << c.header.rhs << endl;
+		    cerr << "wanted to set x" << pick << " to " << (int)val[val_ix]<< endl;
+                  }
 		}
 	      }
 	    }
@@ -6698,12 +6686,13 @@ if(0){
 		if(c.size() == 1) {
 		  setFixed( pick, 1-val[val_ix], -1, CRef_Undef);
 		} else {
-		  if(getShowWarning()) cerr << "Warning: could not dissolve missed implication." << endl;
-		  for (int i = 0; i < c.size();i++) {
-		    cerr << (sign(c[i]) ? "-" : "") << c[i].coef << "x" << (int)var(c[i]) << " + ";
-		  }
-		  cerr << " 0 >= " << c.header.rhs << endl;
-		  cerr << "wanted to set x" << pick << " to " << (int)val[val_ix]<< endl;
+		  if(getShowWarning()){ cerr << "Warning: could not dissolve missed implication." << endl;
+		    for (int i = 0; i < c.size();i++) {
+		      cerr << (sign(c[i]) ? "-" : "") << c[i].coef << "x" << (int)var(c[i]) << " + ";
+		    }
+		    cerr << " 0 >= " << c.header.rhs << endl;
+		    cerr << "wanted to set x" << pick << " to " << (int)val[val_ix]<< endl;
+                  }
 		}
 	      }
 	    }

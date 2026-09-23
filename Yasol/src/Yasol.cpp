@@ -45,7 +45,7 @@ void printUsage(const std::string& programName) {
               << "                                       - activate GMI at both root and inner nodes (3)\n"
               << " --useCover=b           - binary to turn off/on cover cuts (default 1)\n"
               << " --usePump=b            - binary to turn off/on feasibility pump (default 1)\n"
-              << " --useMonotones=b       - binary to turn off/on the exploitation of monotes (default 1)\n"
+              << " --useMonotones=b       - 0..7 to control the exploitation of monotes (default 7)\n"
               << " --isSimplyRestricted=b - binary to turn off/on the exploitation of a simple structure\n"
               << "                          of the universal constraints (the uncertainty set) (default 0)\n"
               << " --useCglRootCuts=b     - binary to turn off/on cut generation from CGL library (default 0)\n"
@@ -340,8 +340,8 @@ int main(int argc, char** argv) {
       char input[1000];
       bool finished=false;
       while (!finished) {
-        if (fgets(input, 999, stdin) == nullptr) {
-          std::cerr << "Error: failed to read input\n";
+	if (fgets(input, 999, stdin) == nullptr) {
+  	  std::cerr << "Error: failed to read input\n";
           return 0;
         }
 	if (!strncmp(input,"quit",4)) {

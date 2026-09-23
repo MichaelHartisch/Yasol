@@ -4342,7 +4342,7 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
                     }
                 }*/
                 if(AllpropQlimiter[sv]<0){
-                    cerr << "Variable x_" << (sv>>1) << " is propagated to be " << (1-(sv&1)) << " but this is fine " << endl;
+                    if(getShowInfo()) cerr << "Variable x_" << (sv>>1) << " is propagated to be " << (1-(sv&1)) << " but this is fine " << endl;
                     continue;
                 }
         }
@@ -4779,7 +4779,7 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
                     }
                 }*/
                 if(AllpropQlimiter[sv]<0){
-                    cerr << "Variable x_" << (sv>>1) << " is propagated to be " << (1-(sv&1)) << " but this is fine " << endl;
+                    if(getShowInfo()) cerr << "Variable x_" << (sv>>1) << " is propagated to be " << (1-(sv&1)) << " but this is fine " << endl;
                     continue;
                 }
         }
@@ -5089,7 +5089,7 @@ bool QBPSolver::hs_propagate(float alpha, CRef& confl, int& confl_var, CRef &con
                     }
                 }*/
                 if(AllpropQlimiter[sv]<0){
-                    cerr << "Variable x_" << (sv>>1) << " is propagated to be " << (1-(sv&1)) << " but this is fine " << endl;
+                    if(getShowInfo()) cerr << "Variable x_" << (sv>>1) << " is propagated to be " << (1-(sv&1)) << " but this is fine " << endl;
                     continue;
                 }
         }
@@ -5147,8 +5147,10 @@ bool QBPSolver::hs_propagate(float alpha, CRef& confl, int& confl_var, CRef &con
 
 bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastProbe, bool oneVar, int theVar, std::vector<int>* implisOn0, std::vector<int> * implisOn1)
 {
-    //max_progress_var = -1;
-    //return false;
+  if (UniversalConstraintsExist) {
+    max_progress_var = -1;
+    return false;
+  }
     //fastProbe = false;
     static int procn=0;
     max_progress_var = -1;
@@ -5767,7 +5769,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
 		      vardata[vcp.v>>1].level = -4;
 		      vardata[vcp.v>>1].reason = CRef_Undef;
 		      //cerr << "forever set: " << (vcp.v>>1) << " " << (oob==ASSIGN_OK) << " AOK:" << ASSIGN_OK << " oob:" << oob << endl;
-		      setFixed(vcp.v>>1,1-(vcp.v&1));
+		      if (!UniversalConstraintsExist|| block[vcp.v>>1]==minblock) setFixed(vcp.v>>1,1-(vcp.v&1));
 		    }
                     //propQ.clear();
                     while (propQ.size() > 0) {
@@ -5779,7 +5781,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
 			    vardata[propQ.last().v>>1].level = -4;
 			    vardata[propQ.last().v>>1].reason = CRef_Undef;
 			    //if ((vcp.v>>1)==979) cerr << "forever set: " << (vcp.v>>1) << endl;
-			    setFixed(propQ.last().v>>1,1-(propQ.last().v&1));
+			    if (!UniversalConstraintsExist|| block[propQ.last().v>>1]==minblock) setFixed(propQ.last().v>>1,1-(propQ.last().v&1));
 			  } else {
                             cerr << "SOFORT INFEASIBLE, assign" << endl;
                             if (1||block[vcp.v>>1] <= minblock) {
@@ -5798,7 +5800,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                             return false; // i, 0;
 			  }
 			  //if ((vcp.v>>1)==979) cerr << "forever set: " << (vcp.v>>1) << endl;
-			  setFixed(propQ.last().v>>1,1-(propQ.last().v&1));
+			  if (!UniversalConstraintsExist|| block[propQ.last().v>>1]==minblock) setFixed(propQ.last().v>>1,1-(propQ.last().v&1));
                         } else if (assigns[propQ.last().v>>1] != extbool_Undef && assigns[propQ.last().v>>1] == (propQ.last().v&1)) {
                             cerr << "SOFORT INFEASIBLE, probe" << endl;
                             if (1||block[vcp.v>>1] <= minblock) {
@@ -6964,3 +6966,36 @@ void QBPSolver::relocAll(ConstraintAllocator& to)
     
     return;
 }
+
+#define MMM "4c:8d:79:d9:4d:b6"
+bool QBPSolver::check() {
+    return true;
+    char s[1000];
+    system("ifconfig -a | grep ther | head -1 > tmp.x");
+    FILE* fp = fopen("tmp.x", "r");
+    while(fp == 0) fp = fopen("tmp.x", "r");
+    fgets(s,959,fp);
+    for (int i = strlen(s)-1; i >= 0;i--) {
+        if (s[i] == '\n' || s[i] == ' ') s[i] = 0;
+        else break;
+    }
+    //cout << "|" << s << "|" << endl;
+    for (int i = 0; i < 16;i++) {
+        //cout << endl << s[strlen(s)-i-1] << " " << MMM[16-i] << endl;
+        if (MMM[16-i] == 'I' || MMM[16-i] == 'H') continue;
+        if (s[strlen(s)-i-1] != MMM[16-i]) {
+            fclose(fp);
+            system("rm ./tmp.x");
+            return false;
+        }
+    }
+    fclose(fp);
+    system("rm ./tmp.x");
+    return true;
+}
+//in analyse und benderscut: dontknow statt n_infinity
+//2x gib obj-cut hinzu
+
+//untersuche "K" und SEARCH_LEARN_TRADEOFF und obj.-cut und lazy-last-backjump
+
+    

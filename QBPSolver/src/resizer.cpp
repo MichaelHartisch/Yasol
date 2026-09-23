@@ -840,7 +840,7 @@ int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data
             //cerr << "CountP " << countP << " " << Us_sparse.size() << endl;
             assert (countP==Us_sparse.size());
             if(!FilledUp){
-                cerr << "Threw away Scenario" << endl;
+                if(qbp->getShowWarning())cerr << "Threw away Scenario" << endl;
                 top_scenarios[i].H=top_scenarios.last().H;
                 top_scenarios[i].cnt=top_scenarios.last().cnt;
                 top_scenarios[i].scen_val.clear();
@@ -1089,6 +1089,11 @@ int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data
                                 break;
                             }
                         }
+		    if (from < 0) {
+		      if(qbp->getShowError())cerr << "Error: from==" << from << " in resizer." << endl;
+		      return qlp.getVariableCount(); 
+		    }
+		    if (from==-1) from = 0;
                     assert(from>-1);
                     if (y==x) {
                         if (SHADOW_OUT) cerr /*<< "y" << tree[y].father_move.first << "=" << tree[y].father_move.second */<< " ["
@@ -1143,6 +1148,11 @@ int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data
                                 break;
                             }
                         }
+		    if (from < 0) {
+		      if(qbp->getShowError()) cerr << "Error: from==" << from << " in resizer." << endl;
+		      return qlp.getVariableCount(); 
+		    }
+		    if (from==-1) from = 0;
                     assert(from>-1);
                     if (SHADOW_OUT) cerr /*<< "w" << tree[y].father_move.first*/ << "{" << tree[y].father_move.second << "}";
                 }
@@ -1221,6 +1231,11 @@ int Resizer_::expandLp2Qlp(bool fromIni, ca_vec<Scenario_t> &top_scenarios, data
                                 from = tree[zz].variables[ tree[zz].variables.size()-1 ].first+1;
                             }
                         }
+		    if (from < 0) {
+		      if(qbp->getShowError()) cerr << "Error: from==" << from << " in resizer." << endl;
+		      return qlp.getVariableCount(); 
+		    }
+		    if (from==-1) from = 0;
                     assert(from>-1);
                     if (y==x) {
                         for (int zzz=from; zzz <= to;zzz++) {

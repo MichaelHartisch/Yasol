@@ -1522,7 +1522,7 @@ namespace extSol {
     std::vector<int> index(1, ind);
     std::vector<double> coefficient(1, coeff.asDouble());
     HighsStatus status = highs.changeColsCost(ind,ind,coefficient.data());
-    assert(return_status==HighsStatus::kOk);
+    assert(/*return_*/status==HighsStatus::kOk);
     return true;
   }
   bool QpExtSolHighs::changeObjFuncCoeffVec(unsigned int from, unsigned int to, const data::QpNum* coeff_pt) {

@@ -1849,7 +1849,7 @@ YPRIVATE:
     int				 maxBaCLevel;
     bool			 useScout;
     bool			 useAlphabeta;
-    bool			 useMonotones;
+    int8_t			 useMonotones;
     bool			 isSimplyRestricted;
     bool			 writeOutputFile;
     std::string 		 inputFileName;
@@ -2699,6 +2699,7 @@ YPRIVATE:
     bool checkSolution(double a, bool free_uni_av, bool blockvar_av, int best_cont_ix, int pick, double lpopt, int &lead, std::vector<data::QpNum> &solution);
     int  findViolation(std::vector<data::QpNum> &solution);
     bool checkRounding(double a, int pick, std::vector<data::QpNum> &solution, double lpopt, double &nlpopt);
+    bool check();
     bool probe(int &max_progress_var, int &max_progress_pol, bool fastProbe, bool oneVar=false, int theVar=-1, std::vector<int>* implisOn0 = nullptr, std::vector<int>* implisOn1 = nullptr);
     bool GETBENDERSCUT(unsigned int stage, std::vector<int> &saveUs, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool org, void *vpt, int *eas, int *types);
     bool GETBENDERSCUT2(unsigned int stage, std::vector<int> &saveUs, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool org, void *vpt, int *eas, int *types);
@@ -2750,6 +2751,37 @@ YPRIVATE:
     	cerr << "detected " << numCs << " native Cliques" << endl;
     }
 
+  int univIsMono(int va, bool feasPhase) {
+    int pp=0,nn=0;
+    for (int i=0; i < VarsInConstraints[va].size();i++) {
+      Constraint &c = constraintallocator[VarsInConstraints[va][i].cr];
+      if (c.header.learnt) continue;
+      if (VarsInConstraints[va][i].cr != constraints[0]) {
+	if (c.saveFeas(assigns)) continue;
+      } else {
+	//assert(0);
+      }
+      int pos = VarsInConstraints[va][i].pos;
+      int s = sign(c[pos]);
+      if (s) nn++;
+      else pp++;
+    }
+    if(UniversalConstraintsExist){
+      for (int i=0; i < VarsInAllConstraints[va].size();i++) {
+	Constraint &ca = ALLconstraintallocator[VarsInAllConstraints[va][i].cr];
+	if (ca.header.learnt) continue;
+	if (ca.saveFeas(assigns)) continue;
+
+	int posa = VarsInAllConstraints[va][i].pos;
+	int sa = sign(ca[posa]);
+	if (!sa) nn++;
+	else pp++;
+      }
+    }
+    if (pp > 0 && nn > 0) return 0;
+    if (pp == 0) return 1;
+    return -1;
+}
 
 int isMono(int va) {
   //cerr <<"check mono for x_" <<va <<endl;
@@ -8572,7 +8604,7 @@ YPUBLIC:
     	maxBaCLevel=1000000;
     	useScout=false;
     	useAlphabeta=true;
-    	useMonotones=true;
+    	useMonotones=7;
 	isSimplyRestricted=false;
 	writeOutputFile=false;
 	inputFileName="";
@@ -8698,7 +8730,7 @@ YPUBLIC:
     void setMaxBaCLevel(int x) { maxBaCLevel = x; }
     void setUseScout(bool x) { useScout = x; }
     void setUseAlphabeta(bool x) { useAlphabeta = x; }
-    void setUseMonotones(bool x) { useMonotones = x; }
+    void setUseMonotones(int8_t x) { useMonotones = x; }
     void setIsSimplyRestricted(bool x) { isSimplyRestricted = x; }
     void setWriteOutputFile(bool x) { writeOutputFile = x; }
     void setInputFileName(std::string x) { inputFileName=x; }
@@ -8799,7 +8831,7 @@ YPUBLIC:
     int  getMaxBaCLevel() { return maxBaCLevel; }
     bool getUseAlphabeta() { return useAlphabeta; }
     bool getUseScout() { return useScout; }
-    bool getUseMonotones() { return useMonotones; }
+    int8_t getUseMonotones() { return useMonotones; }
     bool getIsSimplyRestricted() { return isSimplyRestricted; }
     bool getWriteOutputFile() { return writeOutputFile; }
     std::string getInputFileName() {return inputFileName; }

@@ -1261,7 +1261,7 @@ public:
       }
             
       if (X[i].index < Y[j].index) { if (X[i].value.asDouble() < 0.0) return 1; else return -1; }
-      if (X[i].index > Y[j].index) { if (Y[i].value.asDouble() < 0.0) return -1; else return 1; }
+      if (X[i].index > Y[j].index) { if (Y[j].value.asDouble() < 0.0) return -1; else return 1; }
       if (X[i].index == Y[j].index) {
 	if (X[i].value.asDouble() < Y[j].value.asDouble() - 1e-12) {
 	  return 1;
@@ -1298,7 +1298,7 @@ public:
     int i = 0; int j = 0;
     while (i < X.size() && j < Y.size()) {
       if (X[i].index < Y[j].index) { if (X[i].value.asDouble() < 0.0) return 1; else return -1; }
-      if (X[i].index > Y[j].index) { if (Y[i].value.asDouble() < 0.0) return -1; else return 1; }
+      if (X[i].index > Y[j].index) { if (Y[j].value.asDouble() < 0.0) return -1; else return 1; }
       if (X[i].index == Y[j].index) {
 	if (X[i].value.asDouble() < Y[j].value.asDouble() - 1e-12) {
 	  return 1;
@@ -1532,6 +1532,65 @@ public:
     return 2;
   }
 
+  bool checkOnTotalDomination(int dom, int maxLPstage, double *lhsMin, double *lhsMax) {
+    int size = QlpStSolve->getExternSolver(maxLPstage).getCol_snapshot(dom)->size();
+    bool isTotalDom = true;
+    std::vector<data::IndexedElement > *COL = QlpStSolve->getExternSolver(maxLPstage).getCol_snapshot(dom);
+    for (int i = 0; i < size;i++) {
+      data::IndexedElement ColElem = (*COL)[i];
+      assert(QlpStSolve->getExternSolver(maxLPstage).getLProws_snapshot() > ColElem.index);
+      std::vector<data::IndexedElement> * LHS = QlpStSolve->getExternSolver(maxLPstage).getRowLhs_snapshot(ColElem.index);
+      double normer = fabs((*LHS)[0].value.asDouble());
+      double rhs = (*QlpStSolve->getExternSolver( maxLPstage ).getRowRhs_snapshot())[i].getValue().asDouble();
+      rhs = rhs / normer;
+      data::QpRhs::RatioSign sense = (*QlpStSolve->getExternSolver( maxLPstage ).getRowRhs_snapshot())[i].getRatioSign();
+      if (sense == data::QpRhs::RatioSign::smallerThanOrEqual) {
+	if (lhsMax[i] - fabs(ColElem.value.asDouble()) > rhs) {
+	  return false;
+	}	
+      } else if (sense == data::QpRhs::RatioSign::greaterThanOrEqual) {
+	if (lhsMin[i] + fabs(ColElem.value.asDouble()) < rhs) {
+	  return false;
+	}
+      } else if (sense == data::QpRhs::RatioSign::equal) {
+	return false;
+      }
+    }
+    return true;
+  }
+
+  std::pair<double,double> exploitRow(const int ii, const std::vector< data::IndexedElement > &row, const double* colLower, const double* colUpper, double *lhsMin, double*lhsMax) {
+    double maxColUb=-1e100;
+    double maxColLb=+1e100;
+    lhsMin[ii] = lhsMax[ii] = 0.0;
+    for (int jj=0;jj<row.size();jj++) {
+      int v = row[jj].index;
+      double coef = row[jj].value.asDouble();
+      if (coef >= 0.0) {
+	lhsMin[ii] = lhsMin[ii] + colLower[v]*coef;
+	lhsMax[ii] = lhsMax[ii] + colUpper[v]*coef;
+      } else {
+	lhsMax[ii] = lhsMax[ii] + colLower[v]*coef;
+	lhsMin[ii] = lhsMin[ii] + colUpper[v]*coef;
+      }
+      if (coef != 0.0) {
+        // mögliche Extrema-Beiträge dieser Variable:
+        double c1 = coef * colLower[v];
+        double c2 = coef * colUpper[v];
+
+        double localMin = std::min(c1, c2);
+        double localMax = std::max(c1, c2);
+
+        if (localMin < maxColLb)   // „am weitesten ins Negative“
+            maxColLb = localMin;
+        if (localMax > maxColUb)   // „am weitesten ins Positive“
+            maxColUb = localMax;
+      }
+    }
+    return std::make_pair(maxColLb,maxColUb);
+  }
+
+  
   void findSymmetries(utils::QlpStageSolver& QlpStSolve, int maxLPstage, bool useObj, std::vector< std::pair<int,int> > &clist, int *types, int *block, int8_t * assigns, int *eas) {
 #ifndef FIND_BUG
     clist.clear();
@@ -1551,6 +1610,29 @@ public:
     CliqueManager *pCM = qbp->getClipueManager();
     int outputs=0;
     int outputsSYMM=0;
+
+    QlpStSolve.getExternSolver(maxLPstage).reinitLPcols_snapshot();
+    //in der col-Struktur steht auch der index auf die Position in der Zeile
+    sortCols(maxLPstage);
+    std::vector<data::QpRhs> *RHSs = QlpStSolve.getExternSolver(maxLPstage).getRowRhs_snapshot();
+    int numRows = RHSs->size();
+    std::vector<double> lhsMin(numRows);
+    std::vector<double> lhsMax(numRows);
+
+    vector<data::QpNum> colLowerBound(n);
+    vector<data::QpNum> colUpperBound(n);
+    vector<double> colLower(n);
+    vector<double> colUpper(n);
+    QlpStSolve.getExternSolver(maxLPstage).getLB(colLowerBound);
+    QlpStSolve.getExternSolver(maxLPstage).getUB(colUpperBound);
+    for (int i=0;i<n;i++) {
+      colLower[i] = colLowerBound[i].asDouble();
+      colUpper[i] = colUpperBound[i].asDouble();
+    }
+    for (int i = 0; i < numRows;i++) {
+      std::vector<data::IndexedElement> &rowtmp = *QlpStSolve.getExternSolver( maxLPstage ).getRowLhs_snapshot(i);
+      std::pair<double,double> P = exploitRow(i, rowtmp, colLower.data(), colUpper.data(), lhsMin.data(), lhsMax.data());
+    }
 
     //cerr << "ENTER FIND SYMM (time(NULL) - ini_time):" << (time(NULL) - ini_time) << endl;
 
@@ -1576,6 +1658,24 @@ public:
 			 QlpStSolve.getExternSolver(maxLPstage).getCol_snapshot(sortcols[i]),QlpStSolve.getExternSolver(maxLPstage).getCol_snapshot(sortcols[iplusk]),
 			 QlpStSolve.getExternSolver(maxLPstage).getObj_snapshot(sortcols[i]),QlpStSolve.getExternSolver(maxLPstage).getObj_snapshot(sortcols[iplusk]),
 			 useObj, QlpStSolve.getExternSolver(maxLPstage).getRowRhs_snapshot(), sortcols[i], sortcols[iplusk]);
+	if (xdy == 1 || xdy == 0 | xdy == -1) {
+	  int dominator=sortcols[i];
+	  if (xdy==-1) dominator=sortcols[iplusk];
+	  bool td = checkOnTotalDomination(dominator, maxLPstage, lhsMin.data(), lhsMax.data());
+	  if (0&&td) {
+	    //std::cerr << "found td!" << std::endl;
+	    if (xdy==0 || xdy==1) {
+	      clist.push_back(make_pair(-sortcols[iplusk]-1,0));
+	      //x_j can be fixed to 0
+	      //foundFixing = true;
+	    } else {
+	      clist.push_back(make_pair(-sortcols[i]-1,0));
+	      //x_i can be fixed to 0
+	      //foundFixing = true;
+	    }
+	    xdy = 10;
+	  }
+	}
 	if (/*k == 1 &&*/ xdy==0) {
 	  if (sortcols[i] >= sortcols[iplusk]) continue;
 	  latestHitI = i;
@@ -1605,6 +1705,7 @@ public:
 		  //cerr << "(1-x" << v2 << ") >= 1" << endl;
 		  if (0&&info_level >= -5) cerr << "Fall 1b set x" << sortcols[i] << " auf 0" << endl;
 		  clist.push_back(make_pair(-sortcols[i]-1,0));
+		  //x_i is forced to 0
 		  foundFixing = true;
 		}
 	      }
@@ -1626,11 +1727,13 @@ public:
 		  //cerr << "x" << v2 << " >=1 " << endl;
 		  //cerr << "set x" << sortcols[iplusk] << " auf 1" << endl;
 		  clist.push_back(make_pair(-sortcols[iplusk]-1,1));
+		  //x_j is forced to 1
 		  foundFixing = true;
 		} else {
 		  //cerr << "(1-x" << v2 << ") >= 1" << endl;
 		  //cerr << "Fall2b set x" << sortcols[i] << " = x" << sortcols[iplusk] << endl;
 		  clist.push_back(make_pair(sortcols[i],-sortcols[iplusk]-1));
+		  //x_i = x_j
 		  foundFixing = true;
 		}
 	      }
@@ -1657,13 +1760,15 @@ public:
 		  if (pCM->getAdjacent(kk) & 1) {
 		    //cerr << "x" << v2 << " >=1 " << endl;
 		    //cerr << "Fall3a set x" << sortcols[i] << " = x" << sortcols[iplusk] << endl;
-		    clist.push_back(make_pair(sortcols[i],-sortcols[iplusk]-1));
-		    foundFixing = true;
-		  } else { //f�hrt zu keiner neuen Erkenntnis
+		    //clist.push_back(make_pair(sortcols[i],-sortcols[iplusk]-1));
+		    //x_i = x_j falsch??
+		    //foundFixing = true;
+		  } else { 
 		    //cerr << "(1-x" << v2 << ") >= 1" << endl;
 		    //cerr << "Fall3b set x" << sortcols[iplusk] << " auf 0" << endl;
 		    //cerr << "weil: SYMMETRIE FOUND!! i=" << i << ",k=" << k << " | x" << sortcols[i] << " <= x" << sortcols[iplusk] << endl;
 		    foundFixing = true;
+		    //x_j is forced to 0
 		    clist.push_back(make_pair(-sortcols[iplusk]-1,0));
 		  }
 		}
@@ -1685,10 +1790,14 @@ public:
 		    //cerr << "x" << v2 << " >=1 " << endl;
 		    //cerr << "set x" << sortcols[i] << " auf 1" << endl;
 		    clist.push_back(make_pair(-sortcols[i]-1,1));
+		    //x_i is forced to 1
 		    foundFixing = true;
 		  } else {
 		    //cerr << "(1-x" << v2 << ") >= 1" << endl;
 		    //cerr << "Clause schon vorhanden 4" << endl;
+		    foundFixing = true;
+		    clist.push_back(make_pair(sortcols[i],-sortcols[iplusk]-1));
+		    //x_i = x_j 
 		  }
 		}
 		kk = pCM->NextAdjacentInConflictGraph(kk);
@@ -2529,7 +2638,7 @@ public:
       cerr << "maxBaCLevel=" << qbp->getMaxBaCLevel() << endl;
       cerr << "useAlphabeta=" << qbp->getUseAlphabeta() << endl;
       cerr << "useScout=" << qbp->getUseScout() << endl;
-      cerr << "useMonotones=" << qbp->getUseMonotones() << endl;
+      cerr << "useMonotones=" << (int)qbp->getUseMonotones() << endl;
       cerr << "isSimplyRestricted=" << qbp->getIsSimplyRestricted() << endl;
       cerr << "writeOutputFile=" << qbp->getWriteOutputFile() << endl;
       cerr << "maintainPv=" << qbp->getMaintainPv() << endl;

@@ -205,8 +205,15 @@ void yInterface::yReadIniFile() {
 			  else qbp->setUseAlphabeta(false);
 		  } else if (tokens[0].compare("useMonotones") == 0) {
 			  if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
-			  if (tokens[1].compare("1") == 0) qbp->setUseMonotones(true);
-			  else qbp->setUseMonotones(false);
+			  if (tokens[1].compare("0") == 0) qbp->setUseMonotones(0);
+			  else if (tokens[1].compare("1") == 0) qbp->setUseMonotones(1);
+			  else if (tokens[1].compare("2") == 0) qbp->setUseMonotones(2);
+			  else if (tokens[1].compare("3") == 0) qbp->setUseMonotones(3);
+			  else if (tokens[1].compare("4") == 0) qbp->setUseMonotones(4);
+			  else if (tokens[1].compare("5") == 0) qbp->setUseMonotones(5);
+			  else if (tokens[1].compare("6") == 0) qbp->setUseMonotones(6);
+			  else if (tokens[1].compare("7") == 0) qbp->setUseMonotones(7);
+			  else qbp->setUseMonotones(0);
 		  } else if (tokens[0].compare("isSimplyRestricted") == 0) {
                           if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
                           if (tokens[1].compare("1") == 0) qbp->setIsSimplyRestricted(true);

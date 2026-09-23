@@ -2604,7 +2604,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	    int cnt_df = dualCostFix(solution, a, -lb.asDouble(), Lpick, true ); 
 	  }
 
-	  if (decisionLevel() <= 2 && cnt_df > 0)
+	  if (decisionLevel() <= 2 && cnt_df > 0 && info_level > -8 )
 	    cerr << "D1-2 fixs:" << cnt_df << endl;
 
 	  if (status == algorithm::Algorithm::IT_LIMIT || status == algorithm::Algorithm::ERROR/*extSol::QpExternSolver::ABORT_IT_LIM && status != extSol::QpExternSolver::ABORT_TIME_LIM*/) {
@@ -3120,7 +3120,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 		  int cnt_df = dualCostFix(solution, a, -lb.asDouble(), Lpick, true ); 
 		}
 
-		if (decisionLevel() <= 2 && cnt_df > 0)
+		if (decisionLevel() <= 2 && cnt_df > 0 && info_level > -8)
 		  cerr << "D1-0 fixs:" << cnt_df << endl;
   
 		     
@@ -3758,7 +3758,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 		      
 		    if (fabs(-lb.asDouble()+oldLB) > fabs(oldLB*0.001)) kkk--;
 
-		if (decisionLevel() <= 2 && cnt_df > 0)
+		if (decisionLevel() <= 2 && cnt_df > 0 && info_level > -8)
 		  cerr << "D1-4 fixs:" << cnt_df << endl;
 
 		//if (-oldld >  -lb.asDouble() + fabs(-oldld)/100) kkk--;

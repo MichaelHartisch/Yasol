@@ -169,6 +169,8 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     data::QpRhs obj_rhs(data::QpRhs::smallerThanOrEqual,-constraintallocator[constraints[0]].header.rhs);
     QlpStSolve->getExternSolver(maxLPStage).addLPobj_snapshot(obj_lhs, obj_rhs);
 
+    if (check() == false) exit(0);
+
     varIsInMixedConstraint.clear();
     for (int i=0;i< nVars();i++) {
       if (eas[i] == UNIV) universalVars.push(i);
@@ -852,7 +854,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	    if (USE_TRACKON > 0) assert(isOnTrack());
 	    if (isOnTrack()) assert(CM.checkTheGraph(optSol));
 	    if (info_level >= 3) cout << "Length of CG=" << CM.getConflictGraphSize() << endl;
-#ifdef FIND_BUG // folgender Code ist sicher falsch
+#ifdef FIND_BUG // folgender Code ist sicher falsch --> daher per ifdef auskommentiert
 	    for (int pick=0; type[pick]==BINARY && useMonotones && pick<nVars();pick++){
 	      if (assigns[pick] == extbool_Undef) {
 		if (eas[pick]==UNIV && useMonotones && (CW.getCWatcher(pick+pick) == -1 || (feasPhase && CW.getCWatcher(pick+pick) == 0)) ) {
