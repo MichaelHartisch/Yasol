@@ -121,7 +121,7 @@ then
   read -p "Do you already have COIN-OR tools and all its source files and libraries on your computer?(yes/no):" USER_INPUT
   if [[ "$USER_INPUT" == "yes" ]]; then
     msg "Provide the main directory of COIN-OR!"
-    msg "Note that it should contain /dist/lib with the libraries of Cbc/OsiCbc/Cgl/Clp/CoinUtils/OsiClp/Osi."
+    msg "Note that it should contain '/dist/lib' or '/lib' with the libraries of Cbc/OsiCbc/Cgl/Clp/CoinUtils/OsiClp/Osi."
     read -r -e -p ":" EXTERN_SOLVER_DIR
   else 
     msg "setting up COIN-OR tools"
@@ -134,7 +134,11 @@ then
   CMKFLAGS="$CMKFLAGS -DCOIN_ROOT_DIR=$EXTERN_SOLVER_DIR"
   msg "coin-or setup done"
 
-  LIB="${EXTERN_SOLVER_DIR}/dist/lib"
+  if [[ -d "${EXTERN_SOLVER_DIR}/dist/lib" ]]; then
+    LIB="${EXTERN_SOLVER_DIR}/dist/lib"
+  elif  [[ -d "${EXTERN_SOLVER_DIR}/lib" ]]; then
+    LIB="${EXTERN_SOLVER_DIR}/lib"
+  fi
   if [ -d $LIB ]; then
     if [[ ":$LD_LIBRARY_PATH:" != *"$LIB"* ]]; then
       msg "Our solver needs the coin or libraries at runtime."
