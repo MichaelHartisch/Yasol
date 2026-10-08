@@ -98,7 +98,8 @@ then
   read -p "Do you already have HiGHS and all its source files and libraries on your computer?(yes/no):" USER_INPUT
   if [[ "$USER_INPUT" == "yes" ]]; then
     msg "Provide the main directory of HiGHS!"
-    msg "Note that it should contain /src/Highs.h and /build/lib"
+    msg "Note that it should contain '/src/Highs.h' or 'highs/Highs.h' and /build/lib"
+    msg "If you press Enter and do not provide the location, cmake will try to find it by itself."
     read -r -e -p ":" EXTERN_SOLVER_DIR
   else 
     msg "setting up HiGHS solver"
@@ -122,6 +123,8 @@ then
   if [[ "$USER_INPUT" == "yes" ]]; then
     msg "Provide the main directory of COIN-OR!"
     msg "Note that it should contain '/dist/lib' or '/lib' with the libraries of Cbc/OsiCbc/Cgl/Clp/CoinUtils/OsiClp/Osi."
+    msg "If you press Enter and do not provide the location, cmake will try to find it by itself."
+
     read -r -e -p ":" EXTERN_SOLVER_DIR
   else 
     msg "setting up COIN-OR tools"
