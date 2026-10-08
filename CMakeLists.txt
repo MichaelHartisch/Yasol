@@ -270,12 +270,31 @@ target_link_libraries(yasol
 
 file(GLOB EXAMPLE_FILES "${CMAKE_SOURCE_DIR}/examples/*")
 
+set(expected_assignment_U.qlp 397)
+set(expected_assignment.qlp 397)
+set(expected_knapsack.qlp 863)
+set(expected_lia.qlp FEASIBLE)
+set(expected_lotsizing.qlp 2774)
+set(expected_MCN_DDU.qlp 17)
+set(expected_MCN.qlp 17)
+set(expected_scheduling_U.qlp 7)
+set(expected_scheduling.qlp 7)
+set(expected_selection_all.qlp 132)
+set(expected_selection.qlp 132)
+
+
 foreach(example_file ${EXAMPLE_FILES})
     get_filename_component(example_name "${example_file}" NAME)
+    set(expected_result "${expected_${example_name}}")
 
     add_test(
-        NAME "solver_${example_name}"
+        NAME "test_${example_name}"
         COMMAND $<TARGET_FILE:yasol> "${example_file}"
+    )
+
+    set_tests_properties(test_${example_name} PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ${expected_result};Solution Status: ${expected_result}"
+        FAIL_REGULAR_EXPRESSION "ERROR|FATAL|TIMELIMIT|LIMIT|UNSAT"
     )
 endforeach()
 
@@ -283,4 +302,6 @@ add_custom_target(check
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
     DEPENDS yasol
 )
+
+
 
