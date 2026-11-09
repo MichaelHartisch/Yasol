@@ -67,6 +67,320 @@ public:
 			    yVariableLb = 3,  // z = x - (coef*y)
 			    yVariableUb = 4   // z = (coef*y) - x
   };
+
+  enum class CMIRMode {
+		       EQ,
+		       HL,
+		       BOTH
+  };
+  static constexpr CMIRMode CMIR_MODE = CMIRMode::HL;
+  struct HLTransformInfo {
+    uint8_t type;
+    // Bound used in the transformation:
+    //
+    // simple LB:    z = x - constant
+    // simple UB:    z = constant - x
+    //
+    // later:
+    // variable LB:  z = x - (constant + coef * y_binder)
+    // variable UB:  z = (constant + coef * y_binder) - x
+    double constant;
+    int binder;
+    double coef;
+    HLTransformInfo()
+      : type((uint8_t)yNone),
+	constant(0.0),
+	binder(-1),
+	coef(0.0)
+    {}
+  };
+  struct HLTransformedRow {
+    // Sparse transformed row:
+    //
+    //    sum vals[k] * z[inds[k]] <= rhs
+    //
+    std::vector<int> inds;
+    std::vector<double> vals;
+
+    // These are aligned with inds/vals, i.e.
+    //
+    // upper[k]      = upper bound of transformed variable z[inds[k]]
+    // solval[k]     = LP value of transformed variable z[inds[k]]
+    // isintegral[k] = whether z[inds[k]] is integer
+    //
+    std::vector<double> upper;
+    std::vector<double> solval;
+    std::vector<uint8_t> isintegral;
+
+    // Indexed by original variable number, NOT by sparse-row position.
+    //
+    // This is important for the later untransform step.
+    std::vector<HLTransformInfo> transformInfo;
+
+    double rhs;
+
+    HLTransformedRow()
+      : rhs(0.0)
+    {}
+
+    void clear() {
+      inds.clear();
+      vals.clear();
+      upper.clear();
+      solval.clear();
+      isintegral.clear();
+      transformInfo.clear();
+      rhs = 0.0;
+    }
+  };
+  struct HLVarBound {
+    int binder;        // variable y_k
+    double coef;       // alpha
+    double constant;   // d
+
+    HLVarBound()
+        : binder(-1),
+          coef(0.0),
+          constant(0.0)
+    {}
+
+    HLVarBound(int b, double a, double c = 0.0)
+        : binder(b),
+          coef(a),
+          constant(c)
+    {}
+
+    bool valid() const {
+        return binder >= 0;
+    }
+  };
+  typedef std::vector<std::vector<HLVarBound>> HLVarBounds;
+  static HLVarBounds globalVariableLowerBoundsHL;
+  static HLVarBounds globalVariableUpperBoundsHL;
+  
+  struct HLBestVarBounds {
+    bool hasVlb;
+    bool hasVub;
+    
+    HLVarBound vlb;
+    HLVarBound vub;
+    
+    // Value of the affine bound at the current LP solution:
+    //
+    //    boundValue = constant + coef * xlp[binder]
+    //
+    double vlbValue;
+    double vubValue;
+
+    // Distance of x_j from the variable bound at the LP point.
+    double vlbDist;
+    double vubDist;
+    
+    HLBestVarBounds()
+      : hasVlb(false),
+	hasVub(false),
+	vlbValue(0.0),
+	vubValue(0.0),
+	vlbDist(std::numeric_limits<double>::infinity()),
+	vubDist(std::numeric_limits<double>::infinity())
+    {}
+  };
+  struct HLPreprocessInfo {
+
+    bool hasUnboundedInts;
+    bool hasGeneralInts;
+    bool hasContinuous;
+
+    double initialScale;
+
+    std::vector<uint8_t> complementation;
+
+    HLPreprocessInfo()
+      : hasUnboundedInts(false),
+	hasGeneralInts(false),
+	hasContinuous(false),
+	initialScale(1.0)
+    {
+    }
+
+    void clear()
+    {
+      hasUnboundedInts = false;
+      hasGeneralInts = false;
+      hasContinuous = false;
+      initialScale = 1.0;
+      complementation.clear();
+    }
+  };
+  static void buildVarBoundsHL(
+    const std::vector<std::pair<int,double>>& gclbs,
+    const std::vector<std::pair<int,double>>& gcubs,
+    int n,
+    HLVarBounds& vlbs,
+    HLVarBounds& vubs);
+  static void findBestVarBoundsHL(
+    int j,
+    const std::vector<double>& xlp,
+    const std::vector<data::QpNum>& colLowerBound,
+    const std::vector<data::QpNum>& colUpperBound,
+    const int* types,
+    int n,
+    const HLVarBounds& vlbs,
+    const HLVarBounds& vubs,
+    HLBestVarBounds& best,
+    double eps = 1e-7
+  );
+  static uint8_t chooseBoundTypeHL(
+    int j,
+    double a,
+    const std::vector<double>& xlp,
+    const std::vector<data::QpNum>& colLowerBound,
+    const std::vector<data::QpNum>& colUpperBound,
+    const int* types,
+    int n,
+    const HLVarBounds& vlbs,
+    const HLVarBounds& vubs,
+    HLBestVarBounds& best,
+    bool preferVbds = false,
+    double eps = 1e-7
+  );
+  static double scaleBaseInequalityHL(
+			       HLTransformedRow& row,
+			       double val)
+  {
+    int expshift = 0;
+
+    std::frexp(val, &expshift);
+
+    expshift = -expshift;
+
+    // do not scale upwards by more than 2^10 = 1024
+    expshift = std::min(10, expshift);
+
+    row.rhs =
+      std::ldexp(row.rhs, expshift);
+
+    for (int i = 0;
+         i < (int)row.vals.size();
+         ++i) {
+
+      row.vals[i] =
+	std::ldexp(row.vals[i], expshift);
+    }
+
+    return std::ldexp(1.0, expshift);
+  }
+  static bool flipComplementationHL(
+				       HLTransformedRow& row,
+				       int i,
+				       std::vector<uint8_t>& complementation,
+				       double infinity)
+  {
+    if (i < 0 ||
+        i >= (int)row.vals.size())
+      return false;
+
+    if (row.upper[i] >= infinity)
+      return false;
+
+    if ((int)complementation.size() !=
+        (int)row.vals.size()) {
+
+      complementation.assign(
+			     row.vals.size(),
+			     0
+			     );
+    }
+
+    complementation[i] =
+      1 - complementation[i];
+
+    row.solval[i] =
+      row.upper[i] -
+      row.solval[i];
+
+    row.rhs -=
+      row.upper[i] *
+      row.vals[i];
+
+    row.vals[i] =
+      -row.vals[i];
+
+    return true;
+  }
+  struct HLCmirInfo {
+    double bestDelta;
+    double bestEfficacy;
+    double f0;
+
+    bool integralSupport;
+    bool integralCoefficients;
+    int numDeltaCandidates;
+
+    HLCmirInfo()
+      : bestDelta(-1.0),
+	bestEfficacy(0.0),
+	f0(0.0),
+	integralSupport(false),
+	integralCoefficients(false),
+	numDeltaCandidates(0)
+    {
+    }
+  };
+  static double fastFloorHL(double x)
+  {
+    const int64_t ix = (int64_t)x;
+    return (double)(ix - (x < (double)ix));
+  }
+  static bool cmirCutGenerationHL(
+			   HLTransformedRow& row,
+			   HLPreprocessInfo& prep,
+			   HLCmirInfo& info,
+			   double minEfficacy,
+			   bool onlyInitialCMIRScale,
+			   double feastol,
+			   double infinity);
+  static bool undoComplementationsHL(
+				     HLTransformedRow& row,
+				     HLPreprocessInfo& prep,
+				     double infinity);
+  static void updateViolationAndNormHL(
+				       const HLTransformedRow& row,
+				       int i,
+				       double aj,
+				       double& violation,
+				       double& norm,
+				       double feastol)
+  {
+    violation +=
+      aj * row.solval[i];
+
+    if (aj > 0.0 &&
+        row.solval[i] <= feastol)
+      return;
+
+    if (aj < 0.0 &&
+        row.solval[i] >=
+	row.upper[i] - feastol)
+      return;
+
+    norm +=
+      aj * aj;
+  }
+  static bool preprocessBaseInequalityHL(
+    HLTransformedRow& row,
+    int numOriginalCols,
+    HLPreprocessInfo& info,
+    double feastol,
+    double infinity);
+  static bool eliminateRowActivityHL(
+                                      std::vector<std::pair<unsigned int,double>>& cut,
+                                      double& rhs,
+                                      int slackIndex,
+                                      const std::vector<std::pair<unsigned int,double>>& originalRow,
+                                      double eps);
+
+  
   enum class AggregationMode {
 			      RowWiseCMIR,
 			      HeuristicAggregation,
@@ -292,7 +606,6 @@ public:
     }
     if (maxWeight <= prep.rhs + feastol + fabs(fabs(prep.rhs)+fabs(maxWeight))*feastol) return false;
 
-    // Candidate score: HiGHS uses LP solution information; we mimic a robust variant.
     // Prefer variables that are "active" in the LP solution and have large a_i*upper_i.
     std::vector<int> order;
     order.reserve(len);
@@ -310,7 +623,7 @@ public:
 		   assert(fabs(1.0-Ui) < 0.01);
 		   const double xi = prep.solval[i];
 		   // "lpSol" tries to pick vars with larger xi; but also weight with ai*Ui.
-		   // This mirrors the HiGHS idea: likely cover items should be strong and present in LP.
+		   // idea: likely cover items should be strong and present in LP.
 		   return (lpSol ? (xi /*+ 1e-6*/) : 1.0) * (ai * Ui);
 		 };
 
@@ -393,14 +706,13 @@ public:
     if (rowlen == 0) return false;
     if (!(lambda > feastol)) return false;
     //return false;
-    // local copy of coefficients (HiGHS modifies vals in place)
+    // local copy of coefficients 
     std::vector<double> vals = prep.vals;
 
     // sort cover by descending vals
     std::sort(cover.begin(), cover.end(),
 	      [&](int a, int b) { return vals[a] > vals[b]; });
 
-    // compute abar (HiGHS: balancing using lambda)
     long double abartmp = vals[cover[0]];
     double sigma = lambda;
     for (int i = 1; i < coversize; ++i) {
@@ -418,7 +730,7 @@ public:
     if (sigma > 0.0) abartmp = prep.rhs / (long double)coversize;
     const long double abar = abartmp;
 
-    // build S[] and coverflag[] (HiGHS)
+    // build S[] and coverflag[]
     std::vector<double> S(coversize, 0.0);
     std::vector<int8_t> coverflag(rowlen, 0);  // default 0 for non-cover
     long double sum = 0.0;
@@ -445,7 +757,7 @@ public:
 
     bool halfintegral = false;
 
-    // lifting function g(z) (HiGHS)
+    // lifting function g(z) 
     auto g = [&](double z) -> double {
 	       const long double hfrac = z / abar;
 	       double coef = 0.0;
@@ -467,7 +779,6 @@ public:
 	       return (coef + (double)h)-cover_lift_eps*(double)coversize*fabs(coef + (double)h);
 	     };
 
-    // HiGHS: rhs = coversize - 1, vals transformed to lifted coefficients
     beta = (double)coversize - 1.0;
     /*
     std::cerr << "coversize="<<coversize<<" cplussize="<<cplussize
@@ -508,7 +819,6 @@ public:
     alpha.swap(vals);
     return true;
   }
-  // Port von HiGHS: separateLiftedMixedBinaryCover()
   // Erwartet: prep ist already knapsack-normalisiert (vals>=0, rhs entsprechend),
   // cover sind Positionen in prep-Arrays, lambda = coverweight - rhs (>0)
   static bool separateLiftedMixedBinaryCoverHiGHSlike(
@@ -528,7 +838,7 @@ public:
     if (!(lambda > 0.0)) return false;
     //return false;
     
-    // local copy of coefficients (HiGHS modifies vals in place)
+    // local copy of coefficients 
     std::vector<double> vals = prep.vals;
 
     // coverflag
@@ -563,7 +873,6 @@ public:
 		 return (double)((long double)p * lambda + ((long double)a - S[p - 1]));
 	       };
 
-    // In HiGHS: rhs = -lambda; then add min(vals_i, lambda) for cover members
     double rhs = -lambda;
     int maxBlock = -1;
     int minBlock = blcks[prep.inds[0]];
@@ -709,7 +1018,7 @@ public:
     coverOk = hasCover;
     if (!coverOk) return false;
 
-    // 4) decide which lifting: knapsack vs mixed-binary (HiGHS-like)
+    // 4) decide which lifting: knapsack vs mixed-binary
     bool hasContinuous = conIn;
     for (int pos = 0; pos < (int)prep.inds.size(); ++pos) {
       if (!prep.isintegral[pos] && fabs(prep.vals[pos]) > eps) {
@@ -1330,16 +1639,347 @@ public:
     return out;
   }
 
-// helper: current bounds exactly like selectRowToAggregateEQ
-static inline void getCurrentBoundsEQStyle(
-					   int col,
-					   const std::vector<std::pair<int,double>>& gclbs,
-					   const std::vector<std::pair<int,double>>& gcubs,
-					   const std::vector<data::QpNum>& colLowerBound,
-					   const std::vector<data::QpNum>& colUpperBound,
-					   const std::vector<double>& xlp,
-					   double& LoB,
-					   double& UpB)
+  static bool transformRowHL(
+    const std::vector<std::pair<unsigned int, double>>& row,
+    double rhs,
+    const std::vector<double>& xlp,
+    const std::vector<data::QpNum>& colLowerBound,
+    const std::vector<data::QpNum>& colUpperBound,
+    const int* types,
+    int n,
+    const HLVarBounds& vlbs,
+    const HLVarBounds& vubs,
+    HLTransformedRow& out,
+    double infinity = 1e15,
+    double eps = 1e-12,
+    double feasTol = 1e-6
+  );
+
+  static bool untransformCutHL(
+			       const HLTransformedRow& tr,
+			       const std::vector<std::pair<unsigned int, double>>& cutTransformed,
+			       double rhsTransformed,
+			       std::vector<std::pair<unsigned int, double>>& cutOriginal,
+			       double& rhsOriginal,
+			       double eps = 1e-12,
+			       double feasTol = 1e-7
+			       );
+  static bool checkRoundtripHL(
+			       const std::vector<std::pair<unsigned int, double>>& rowOriginal,
+			       double rhsOriginal,
+			       const HLTransformedRow& tr,
+			       double eps,
+			       bool printSuccess)
+  {
+    // ============================================================
+    // Build transformed sparse row from HLTransformedRow.
+    // ============================================================
+
+    std::vector<std::pair<unsigned int,double>> transformed;
+    transformed.reserve(tr.inds.size());
+
+    for (int k = 0; k < (int)tr.inds.size(); ++k) {
+
+      if (tr.vals[k] == 0.0) // if (fabs(tr.vals[k]) <= eps)
+	continue;
+
+      transformed.emplace_back(
+			       (unsigned int)tr.inds[k],
+			       tr.vals[k]
+			       );
+    }
+
+
+    // ============================================================
+    // Untransform.
+    // ============================================================
+
+    std::vector<std::pair<unsigned int,double>> back;
+    double rhsBack = 0.0;
+
+    if (!untransformCutHL(
+			  tr,
+			  transformed,
+			  tr.rhs,
+			  back,
+			  rhsBack,
+			  eps)) {
+
+      if(0)std::cerr
+	<< "HL ROUNDTRIP FAIL: untransform failed"
+	<< std::endl;
+
+      return false;
+    }
+
+
+    // ============================================================
+    // Canonicalize a sparse row:
+    //
+    //   - sort
+    //   - merge duplicate indices
+    //   - delete numerical zeros
+    //
+    // We canonicalize BOTH sides so the test does not depend on
+    // their ordering or on duplicate entries in rowOriginal.
+    // ============================================================
+
+    auto canonicalize =
+      [eps](
+            const std::vector<std::pair<unsigned int,double>>& in,
+            std::vector<std::pair<unsigned int,double>>& out)
+      {
+        out = in;
+
+        std::sort(
+		  out.begin(),
+		  out.end(),
+		  [](const std::pair<unsigned int,double>& a,
+		     const std::pair<unsigned int,double>& b)
+		  {
+		    return a.first < b.first;
+		  }
+		  );
+
+        std::vector<std::pair<unsigned int,double>> tmp;
+        tmp.reserve(out.size());
+
+        for (const auto& e : out) {
+
+	  if (fabs(e.second) <= eps)
+	    continue;
+
+	  if (!tmp.empty() &&
+	      tmp.back().first == e.first) {
+
+	    tmp.back().second += e.second;
+
+	    if (fabs(tmp.back().second) <= eps)
+	      tmp.pop_back();
+	  }
+	  else {
+	    tmp.push_back(e);
+	  }
+        }
+
+        out.swap(tmp);
+      };
+
+
+    std::vector<std::pair<unsigned int,double>> originalCanonical;
+    std::vector<std::pair<unsigned int,double>> backCanonical;
+
+    canonicalize(
+		 rowOriginal,
+		 originalCanonical
+		 );
+
+    canonicalize(
+		 back,
+		 backCanonical
+		 );
+
+
+    // ============================================================
+    // Compare coefficient vectors.
+    //
+    // Missing variable on either side is interpreted as
+    // coefficient zero.
+    // ============================================================
+
+    int p = 0;
+    int q = 0;
+
+    double maxCoefDiff = 0.0;
+    double coefScale = 1.0;
+
+    int maxDiffVar = -1;
+    double maxDiffOriginal = 0.0;
+    double maxDiffBack = 0.0;
+
+
+    while (p < (int)originalCanonical.size() ||
+           q < (int)backCanonical.size()) {
+
+      unsigned int j;
+      double a = 0.0;
+      double b = 0.0;
+
+      if (q >= (int)backCanonical.size() ||
+	  (p < (int)originalCanonical.size() &&
+	   originalCanonical[p].first <
+	   backCanonical[q].first)) {
+
+	j = originalCanonical[p].first;
+	a = originalCanonical[p].second;
+	++p;
+      }
+      else if (p >= (int)originalCanonical.size() ||
+	       backCanonical[q].first <
+	       originalCanonical[p].first) {
+
+	j = backCanonical[q].first;
+	b = backCanonical[q].second;
+	++q;
+      }
+      else {
+
+	j = originalCanonical[p].first;
+
+	a = originalCanonical[p].second;
+	b = backCanonical[q].second;
+
+	++p;
+	++q;
+      }
+
+      coefScale =
+	std::max(
+		 coefScale,
+		 std::max(fabs(a), fabs(b))
+		 );
+
+      const double diff =
+	fabs(a - b);
+
+      if (diff > maxCoefDiff) {
+
+	maxCoefDiff = diff;
+	maxDiffVar = (int)j;
+
+	maxDiffOriginal = a;
+	maxDiffBack = b;
+      }
+    }
+
+
+    // ============================================================
+    // RHS comparison.
+    // ============================================================
+
+    const double rhsDiff =
+	       fabs(rhsOriginal - rhsBack);
+
+    const double rhsScale =
+	       std::max(
+			1.0,
+			std::max(
+				 fabs(rhsOriginal),
+				 fabs(rhsBack)
+				 )
+			);
+
+
+    const bool coefOK =
+	       maxCoefDiff <= eps * coefScale;
+
+    const bool rhsOK =
+      rhsDiff <= eps * rhsScale;
+
+    const bool ok =
+      coefOK && rhsOK;
+
+
+    // ============================================================
+    // Count actual transformation types.
+    // ============================================================
+
+    int nSimpleLb = 0;
+    int nSimpleUb = 0;
+    int nVariableLb = 0;
+    int nVariableUb = 0;
+    int nNone = 0;
+
+    for (int k = 0; k < (int)tr.inds.size(); ++k) {
+
+      const int j = tr.inds[k];
+
+      if (j < 0 ||
+	  j >= (int)tr.transformInfo.size()) {
+	++nNone;
+	continue;
+      }
+
+      switch ((BoundType)tr.transformInfo[j].type) {
+
+      case ySimpleLb:
+	++nSimpleLb;
+	break;
+
+      case ySimpleUb:
+	++nSimpleUb;
+	break;
+
+      case yVariableLb:
+	++nVariableLb;
+	break;
+
+      case yVariableUb:
+	++nVariableUb;
+	break;
+
+      default:
+	++nNone;
+	break;
+      }
+    }
+
+
+    // ============================================================
+    // Output.
+    // ============================================================
+
+    if (ok) {
+
+      if (0&&printSuccess) {
+
+	std::cerr
+	  << "HL ROUNDTRIP OK:"
+	  << " in=" << originalCanonical.size()
+	  << " transformed=" << transformed.size()
+	  << " back=" << backCanonical.size()
+	  << " maxCoefDiff=" << maxCoefDiff
+	  << " rhsDiff=" << rhsDiff
+	  << " simpleLB=" << nSimpleLb
+	  << " simpleUB=" << nSimpleUb
+	  << " VLB=" << nVariableLb
+	  << " VUB=" << nVariableUb
+	  << std::endl;
+      }
+
+      return true;
+    }
+
+    int j = maxDiffVar;
+    if (1)std::cerr
+      << "HL ROUNDTRIP FAIL:"
+      << " in=" << originalCanonical.size()
+      << " transformed=" << transformed.size()
+      << " back=" << backCanonical.size()
+      << " maxCoefDiff=" << maxCoefDiff
+      << " coefScale=" << coefScale
+      << " rhsDiff=" << rhsDiff
+      << " rhsScale=" << rhsScale
+      << " maxDiffVar=" << maxDiffVar
+      << " originalCoef=" << maxDiffOriginal
+      << " backCoef=" << maxDiffBack
+      << " rhsOriginal=" << rhsOriginal
+      << " rhsBack=" << rhsBack
+      << std::endl;
+
+    return false;
+  }
+  
+  // helper: current bounds exactly like selectRowToAggregateEQ
+  static inline void getCurrentBoundsEQStyle(
+					     int col,
+					     const std::vector<std::pair<int,double>>& gclbs,
+					     const std::vector<std::pair<int,double>>& gcubs,
+					     const std::vector<data::QpNum>& colLowerBound,
+					     const std::vector<data::QpNum>& colUpperBound,
+					     const std::vector<double>& xlp,
+					     double& LoB,
+					     double& UpB)
   {
     const auto VLB = gclbs[col];
     LoB = (VLB.first >= 0) ? (VLB.second * xlp[VLB.first]) : colLowerBound[col].asDouble();
@@ -1351,7 +1991,7 @@ static inline void getCurrentBoundsEQStyle(
 
   static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >*getMODKcuts( extSol::QpExternSolver &extSolver, std::vector<unsigned int> candidateVariables, int *types, int8_t *assigns, int decLev, unsigned int initime, std::vector<int> &listOfCutsVars, int*solu, int *fixs, int* blcks, int* eass, int orgN );
   static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >*getMODKcutsProgressive( extSol::QpExternSolver &extSolver, std::vector<unsigned int> candidateVariables, int *types, int8_t *assigns, int decLev, unsigned int initime, std::vector<int> &listOfCutsVars, int*solu, int *fixs, int* blcks, int* eass, int orgN )
- {
+  {
     unsigned int m = extSolver.getRowCount();
     unsigned int n = extSolver.getVariableCount();
     
@@ -1361,15 +2001,15 @@ static inline void getCurrentBoundsEQStyle(
     bool success = getAllRows(extSolver,allrows);
     extSolver.getRhs( rhsVec );
     for (int i=0; i < allrows.size();i++) {
-        if (rhsVec[i].getRatioSign() == data::QpRhs::greaterThanOrEqual ) {
-	    for (int ii=0;ii<allrows[i].size();ii++) {
-	      int idx=allrows[i][ii].index;
-	      double coeff=allrows[i][ii].value.asDouble();
-	      allrows[i][ii].value = -coeff;
-	    }
-	    rhsVec[i].setRatioSign(data::QpRhs::smallerThanOrEqual);
-	    rhsVec[i].setValue(-rhsVec[i].getValue().asDouble());
+      if (rhsVec[i].getRatioSign() == data::QpRhs::greaterThanOrEqual ) {
+	for (int ii=0;ii<allrows[i].size();ii++) {
+	  int idx=allrows[i][ii].index;
+	  double coeff=allrows[i][ii].value.asDouble();
+	  allrows[i][ii].value = -coeff;
 	}
+	rhsVec[i].setRatioSign(data::QpRhs::smallerThanOrEqual);
+	rhsVec[i].setValue(-rhsVec[i].getValue().asDouble());
+      }
     }
     return getMIRsmartFlexiCore( extSolver, allrows, rhsVec, types, assigns, decLev, initime, solu, fixs, blcks, eass, orgN, 2, CutAdder::AggregationMode::ModK_GFk);    
   }
@@ -1402,11 +2042,13 @@ static inline void getCurrentBoundsEQStyle(
   }
 
   static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* getMIRsmartCore( extSol::QpExternSolver &extSolver, std::vector<std::vector<data::IndexedElement>> &allRows, std::vector<data::QpRhs> &rhsVec, int *types, int8_t *assigns, int decLev, unsigned int initime, int * solu, int* fixs, int *blcks, int *eass, int orgN, int maxAggr, bool fromCmirize );
+  static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* restrictedFlexiCore( extSol::QpExternSolver &extSolver, std::vector<double> &xlpopt, std::vector<data::QpNum> &lbVec, std::vector<data::QpNum>& ubVec, std::vector<std::vector<data::IndexedElement>> &allrows, std::vector<data::QpRhs> &rhsVec, int *types, int8_t *assigns, int decLev, unsigned int initime, int * solu, int* fixs, int *blcks, int *eass, int orgN);
   static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* getMIRsmartFlexiCore( extSol::QpExternSolver &extSolver, std::vector<std::vector<data::IndexedElement>> &allRows, std::vector<data::QpRhs> &rhsVec, int *types, int8_t *assigns, int decLev, unsigned int initime, int * solu, int* fixs, int *blcks, int *eass, int orgN, int maxAggr, CutAdder::AggregationMode aggMode );
   static bool selectRowToAggregateEQ( const std::vector<std::vector<data::IndexedElement>> &allRows, const std::vector< std::pair<unsigned int, double> >& rowAggregated, const data::QpNum* colUpperBound, const data::QpNum* colLowerBound, const std::vector< std::pair<unsigned int, double> >& setRowsAggregated, const double* xlp, int& rowSelected, int& colSelected, std::vector<std::pair<int, double>>& tightenedLoBnds,std::vector<std::pair<int, double>> &tightenedUpBnds, int *types, int numCols , int orgN); 
 
   static void refreshVariableBndConstraintsEQ(std::vector<std::pair<int, double>>& tightenedLoBnds,std::vector<std::pair<int, double>> &tightenedUpBnds, const std::vector< std::vector< data::IndexedElement >  >& allRows, const std::vector<data::QpRhs>& rhsVec, int * types, int numCols, int orgN );
-
+static void refreshVariableBndConstraintsHL(HLVarBounds& vlbs, HLVarBounds& vubs, const std::vector<std::vector<data::IndexedElement>>& allRows, const std::vector<data::QpRhs>& rhsVec, int* types, int numCols, int orgN);
+  
   static inline void boundSubstituteIntegerEQ(int j, double a_j, std::vector<std::pair<unsigned int,double>>& intAcc, std::vector<int>& intAccDense, const int* types){
     if (intAccDense[j] == -1) {
       intAccDense[j] = intAcc.size();
@@ -1418,8 +2060,8 @@ static inline void getCurrentBoundsEQStyle(
   static bool boundSubstituteContinuousEQ(int indCol, double coefCol, const double* xlp, const double* xlpSlacks, const data::QpNum* colUpperBound, const data::QpNum* colLowerBound, const std::vector<std::pair<int,double>>& tightenedLoBnds, const std::vector<std::pair<int,double>>& tightenedUpBnds, std::vector<std::pair<unsigned int,double>>& intAcc, std::vector<int>& intAccIndicesDense, std::vector<std::pair<unsigned int,double>> &contVariablesInS, std::vector<int>& contVariablesInSDense, double& rhsAfterSubst, double& sStar, int numCols, int *types, double infinity=1e15, double eps=1e-6){
     //assert(indCol < orgN || indCol >= numCols);
     if (indCol >= numCols) { //slack variable
-      if (coefCol < -eps) {
-	contVariablesInS.emplace_back(indCol, coefCol);
+      if (coefCol < 0.0/*-eps*/) { // sehr(!) heimtückischer Fehler. Slackvariablen können sehr groß werden.
+ 	contVariablesInS.emplace_back(indCol, coefCol);
 	// sStar += (-a_j) * (x - LB); hier x = xlpSlacks[indCol-numCols], LB=0
 	sStar -= coefCol * xlpSlacks[indCol - numCols];
       }
@@ -1893,16 +2535,35 @@ static bool cMirSeparationEQ_core(
     sCoefBestCut = bestS;
     return true;
 }
-
+  
   static bool cMirSeparationEQ( const std::vector<std::vector<data::IndexedElement>>& allRows, const std::vector<std::pair<unsigned int, double>>& rowAggregated, const int* listRowsAggregated, const std::vector<data::QpRhs> & rhsVec, const double* xlp, const data::QpNum* colUpperBound, const data::QpNum* colLowerBound, double& rowAggregatedRhs, std::pair< std::vector<std::pair<unsigned int, double>>,double > & cMirCut, const std::vector<std::pair<int, double>>& tightenedLoBnds, const std::vector<std::pair<int, double>>& tightenedUpBnds , int n, int *solu, double *xlpxtra, int *types, int *eass, bool isSave, int maxAggr)
 {
+  static std::vector<std::pair<unsigned int, double>> intPartOfInputRow;
+  static std::vector<std::pair<unsigned int, double>> sTerms;
+  static std::vector<std::pair<unsigned int, double>> bestCut;
+  static std::vector<double> rowAggregatedDense;//(n+numSlacks);
+  static std::vector<int> bestCutIndicesDense;//(n+numSlacks,-1);
   double sStar=0.0;
   int numSlacks=maxAggr;
-  std::vector<std::pair<unsigned int, double>> intPartOfInputRow;
+  //std::vector<std::pair<unsigned int, double>> intPartOfInputRow;
+  intPartOfInputRow.clear();
   double rhsAfterSubst = rowAggregatedRhs;
-  std::vector<std::pair<unsigned int, double>> sTerms;
-  std::vector<std::pair<unsigned int, double>> bestCut;
+  //std::vector<std::pair<unsigned int, double>> sTerms;
+  sTerms.clear();
+  //std::vector<std::pair<unsigned int, double>> bestCut;
+  bestCut.clear();
   double rhsBestCut = 0.0;
+  //std::vector<double> rowAggregatedDense(n+numSlacks,0.0);
+  //std::vector<int> bestCutIndicesDense(n+numSlacks,-1);
+  if (rowAggregatedDense.size() != (n + numSlacks)) {
+    rowAggregatedDense.resize(n + numSlacks);
+  }
+  for (int ii=0; ii < n+numSlacks;ii++) rowAggregatedDense[ii] = 0.0;
+
+  if (bestCutIndicesDense.size() != (n + numSlacks)) {
+    bestCutIndicesDense.resize(n + numSlacks);
+  }
+  for (int ii=0; ii < n+numSlacks;ii++) bestCutIndicesDense[ii] = -1;
 
   /*
   for (int ii = 0; ii < (int)rowAggregated.size(); ++ii) {
@@ -1919,11 +2580,9 @@ static bool cMirSeparationEQ_core(
     if (!substituteBoundsAndSplitIntS_EQ( rowAggregated, xlp, xlpxtra, colUpperBound, colLowerBound, intPartOfInputRow, rhsAfterSubst, sStar, sTerms, n, types, tightenedLoBnds, tightenedUpBnds, numSlacks ))
       return false;
 
-    std::vector<double> rowAggregatedDense(n+numSlacks,0.0);
     for (int ii=0;ii<rowAggregated.size();ii++) {
       rowAggregatedDense[rowAggregated[ii].first] = rowAggregated[ii].second;
     }
-    std::vector<int> bestCutIndicesDense(n+numSlacks,-1);
     double sCoefBestCut = 0.0;
     
     if (!cMirSeparationEQ_core(xlp, sStar, colUpperBound, colLowerBound, intPartOfInputRow, rhsAfterSubst, sTerms, sCoefBestCut, /*lhsout, rhsout*/bestCut,rhsBestCut, tightenedLoBnds, tightenedUpBnds, n, types, 1e-9))
@@ -1950,8 +2609,9 @@ static bool cMirSeparationEQ_core(
     );
   }
 
-
-static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* CMIRizeEQ( extSol::QpExternSolver &extSolver, const std::vector<std::pair<unsigned,double>>& invec, double inrhs, int *types, int8_t *assigns, int decLev, unsigned int initime, int * solu, int* fixs, int *blcks, int *eass, int orgN, char senseChar,
+static std::vector<std::pair< std::vector<std::pair<unsigned int, double>>, double > >* CMIRizeHL( const std::vector<std::pair<unsigned int, double>>& invec, double inrhs, char senseChar, const std::vector<double>& xlp, const int* types, int n, int decLev);
+  
+  static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* CMIRizeEQ( extSol::QpExternSolver &extSolver, std::vector<double> &xlpopt, std::vector<data::QpNum> &colLowerBound, std::vector<data::QpNum> &colUpperBound, const std::vector<std::pair<unsigned,double>>& invec, double inrhs, int *types, int8_t *assigns, int decLev, unsigned int initime, int * solu, int* fixs, int *blcks, int *eass, int orgN, char senseChar,
     const std::vector<std::pair<int,double>>*          tightenedLoBndsOpt = nullptr,
     const std::vector<std::pair<int,double>>*          tightenedUpBndsOpt = nullptr
 		      ){
@@ -1973,7 +2633,12 @@ static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, d
       allrows[0][i] = e;
     }
 
-    return getMIRsmartFlexiCore( extSolver, allrows, rhsVec, types, assigns, decLev, initime, solu, fixs, blcks, eass, orgN, 1, /*true*/CutAdder::AggregationMode::FromCMIRize);    
+    return CMIRizeHL( invec, inrhs, senseChar, xlpopt, types, (int)extSolver.getVariableCount(), decLev);
+    
+    //old EQ path:
+    return restrictedFlexiCore( extSolver, xlpopt, colLowerBound, colUpperBound, allrows, rhsVec, types, assigns, decLev, initime, solu, fixs, blcks, eass, orgN);
+    //new _HL path, insufficient:
+    return getMIRsmartCore(extSolver, allrows, rhsVec, types, assigns, decLev, initime, solu, fixs, blcks, eass, orgN, 1, true);
 }
 // end of MIRsmart
   
@@ -1984,6 +2649,7 @@ static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, d
   static bool separateLiftedMixedBinaryCover(CoverGenState& st, /*out cut*/...);
   static bool separateLiftedMixedIntegerCover(CoverGenState& st, /*out cut*/...);
   
+  static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* getSingleCoverCut( extSol::QpExternSolver &extSolver, std::vector< std::vector< data::IndexedElement >  > &, std::vector<data::QpRhs> &,int *types, int8_t *assigns, int decLev, unsigned int, int *, int *, int*, int*, int );
   static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* getCoverCuts( extSol::QpExternSolver &extSolver, int *types, int8_t *assigns, int decLev, unsigned int, int *, int *, int*, int*, int );
 	static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* getLPCuts(extSol::QpExternSolver &extSolver, std::vector<unsigned int> candidateVariables, int *types, int8_t *assigns, int decLev, unsigned int initime, std::vector<int> &listOfCutsVars);
 

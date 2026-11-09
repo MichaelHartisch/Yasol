@@ -214,6 +214,25 @@ void yInterface::yReadIniFile() {
 			  else if (tokens[1].compare("6") == 0) qbp->setUseMonotones(6);
 			  else if (tokens[1].compare("7") == 0) qbp->setUseMonotones(7);
 			  else qbp->setUseMonotones(0);
+		  } else if (tokens[0].compare("useRGTT") == 0) {
+			  if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
+			  if (tokens[1].compare("0") == 0) qbp->setUseRGTT(0);
+			  else if (tokens[1].compare("1") == 0) qbp->setUseRGTT(1);
+			  else if (tokens[1].compare("2") == 0) qbp->setUseRGTT(2);
+			  else if (tokens[1].compare("3") == 0) qbp->setUseRGTT(3);
+			  else if (tokens[1].compare("4") == 0) qbp->setUseRGTT(4);
+			  else if (tokens[1].compare("5") == 0) qbp->setUseRGTT(5);
+			  else if (tokens[1].compare("6") == 0) qbp->setUseRGTT(6);
+			  else if (tokens[1].compare("7") == 0) qbp->setUseRGTT(7);
+			  else if (tokens[1].compare("8") == 0) qbp->setUseRGTT(8);
+			  else if (tokens[1].compare("9") == 0) qbp->setUseRGTT(9);
+			  else if (tokens[1].compare("a") == 0) qbp->setUseRGTT(10);
+			  else if (tokens[1].compare("b") == 0) qbp->setUseRGTT(11);
+			  else if (tokens[1].compare("c") == 0) qbp->setUseRGTT(12);
+			  else if (tokens[1].compare("d") == 0) qbp->setUseRGTT(13);
+			  else if (tokens[1].compare("e") == 0) qbp->setUseRGTT(14);
+			  else if (tokens[1].compare("f") == 0) qbp->setUseRGTT(15);
+			  else qbp->setUseRGTT(0);
 		  } else if (tokens[0].compare("isSimplyRestricted") == 0) {
                           if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
                           if (tokens[1].compare("1") == 0) qbp->setIsSimplyRestricted(true);
@@ -267,6 +286,8 @@ void yInterface::yReadIniFile() {
 	    qbp->setUsePump(yip.usePump);
 	  if (yip.useMonotones >= 0)
 	    qbp->setUseMonotones(yip.useMonotones);
+	  if (yip.useRGTT >= 0)
+	    qbp->setUseRGTT(yip.useRGTT);
 	  if (yip.useAlphaCuts >= 0)
 	    qbp->setUseAlphaCuts(yip.useAlphaCuts);
 	  if (yip.useAlphabeta >= 0)

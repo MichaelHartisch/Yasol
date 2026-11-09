@@ -70,6 +70,9 @@ void QBPSolver::WriteSolutionFile(coef_t value, double time, string status, stri
   //this string is written in (pseudo)XML
   //the write stage is divided in stages for header+quality, linearConstraints and variables
   //values have to be added between \". example: \"value\"
+  std::vector<double> displayPV;
+  std::vector<unsigned char> knownPV;
+  const bool pvComplete = getOutputPV(displayPV, knownPV);
   string toWrite = "";
   toWrite += "<?xml version = \"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
   toWrite += "<YasolSolution version=\"1\">\n";
@@ -84,12 +87,22 @@ void QBPSolver::WriteSolutionFile(coef_t value, double time, string status, stri
   toWrite += "   DecisionNodes=\""+std::to_string((int)getNumberOfDecisions())+"\"\n";
   toWrite += "   PropagationSteps=\""+std::to_string((int)getNumberOfPropagationSteps())+"\"\n";
   toWrite += "   LearntConstraints=\""+std::to_string((int)getNumberOfLearntConstraints())+"\"/>\n";
-  toWrite += " <quality>\n";
-  toWrite += "   SolutionStatus=\""+status+"\"\n";
-  if (status.compare("FEASIBLE")!=0){
-    toWrite += "   Gap=\""+std::to_string(gap)+"\"\n";
-  	toWrite += "   Dual=\""+std::to_string(objInverted?global_dual_bound:-global_dual_bound)+"\"\n";
+
+  toWrite += " <quality\n";
+  toWrite += "   PVComplete=\"";
+  toWrite += (pvComplete ? "true" : "false");
+  toWrite += "\"\n";
+  toWrite += "   SolutionStatus=\"" + status + "\"\n";
+  
+  if (status.compare("FEASIBLE") != 0) {
+    toWrite += "   Gap=\"" + std::to_string(gap) + "\"\n";
+    toWrite += "   Dual=\"" +
+      std::to_string(objInverted
+		     ? global_dual_bound : -global_dual_bound) +
+      "\"\n";
   }
+  
+  toWrite += " />\n";
   toWrite += " </quality>\n";
   Sol.solprint(toWrite,Final.c_str());
 
@@ -98,52 +111,37 @@ void QBPSolver::WriteSolutionFile(coef_t value, double time, string status, stri
   toWrite += " </linearConstraints>\n";
   Sol.solprint(toWrite,Final.c_str());
   toWrite = " <variables>\n";
-  for(int i=0; i<nVars()-removeDummy; i++){
-    if (((yInterface*)yIF)->integers[i].bitcnt > 1) {
-      //get real name without underscore from binarized variables
-      //create char array from name string
-      const char *name = ((yInterface*)yIF)->integers[i].name.c_str();
-      //positon of underscore in char array
-      int bpoint = 0;
-      //get position of underscore
-      for(int j=0; j<=((yInterface*)yIF)->integers[i].name.length(); j++){
-        if(name[j]=='_'){
-          bpoint = j;
-        }
+
+  for (int i = 0; i < nVars()-removeDummy; ++i) {
+    const auto &info = ((yInterface*)yIF)->integers[i];
+    std::string name = info.name;
+    std::string index = std::to_string(i);
+    std::string value = "unknown";
+    if (info.bitcnt > 1) {
+      if (info.pt2leader != i) continue;
+      const size_t pos = name.rfind('_');
+      if (pos != std::string::npos) name = name.substr(0, pos);
+      bool known = true;
+      double decoded = 0.0;
+      for (int z = 0; z < info.bitcnt; ++z) {
+	if (i+z >= (int)knownPV.size() || !knownPV[i+z]) {
+	  known = false;
+	  break;
+	}
+        decoded = 2.0 * decoded + displayPV[i+z];
       }
       
-      //create new name for binarized variable with substring
-      std::string noBinName = ((yInterface*)yIF)->integers[i].name.substr(0,bpoint);
-
-      //change to real value
-      if (((yInterface*)yIF)->integers[i].pt2leader == i) {
-        int res = 0;
-	for (int z = 0;z < ((yInterface*)yIF)->integers[i].bitcnt;z++) {
-	  if(block[i] == 1){
-	    res = 2*res + getFirstStageSolutionValue(i+z);
-	  }else {
-	    res = 2*res + PV[0][i+z];
-	  }
-	}
-	//index of binarized variable
-	std::string vIndex = std::to_string(i) + "-" + std::to_string(((yInterface*)yIF)->integers[i].bitcnt -1 + i);
-	i+=((yInterface*)yIF)->integers[i].bitcnt;
-	i--;
-	//add for writing to string
-	toWrite += "  <variable name=\"" + noBinName + "\" index=\"" + vIndex + "\" value=\"" + std::to_string(res) + "\" block=\"" + std::to_string(block[i]) + "\"/>\n";
-      } 
-    } else{
-	//round value if i is of type binary
-      if(type[i]==BINARY){
-	if(block[i]==1)
-          toWrite += "  <variable name=\"" + ((yInterface*)yIF)->integers[i].name + "\" index=\"" + std::to_string(i) + "\" value=\"" + std::to_string((int)floor(getFirstStageSolutionValue(i)+0.5)) + "\" block=\"" + std::to_string(block[i]) + "\"/>\n";
-	else 
-	  toWrite += "  <variable name=\"" + ((yInterface*)yIF)->integers[i].name + "\" index=\"" + std::to_string(i) + "\" value=\"" + std::to_string((int)floor(PV[0][i]+0.5)) + "\" block=\"" + std::to_string(block[i]) + "\"/>\n";
-      }else{
-        toWrite += "  <variable name=\"" + ((yInterface*)yIF)->integers[i].name + "\" index=\"" + std::to_string(i) + "\" value=\"" + std::to_string(PV[0][i]) + "\" block=\"" + std::to_string(block[i]) + "\"/>\n";
-      }
+      if (known)
+	value = std::to_string(decoded + info.org_lb.asDouble());
+      index = std::to_string(i) + "-" + std::to_string(i + info.bitcnt-1);
+      i += info.bitcnt - 1;
+    } else if (knownPV[i]) {
+      if (type[i] == BINARY) value = std::to_string((int)displayPV[i]);
+      else value = std::to_string(displayPV[i]);
     }
-  //toWrite += " <variable name=\"" + noBinName + "\" index=\"" + std::to_string(i) + "\" value=\"" + std::to_string(PV[0][i]) + "\" block=\"" + std::to_string(block[i]) + "\"/>\n";
+    toWrite += "  <variable name=\"" + name + "\" index=\"" + index +
+               "\" value=\"" + value + "\" block=\"" +
+               std::to_string(block[i]) + "\"/>\n";
   }
   toWrite += " </variables>\n";
   toWrite += "</YasolSolution>";
@@ -1165,7 +1163,7 @@ stack_container &STACK = search_stack.stack[search_stack.stack_pt-1];
 				QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,0),maxLPStage, LPstatus, lb, ub, IntegerSolution,algorithm::Algorithm::WORST_CASE,-1,/*-1*/feasPhase?-1:/*3*/3-4 /*simplex iterationen*/);
 				if (LPstatus == algorithm::Algorithm::INFEASIBLE) cerr << "Found Infeasible " << endl;
 				FeasibilityPump FP(IntegerSolution,QlpStSolve,((yInterface*)yIF)->qlp, maxLPStage, type.getData(), nVars());
-				if(FP.FindIntegerSolution(IntegerSolution, IntegerScore, type.getData(),1,/*AR*/0,1,CompTime,this)){
+				if(FP.FindIntegerSolution(IntegerSolution, IntegerScore, type.getData(),1,/*AR*/0,1,CompTime,((yInterface*)yIF)->qlp,this)){
 					ExistLegalUntil=DecLev;
 					if (MPrint){
 						std::cerr << "Existential System Still Satisfiable" << std::endl;
@@ -1566,7 +1564,13 @@ int QBPSolver::PropagateUniversals(){
 		} 
       	int ix1, ix2;
       	bool conflict=false;
-      	int oob = assign(alpha, var,val,trail.size(),CRef_Undef, conflict, ix1, ix2, false);
+	int oldRgForcedPropagationVar = rgForcedPropagationVar;
+	rgForcedPropagationVar = var;
+	
+	int oob = assign(alpha, var, val, trail.size(), CRef_Undef, conflict, ix1, ix2, false);
+	
+	rgForcedPropagationVar = oldRgForcedPropagationVar;
+      	//int oob = assign(alpha, var,val,trail.size(),CRef_Undef, conflict, ix1, ix2, false);
       	//int oob = assign(var, val,trail.size(),CRef_Undef,true);
       	//increaseDecisionLevel();
       	if(PRINT_PROP)cerr << "Propagated Universal Variable x_" << var<<"="<<val << endl;

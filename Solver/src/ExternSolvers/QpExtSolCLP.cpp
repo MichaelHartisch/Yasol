@@ -302,8 +302,7 @@ void QpExtSolCLP::setBase(extSol::QpExternSolver::QpExtSolBase& base) {
 		  //throw utils::ExternSolverException("QpExtSolCplexC::setBase(const extSol::QpExternSolver::QpExtSolBase& base) -> (base.constraints.size() != this->getRowCount()) || (base.variables.size()!=this->getVariableCount())");
 		} else if (base.constraints.size() < this->getRowCount()) {
 		  while(base.constraints.size() < this->getRowCount()) {
-		    base.constraints.push_back(extSol::QpExternSolver::\
-NotABasicStatus);
+		    base.constraints.push_back(extSol::QpExternSolver::Basic/*NotABasicStatus*/);
 		  }
 		}
 	}
@@ -1600,6 +1599,8 @@ void QpExtSolCLP::clearLP_snapshot()
 	clearLP_snapshot(0);
 	obj_lhs.clear();
 	for (int i = 0; i < COLs.size();i++) COLs[i].clear();
+	selectRowCacheValid = false;
+	COLsNormalized = false;
 }
 
 void QpExtSolCLP::clearLP_snapshot(int from)
@@ -1614,6 +1615,8 @@ void QpExtSolCLP::clearLP_snapshot(int from)
     for (int i = 0; i < lazyRowIndicator.size();i++)
         if (lazyRowIndicator[i] == true)
             lazyRows.push_back(i);
+    selectRowCacheValid = false;
+    COLsNormalized = false;
 }
 
 void QpExtSolCLP::clearLP_snapshot(int from, int to)
@@ -1640,6 +1643,8 @@ void QpExtSolCLP::clearLP_snapshot(int from, int to)
             if (lazyRowIndicator[i] == true)
                 lazyRows.push_back(i);
 	}
+	selectRowCacheValid = false;
+	COLsNormalized = false;
 }
 
 void QpExtSolCLP::saveSnapshot() {
@@ -1670,10 +1675,17 @@ void QpExtSolCLP::retrieveSnapshot() {
     for (int i = 0; i < obj_lhs_dense_saved.size();i++) obj_lhs_dense[i] = obj_lhs_dense_saved[i];
     lazyRows.clear();
     lazyRowIndicator.clear();
+    for (int i = 0; i < (int)RHSsSaved.size(); ++i) {
+      lazyRowIndicator.push_back(true);
+      lazyRows.push_back(i);
+    }
+    /*
     for (int i = 0; i < RHSsSaved.size();i++) lazyRows.push_back(true);
     for (int i = 0; i < lazyRowIndicator.size();i++)
         if (lazyRowIndicator[i] == true)
             lazyRows.push_back(i);
+    */
+    selectRowCacheValid = false;
 }
 
 void QpExtSolCLP::addLProw_snapshot(const std::vector<data::IndexedElement> &lhs, const data::QpRhs &rhs)
@@ -1702,6 +1714,76 @@ void QpExtSolCLP::addLProw_snapshot(const std::vector<data::IndexedElement> &lhs
 	lazyRowIndicator.push_back(true);
 	lazyRows.push_back(RHSs.size()-1);
 	setStatus(RHSs.size()-1, computeStatus(new_lhs, new_rhs) );
+
+
+	const int newRow = RHSs.size()-1;
+	if (selectRowCacheValid) {
+	  double minAx = 0.0;
+	  double maxAx = 0.0;
+	  bool cacheOK = true;
+	  //
+	  // Aktivität der neuen Row berechnen
+	  //
+	  for (int j = 0; j < (int)new_lhs.size(); ++j) {
+	    const int x = new_lhs[j].index;
+	    const double a = new_lhs[j].value.asDouble();
+	    if (x < 0 ||
+		x >= (int)selectRowLB.size() ||
+		x >= (int)selectRowUB.size()) {
+	      cacheOK = false;
+	      break;
+	    }
+	    if (x < (int)selectRowSolution.size()) {
+	      const double v = a * selectRowSolution[x];
+	      minAx += v;
+	      maxAx += v;
+	    } else if (a >= 0.0) {
+	      minAx += a * selectRowLB[x];
+	      maxAx += a * selectRowUB[x];
+	    } else {
+	      minAx += a * selectRowUB[x];
+	      maxAx += a * selectRowLB[x];
+	    }
+	  }
+
+	  if (cacheOK) {
+	    //
+	    // Neue Row in COLs ergänzen
+	    //
+	    double colNormer = 1.0;
+	    if (COLsNormalized && !new_lhs.empty()) {
+	      colNormer =
+		std::fabs(new_lhs[0].value.asDouble());
+	      assert(colNormer > 1e-20);
+	    }
+	    assert(COLnormers.size() == newRow);
+	    COLnormers.push_back(colNormer);
+	    for (int j = 0; j < (int)new_lhs.size(); ++j) {
+	      const int x = new_lhs[j].index;
+	      while ((int)COLs.size() <= x) {
+		std::vector<data::IndexedElement> dummy;
+		COLs.push_back(dummy);
+	      }
+	      data::IndexedElement e;
+	      e.index = newRow;
+	      e.value =
+		new_lhs[j].value.asDouble() / colNormer;
+	      COLs[x].push_back(e);
+	    }
+	    //
+	    // Ax-Cache um die neue Row erweitern
+	    //
+	    selectRowMinAx.push_back(minAx);
+	    selectRowMaxAx.push_back(maxAx);
+	  } else {
+	    selectRowCacheValid = false;
+	    selectRowSolution.clear();
+	    selectRowMinAx.clear();
+	    selectRowMaxAx.clear();
+	    selectRowLB.clear();
+	    selectRowUB.clear();
+	  }
+	}
 }
 
 void QpExtSolCLP::addLPobj_snapshot(const std::vector<data::IndexedElement> &o_lhs, const data::QpRhs &o_rhs)
@@ -1811,6 +1893,7 @@ void QpExtSolCLP::initInternalLP_snapshot(const data::Qlp& qlp)
 	for (int i = 0; i < n;i++) obj_lhs_dense[i] = ie;
 	for (int i = 0; i < obj_lhs.size();i++) obj_lhs_dense[obj_lhs[i].index] = obj_lhs[i];
 
+	COLnormers.assign(RHSs.size(), 1.0);
 	for (int i = 0; i < RHSs.size();i++) {
 		for (int j = 0; j < LHSs[i].size();j++) {
 			data::IndexedElement elem;
@@ -1833,6 +1916,7 @@ void QpExtSolCLP::reinitLPcols_snapshot() {
 	std::vector<data::IndexedElement> dummy;
 	while(COLs.size() < n)
 		COLs.push_back(dummy);
+	COLnormers.assign(RHSs.size(), 1.0);
 	for (int i = 0; i < RHSs.size();i++) {
 		data::QpRhs::RatioSign sense = RHSs[i].getRatioSign();
 		if (LHSs[i].size()==0) {
@@ -1843,6 +1927,7 @@ void QpExtSolCLP::reinitLPcols_snapshot() {
 			continue;
 		}
 		double normer = std::fabs(LHSs[i][0].value.asDouble());
+		COLnormers[i] = normer;
 		double sign_factor = 1.0;
 		if (sense == data::QpRhs::RatioSign::smallerThanOrEqual) {
 
@@ -1867,6 +1952,7 @@ void QpExtSolCLP::reinitLPcols_snapshot() {
 	}
 	for (int i = 0; i < COLs.size();i++)
 		sort( COLs[i].begin(), COLs[i].end(), []( data::IndexedElement p1, data::IndexedElement p2 ){ return p1.index < p2.index; } );
+	COLsNormalized = true;
 }
 
 std::vector<data::IndexedElement> * QpExtSolCLP::getRowLhs_snapshot(unsigned int ri) {
@@ -1882,147 +1968,215 @@ std::vector<data::IndexedElement> * QpExtSolCLP::getRowLhs_snapshot(unsigned int
 	//for (int j = 0; j < rowsize;j++) lhs.push_back(LHSs[ri][j]);
 }
 
-bool QpExtSolCLP::getLazyRows( std::vector<int> & lR, std::vector<data::QpNum>& solution, double eps ) {
-    if (solution.size() == 0) return false;
-#ifdef old_lazy
-    if (solution.size() == 0) return false;
+  bool QpExtSolCLP::getLazyRows( std::vector<int> & lR, std::vector<data::QpNum>& solution, double eps ) {
     lR.clear();
-    for (int i = 0; i < lazyRows.size();i++) {
-        int ri = lazyRows[i];
-        if (lazyRowIndicator[ri] == false) continue;
-        double lhs=0.0;
-        eps = 0.001 + fabs(0.001 * RHSs[ri].getValue().asDouble());
-        for (int j = 0; j < LHSs[ri].size();j++) {
-            lhs = lhs + LHSs[ri][j].value.asDouble() * solution[LHSs[ri][j].index].asDouble();
-        }
-        if (RHSs[ri].getRatioSign() == data::QpRhs::RatioSign::greaterThanOrEqual) {
-            if (lhs < RHSs[ri].getValue().asDouble()+eps )
-                lR.push_back(ri);
-        } else if (RHSs[ri].getRatioSign() == data::QpRhs::RatioSign::smallerThanOrEqual) {
-            if (lhs > RHSs[ri].getValue().asDouble()-eps )
-                lR.push_back(ri);
-        } else {
-            if (1||fabs(lhs-RHSs[ri].getValue().asDouble()) > 0.0/*eps*/) lR.push_back(ri);
-        }
-    }
-    for (int i = 0; i < lR.size();i++)
-        lazyRowIndicator[lR[i]] = false;
-    for (int i = 0; i < lazyRows.size();i++) {
-        while(lazyRows.size() > 0 && lazyRowIndicator[ lazyRows[lazyRows.size()-1] ] == false)
-            lazyRows.pop_back();
-        if (lazyRows.size() == 0) break;
-        if (i >= lazyRows.size()) break;
-        if (lazyRowIndicator[ lazyRows[i] ] == false) {
-            assert(lazyRowIndicator[ lazyRows[lazyRows.size()-1] ] == true);
-            lazyRows[i] = lazyRows[lazyRows.size()-1];
-            lazyRows.pop_back();
-        }
-    }
-    if (lR.size() > 0) return true;
-    else return false;
+    if (solution.size() == 0) return false;
 
-    lR.clear();
-        for (int i = 0; i < RHSs.size();i++) {
-            int ri = i;
-            if (lazyRowIndicator[ri] == false) continue;
-            double lhs=0.0;
-            for (int j = 0; j < LHSs[ri].size();j++) {
-                lhs = lhs + LHSs[ri][j].value.asDouble() * solution[LHSs[ri][j].index].asDouble();
-            }
-            if (RHSs[ri].getRatioSign() == data::QpRhs::RatioSign::greaterThanOrEqual) {
-                if (lhs <= RHSs[ri].getValue().asDouble()+eps )
-                    lR.push_back(ri);
-            } else if (RHSs[ri].getRatioSign() == data::QpRhs::RatioSign::smallerThanOrEqual) {
-                if (lhs >= RHSs[ri].getValue().asDouble()-eps )
-                    lR.push_back(ri);
-            } else {
-                if (fabs(lhs-RHSs[ri].getValue().asDouble()) > 0 /*< eps*/) lR.push_back(ri);
-            }
-        }
-        if (0)for (int i = 0; i < lazyRows.size();i++) {
-            int ri = lazyRows[i];
-            if (lazyRowIndicator[ri] == false) continue;
-            double lhs=0.0;
-            for (int j = 0; j < LHSs[ri].size();j++) {
-                lhs = lhs + LHSs[ri][j].value.asDouble() * solution[LHSs[ri][j].index].asDouble();
-            }
-            if (RHSs[ri].getRatioSign() == data::QpRhs::RatioSign::greaterThanOrEqual) {
-                if (lhs < RHSs[ri].getValue().asDouble()+eps )
-                    lR.push_back(ri);
-            } else if (RHSs[ri].getRatioSign() == data::QpRhs::RatioSign::smallerThanOrEqual) {
-                if (lhs > RHSs[ri].getValue().asDouble()-eps )
-                    lR.push_back(ri);
-            } else {
-                if (fabs(lhs-RHSs[ri].getValue().asDouble()) > eps) lR.push_back(ri);
-            }
-        }
-        if(0)for (int i = 0; i < lR.size();i++)
-            lazyRowIndicator[lR[i]] = false;
-        if(0)for (int i = 0; i < lazyRows.size();i++) {
-            while(lazyRows.size() > 0 && lazyRowIndicator[ lazyRows[lazyRows.size()-1] ] == false)
-                lazyRows.pop_back();
-            if (lazyRows.size() == 0) break;
-            if (i >= lazyRows.size()) break;
-            if (lazyRowIndicator[ lazyRows[i] ] == false) {
-                assert(lazyRowIndicator[ lazyRows[lazyRows.size()-1] ] == true);
-                lazyRows[i] = lazyRows[lazyRows.size()-1];
-                lazyRows.pop_back();
-            }
-        }
-    if (lR.size() > 0) return true;
-    else return false;
-#endif
-    lR.clear();
-    for (int i = 0; i < lazyRows.size();i++) {
-        int ri = lazyRows[i];
-	if (ri < 0 || ri >= RHSs.size()) continue;
-        if (lazyRowIndicator[ri] == false) continue;
-        double lhs=0.0;
-        //eps = -1e-10+0.0;//-1e-7;//0.001 + fabs(0.001 * RHSs[ri].getValue().asDouble());
-        eps = -0.001 - fabs(0.001 * RHSs[ri].getValue().asDouble());
-	bool bigX=false;
-        for (int j = 0; j < LHSs[ri].size();j++) {
-	  assert(ri < LHSs.size());
-	  assert(j < LHSs[ri].size());
-	  //assert(LHSs[ri][j].index < solution.size());
-	  if (LHSs[ri][j].index >= solution.size()) {
-	    bigX = true;
-	    break;
-	  } 
-	  lhs = lhs + LHSs[ri][j].value.asDouble() * solution[LHSs[ri][j].index].asDouble();
-        }
-	if (bigX) {
-	  //lazyRowIndicator[ri] = false;
-	  //std::cerr << "X";
-	  continue;
-	}
-        if (RHSs[ri].getRatioSign() == data::QpRhs::RatioSign::greaterThanOrEqual) {
-            if (lhs < RHSs[ri].getValue().asDouble()+eps )
-                lR.push_back(ri);
-        } else if (RHSs[ri].getRatioSign() == data::QpRhs::RatioSign::smallerThanOrEqual) {
-            if (lhs > RHSs[ri].getValue().asDouble()-eps )
-                lR.push_back(ri);
+    const int n = getVariableCount();
+    
+    std::vector<data::QpNum> lbNow;
+    std::vector<data::QpNum> ubNow;
+    
+    getLB(lbNow);
+    getUB(ubNow);
+    
+    assert(lbNow.size() >= n);
+    assert(ubNow.size() >= n);
+    
+    auto getMinMaxContribution =
+        [](double a, double lb, double ub,
+           double &mn, double &mx)
+    {
+        if (a >= 0.0) {
+            mn = a * lb;
+            mx = a * ub;
         } else {
-            if (fabs(lhs-RHSs[ri].getValue().asDouble()) > 1e-10+0.0/*eps*/) lR.push_back(ri);
+            mn = a * ub;
+            mx = a * lb;
+        }
+    };
+
+    if (!selectRowCacheValid) {
+        reinitLPcols_snapshot();
+        // aktuelle Lösung merken
+        selectRowSolution.resize(solution.size());
+        for (int j = 0; j < (int)solution.size(); ++j)
+            selectRowSolution[j] = solution[j].asDouble();
+        // aktuelle Bounds merken
+	selectRowLB.resize(n);
+	selectRowUB.resize(n);
+	for (int x = 0; x < n; ++x) {
+	  selectRowLB[x] = lbNow[x].asDouble();
+	  selectRowUB[x] = ubNow[x].asDouble();
+	}
+        // Aktivitäten
+        selectRowMinAx.assign(RHSs.size(), 0.0);
+        selectRowMaxAx.assign(RHSs.size(), 0.0);
+        // rohe Spaltendarstellung herstellen
+        //selectRowCols.clear();
+        //selectRowCols.resize(n);
+        for (int ri = 0; ri < (int)LHSs.size(); ++ri) {
+            for (int k = 0; k < (int)LHSs[ri].size(); ++k) {
+                const int x = LHSs[ri][k].index;
+                const double a =
+                    LHSs[ri][k].value.asDouble();
+                assert(x >= 0);
+                assert(x < n);
+                //data::IndexedElement e;
+                //e.index = ri;
+                //e.value = a;
+                //selectRowCols[x].push_back(e);
+                if (x < (int)solution.size()) {
+                    const double ax =
+                        a * solution[x].asDouble();
+                    selectRowMinAx[ri] += ax;
+                    selectRowMaxAx[ri] += ax;
+                } else {
+                    double mn, mx;
+                    getMinMaxContribution(
+                        a,
+                        lbNow[x].asDouble(),
+                        ubNow[x].asDouble(),
+                        mn, mx);
+                    selectRowMinAx[ri] += mn;
+                    selectRowMaxAx[ri] += mx;
+                }
+            }
+        }
+        selectRowCacheValid = true;
+    } else {
+        const int oldSolSize =
+            (int)selectRowSolution.size();
+        const int newSolSize =
+            (int)solution.size();
+        for (int x = 0; x < n; ++x) {
+            const bool oldKnown = x < oldSolSize;
+            const bool newKnown = x < newSolSize;
+            bool changed = false;
+            if (oldKnown != newKnown) {
+                changed = true;
+            } else if (oldKnown) {
+                if (selectRowSolution[x] !=
+                    solution[x].asDouble())
+                    changed = true;
+            } else {
+                if (selectRowLB[x] != lbNow[x].asDouble() ||
+                    selectRowUB[x] != ubNow[x].asDouble())
+                    changed = true;
+            }
+            if (!changed)
+                continue;
+            for (int kk = 0;
+                 kk < (int)COLs[x].size();//selectRowCols[x].size();
+                 ++kk) {
+	      const int ri = COLs[x][kk].index;
+	      
+	      assert(ri >= 0);
+	      assert(ri < (int)COLnormers.size());
+	      
+	      const double a =
+		COLs[x][kk].value.asDouble()
+		* COLnormers[ri];
+	      
+                double oldMin, oldMax;
+                double newMin, newMax;
+                //
+                // alter Beitrag
+                //
+                if (oldKnown) {
+                    oldMin = oldMax =
+                        a * selectRowSolution[x];
+                } else {
+                    getMinMaxContribution(
+                        a,
+                        selectRowLB[x],
+                        selectRowUB[x],
+                        oldMin, oldMax);
+                }
+                //
+                // neuer Beitrag
+                //
+                if (newKnown) {
+                    newMin = newMax =
+                        a * solution[x].asDouble();
+                } else {
+                    getMinMaxContribution(
+                        a,
+                        lbNow[x].asDouble(),
+                        ubNow[x].asDouble(),
+                        newMin, newMax);
+                }
+                //
+                // Ax inkrementell nachführen
+                //
+                selectRowMinAx[ri] += newMin - oldMin;
+                selectRowMaxAx[ri] += newMax - oldMax;
+            }
+        }
+        //
+        // neuen Zustand merken
+        //
+        selectRowSolution.resize(solution.size());
+        for (int x = 0;
+             x < (int)solution.size();
+             ++x)
+            selectRowSolution[x] =
+                solution[x].asDouble();
+	    for (int x = 0; x < n; ++x) {
+	      selectRowLB[x] = lbNow[x].asDouble();
+	      selectRowUB[x] = ubNow[x].asDouble();
+	    }
+    }
+
+    int write = 0;
+    for (int i = 0; i < (int)lazyRows.size(); ++i) {
+        const int ri = lazyRows[i];
+        if (ri < 0 || ri >= (int)RHSs.size())
+            continue;
+        if (!lazyRowIndicator[ri])
+            continue;
+        eps =
+            -0.001
+            - fabs(0.001 *
+                   RHSs[ri].getValue().asDouble());
+        const double rhs =
+            RHSs[ri].getValue().asDouble();
+        bool activate = false;
+        if (RHSs[ri].getRatioSign() ==
+            data::QpRhs::RatioSign::greaterThanOrEqual) {
+            //
+            // selbst bestmöglicher Wert verletzt
+            //
+            if (selectRowMaxAx[ri] < rhs + eps)
+                activate = true;
+        } else if (RHSs[ri].getRatioSign() ==
+                   data::QpRhs::RatioSign::smallerThanOrEqual) {
+            //
+            // selbst kleinstmöglicher Wert verletzt
+            //
+            if (selectRowMinAx[ri] > rhs - eps)
+                activate = true;
+        } else {
+            //
+            // Intervall enthält rhs überhaupt nicht
+            //
+            if (selectRowMinAx[ri] > rhs + 1e-10 ||
+                selectRowMaxAx[ri] < rhs - 1e-10)
+                activate = true;
+        }
+        if (activate) {
+            lR.push_back(ri);
+            lazyRowIndicator[ri] = false;
+        } else {
+            lazyRows[write++] = ri;
         }
     }
-    for (int i = 0; i < lR.size();i++)
-        lazyRowIndicator[lR[i]] = false;
-    for (int i = 0; i < lazyRows.size();i++) {
-        while(lazyRows.size() > 0 && lazyRowIndicator[ lazyRows[lazyRows.size()-1] ] == false)
-            lazyRows.pop_back();
-        if (lazyRows.size() == 0) break;
-        if (i >= lazyRows.size()) break;
-        if (lazyRowIndicator[ lazyRows[i] ] == false) {
-            assert(lazyRowIndicator[ lazyRows[lazyRows.size()-1] ] == true);
-            lazyRows[i] = lazyRows[lazyRows.size()-1];
-            lazyRows.pop_back();
-        }
-    }
-    //std::cerr << "LAZYROWS:" << lR.size() << std::endl;
+    lazyRows.resize(write);
+
     if (lR.size() > 0) return true;
     else return false;
-}
+  }
+
 void QpExtSolCLP::setLazyStatus(int i, bool s) {
     if (i < 0) {
       lazyRows.clear();
@@ -2238,6 +2392,7 @@ bool QpExtSolCLP::getBendersCut(unsigned int stage, std::vector<data::IndexedEle
 
 		std::vector<data::QpNum> ray;
 		static std::vector<Group> a(n + 2);
+		a.resize(n + 2);
 		//Group a[/*mVars.size()*/n + 2];
 		//const std::vector<data::QpNum>& mRhs = this->nbdAlgs[stage]->getFirstStageMasterRhs();
 

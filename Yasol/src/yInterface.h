@@ -73,6 +73,7 @@ struct SolutionEntry {
   string name;
   double value;
   int block;
+  bool known = false;
 };
 
 class IntInfo {
@@ -107,6 +108,7 @@ public:
   int8_t useHighsHeuristic=-1;
   int8_t usePump=-1;
   int8_t useMonotones=-1;
+  int8_t useRGTT=-1;
   int8_t useAlphaCuts=-1;
   int8_t useAlphabeta=-1;
   int8_t useMiniSearch=-1;
@@ -343,6 +345,10 @@ public:
       qbp->setUseGMI(value);
     } else if (name == "useMiniSearch") {
       qbp->setUseMiniSearch(value);
+    } else if (name == "useMonotones") {
+      qbp->setUseMonotones(value);
+    } else if (name == "useRGTT") {
+      qbp->setUseRGTT(value);
     } else if (name == "useCover") {
       qbp->setUseCover(value);
     } else if (name == "useStrongBranching") {
@@ -375,19 +381,37 @@ public:
   }
 
 
-  void doShowSolution(){
-    if(showSolution){
-      vector<SolutionEntry> theSolution= getSolution();
-      int block=0;
-      for (int i=0;i<theSolution.size();i++){
-	if (block<theSolution[i].block){
-	  block++;
-	  cout << "==============Block "<< block << "=============="<<endl; 
-	}
-	cout << "x_"<<theSolution[i].index << " ("<< theSolution[i].name<<")="<< theSolution[i].value << endl;
-      }
-    }
-  }
+   void doShowSolution() {
+     
+     if (!showSolution) return;
+     
+     vector<SolutionEntry> theSolution = getSolution();
+     
+     int block = 0;
+     
+     for (int i = 0; i < (int)theSolution.size(); ++i) {
+       
+        const SolutionEntry& e = theSolution[i];
+	
+        while (block < e.block) {
+	  ++block;
+	  cout << "==============Block "
+	       << block
+	       << "==============" << endl;
+        }
+	
+        cout << "x_" << e.index
+             << " (" << e.name << ")=";
+	
+        if (!e.known)
+	  cout << "unknown";
+        else
+	  cout << e.value;
+
+        cout << endl;
+     }
+   }
+  
   void writeSolutionFile(string filename){
     qbp->setWriteOutputFile(true);
     if(getStatus() == YASOL_OPTIMAL){
@@ -494,67 +518,106 @@ public:
     else return -qbp->getGlobalDualBound();
   }
 
+  // Diagnostic print only. Does not change fstStSol or the search heuristics.
+  void showFirstStageSummary(std::vector<int>& bitcnts,
+                             const std::vector<int>& pt2leaders) {
+    std::vector<double> out;
+    std::vector<unsigned char> knownPV;
+    qbp->getOutputFirstStage(out, knownPV);
+    bool checkable = true;
+    for (int i = 0; i < qbp->nVars(); ++i) {
+      if (qbp->getBlock(i) == 1 && !knownPV[i]) {
+        checkable = false;
+        break;
+      }
+    }
+
+    if (checkable)
+      qbp->finalSolutionCheck(bitcnts, pt2leaders, objInverted);
+    else std::cerr << "First-stage solution check skipped: " << "incomplete first-stage assignment.\n";
+    
+    std::cerr << "First-stage solution: ";
+    for (int i = 0; i < qbp->nVars(); ++i) {
+      if (qbp->getBlock(i) != 1) {
+        std::cerr << (qbp->getType(i)==CONTINUOUS ? "c" : "s")
+                  << qbp->getBlock(i) << " ";
+	continue;
+      }
+      if (integers[i].bitcnt > 1) {
+        if (integers[i].pt2leader != i) continue;
+        bool known = true;
+        double decoded = 0.0;
+        for (int z = 0; z < integers[i].bitcnt; ++z) {
+	  if (i+z >= (int)knownPV.size() || !knownPV[i+z]) {
+	    known = false;
+	    break;	   
+	  }
+          decoded = decoded*2.0 + out[i+z];
+        }
+	if (known)
+	  std::cerr << decoded + integers[i].org_lb.asDouble() << " ";
+	else
+	  std::cerr << "unknown ";
+        i += integers[i].bitcnt-1;
+      } else if (!knownPV[i]) {
+        std::cerr << "unknown ";
+      } else {
+        std::cerr << out[i] << " ";
+      }
+    }
+    std::cerr << std::endl;
+  }
 
   std::vector<SolutionEntry> getSolution(){
-    std::vector<SolutionEntry> theSolution;
+    std::vector<SolutionEntry> theSolution;    
     if(!(getStatus()==YASOL_OPTIMAL || getStatus()==YASOL_FEASIBLE || getStatus()==YASOL_INCUMBENT)){
       if(qbp->getShowError()) cout << "ERROR: There is no solution to report" << endl;
       return theSolution;
 
     }
-    for(int i = 0; i < getnVars()-createdDummy; i++){
-      if (integers[i].bitcnt > 1) {//get real name without underscore from binarized variables
-	//create char array from name string
-	if (integers[i].pt2leader == i) {
-	  SolutionEntry newEntry;
-	  const char *name = integers[i].name.c_str();
-	  //positon of underscore in char array
-	  int bpoint = 0;
-	  //get position of underscore
-	  for(int j=0; j<=integers[i].name.length(); j++){
-	    if(name[j]=='_') bpoint = j; // get last underscore
-	  }
-      
-	  //create new name for binarized variable with substring
-	  std::string noBinName = integers[i].name.substr(0,bpoint);
+    std::vector<double> displayPV;
+    std::vector<unsigned char> knownPV;    
+    qbp->getOutputPV(displayPV, knownPV);
 
-	  int res = 0;
-	  for (int z = 0;z < integers[i].bitcnt;z++) {
-	    assert(i+z<getnVars());
-	    if(qbp->getBlock(i) == 1) res = 2*res + qbp->getFirstStageSolutionValue(i+z);
-	    else res = 2*res + qbp->getPV(i+z);
-	  }
-	  //index of binarized variable
-	  std::string vIndex = std::to_string(i) + "-" + std::to_string(integers[i].bitcnt -1 + i);
+    for (int i = 0; i < getnVars()-createdDummy; ++i) {
+      if (integers[i].bitcnt > 1) {
+        if (integers[i].pt2leader != i) continue;
+        SolutionEntry e;
+        const std::string& sourceName = integers[i].name;
+        const size_t pos = sourceName.rfind('_');
+        e.name = (pos == std::string::npos) ? sourceName : sourceName.substr(0, pos);
+        e.index = i;
+        e.block = qbp->getBlock(i);
+        bool known = true;
+        double decoded = 0.0;
 
-	  newEntry.name = noBinName;
-	  newEntry.index = i;
-	  newEntry.value = res;
-	  newEntry.block = qbp->getBlock(i);
-	  theSolution.push_back(newEntry);
+	for (int z = 0; z < integers[i].bitcnt; ++z) {
+	  if (i + z >= (int)knownPV.size() ||
+	      !knownPV[i + z]) {
+	    known = false;
+	    break;
+	  }
+	  decoded = 2.0 * decoded + displayPV[i + z];
 	}
-	else continue;
-      }
-      else{
-	//round value if i is of type binary
-	SolutionEntry newEntry;
-	newEntry.name = integers[i].name;
-	newEntry.index = i;
-	newEntry.block = qbp->getBlock(i);
-	if(qbp->getType(i)==BINARY){
-	  if(qbp->getBlock(i)==1) newEntry.value = (int)floor(qbp->getFirstStageSolutionValue(i)+0.5); 
-	  else newEntry.value = (int)floor(qbp->getPV(i)+0.5);
-	}else newEntry.value = qbp->getPV(i);
-	theSolution.push_back(newEntry);
-      }
-    }
-    return theSolution;
-    //toWrite += " <variable name=\"" + noBinName + "\" index=\"" + std::to_string(i) + "\" value=\"" + std::to_string(PV[0][i]) + "\" block=\"" + std::to_string(block[i]) + "\"/>\n";
-  }
 
-
-
-
+	if (known)
+	  decoded += integers[i].org_lb.asDouble();	
+	e.value = known ? decoded : -2.0;
+	e.known = known;
+        theSolution.push_back(e);
+      } else {
+        SolutionEntry e;
+        e.name = integers[i].name;
+        e.index = i;
+        e.block = qbp->getBlock(i);
+        e.value = displayPV[i];
+	e.known = (knownPV[i] != 0);
+        theSolution.push_back(e);
+       }
+     }
+     return theSolution;
+   }
+    
   int getStatus(){ 
     if (qbp->getTimedOut()){ // If it ran into timeout, we either have an incumbent solution or no solution at all.
       return qbp->getSolutionStatus();
@@ -1402,64 +1465,13 @@ public:
 	   sortcols[tmp[i]] = i;
   }
 
-  /*
-    int XdomY(extSol::QpExternSolver& externSolver, std::vector<data::IndexedElement > *X, std::vector<data::IndexedElement > *Y, data::IndexedElement x, data::IndexedElement y, bool useObj, std::vector<data::QpRhs> *RHSs)
-    {
-    // X and Y must be sorted with ascending index
-    // was ist mit <=,>=,== ? ---> sense must be <= or == and obj minimize
-    bool XdomY=true;
-    bool YdomX=true;
-    int n = getnVars();
-
-    if (useObj) {
-    if (x.index < n && y.index < n) {
-    if (x.value.asDouble() < y.value.asDouble() - 1e-12) XdomY = false;
-    else if (x.value.asDouble() > y.value.asDouble() + 1e-12) YdomX = false;
-    } else if (x.index < n) {
-    YdomX = false;
-    } else if (y.index < n) {
-    XdomY = false;
-    } else useObj = false;
-    }
-
-    int i = 0; int j = 0;
-    while (i < (*X).size() && j < (*Y).size()) {
-    while (i < (*X).size() && j < (*Y).size() && (*X)[i].index < (*Y)[j].index ) { i++; YdomX = false; }
-    if (i >= (*X).size() && j < (*Y).size()) XdomY = false;
-    while (i < (*X).size() && j < (*Y).size() && (*X)[i].index > (*Y)[j].index ) { j++; XdomY = false; }
-    if (i < (*X).size() && j >= (*Y).size()) YdomX = false;
-    if (i >= (*X).size() || j >= (*Y).size()) {
-    ;
-    } else if ((*X)[i].index == (*Y)[j].index) {
-    assert((*RHSs)[(*X)[i].index].getRatioSign() != data::QpRhs::RatioSign::greaterThanOrEqual);
-    if ((*X)[i].value.asDouble() < (*Y)[j].value.asDouble() - 1e-12) {
-    XdomY = false;
-    if ((*RHSs)[(*X)[i].index].getRatioSign() == data::QpRhs::RatioSign::equal) return 3;
-    }
-    else if ((*X)[i].value.asDouble() > (*Y)[j].value.asDouble() + 1e-12) {
-    YdomX = false;
-    if ((*RHSs)[(*X)[i].index].getRatioSign() == data::QpRhs::RatioSign::equal) return 3;
-    }
-    i++; j++;
-    if (i >= (*X).size() && j < (*Y).size()) XdomY = false;
-    if (i < (*X).size() && j >= (*Y).size()) YdomX = false;
-    }
-    if (!XdomY && !YdomX) break;
-    }
-    if (XdomY && YdomX) return 0;
-    if (XdomY) return 1;
-    if (YdomX) return -1;
-    return 2;
-    }
-  */
-
-  int XdomY(extSol::QpExternSolver& externSolver, std::vector<data::IndexedElement > *X, std::vector<data::IndexedElement > *Y, data::IndexedElement x,
+  int YdomX(extSol::QpExternSolver& externSolver, std::vector<data::IndexedElement > *X, std::vector<data::IndexedElement > *Y, data::IndexedElement x,
 	    data::IndexedElement y, bool useObj, std::vector<data::QpRhs> *RHSs, int colx, int coly)
   {
     // X and Y must be sorted with ascending index
     // was ist mit <=,>=,== ? ---> sense must be <= or == and obj minimize
-    bool XdomY=true;
     bool YdomX=true;
+    bool XdomY=true;
     int n = getnVars();
     double xVal, yVal;
     int xInd, yInd;
@@ -1468,73 +1480,273 @@ public:
       xInd = x.index; yInd = y.index;
       if (x.index < n && y.index < n) {
 	xVal = x.value.asDouble(); yVal = y.value.asDouble();
-	if (xVal < yVal) XdomY = false;
-	else if (xVal > yVal) YdomX = false;
+	if (xVal < yVal) YdomX = false;
+	else if (xVal > yVal) XdomY = false;
       } else if (x.index < n) {
 	xVal = x.value.asDouble(); yVal = 0.0;
-	if (xVal < yVal) XdomY = false;
-	else if (xVal > yVal) YdomX = false;
+	if (xVal < yVal) YdomX = false;
+	else if (xVal > yVal) XdomY = false;
       } else if (y.index < n) {
 	xVal = 0.0; yVal = y.value.asDouble();
-	if (xVal < yVal) XdomY = false;
-	else if (xVal > yVal) YdomX = false;
+	if (xVal < yVal) YdomX = false;
+	else if (xVal > yVal) XdomY = false;
       } else useObj = false;
     }
 
     int i = 0; int j = 0;
     bool eqOc = false;
     while (i < (*X).size() || j < (*Y).size()) {
-      if (i < (*X).size() && (*RHSs)[(*X)[i].index].getRatioSign() == data::QpRhs::RatioSign::equal) eqOc = true;
-      if (j < (*Y).size() && (*RHSs)[(*Y)[j].index].getRatioSign() == data::QpRhs::RatioSign::equal) eqOc = true;
+      if (i < (*X).size() && (*RHSs)[(*X)[i].index].getRatioSign() == data::QpRhs::RatioSign::equal) {
+	//eqOc = true;
+	int row = (*X)[i].index;
+	xVal = (*X)[i].value.asDouble();
+	
+	if (j < (*Y).size() && (*Y)[j].index == row)
+	  yVal = (*Y)[j].value.asDouble();
+	else
+	  yVal = 0.0;
+	
+	if (fabs(xVal - yVal) > 1e-10) {
+	  return 3;
+	}
+	
+	// falls gleich: Gleichungszeile ist neutral
+      }
+      if (j < (*Y).size() && (*RHSs)[(*Y)[j].index].getRatioSign() == data::QpRhs::RatioSign::equal) {
+	//eqOc = true;
+	int row = (*Y)[j].index;
+	yVal = (*Y)[j].value.asDouble();
+	
+	if (i < (*X).size() && (*X)[i].index == row)
+	  xVal = (*X)[i].value.asDouble();
+	else
+	  xVal = 0.0;
+	
+	if (fabs(xVal - yVal) > 1e-10) {
+	  return 3;
+	}
+	
+	// falls gleich: Gleichungszeile ist neutral
+      }
+      //if (i < (*X).size() && (*RHSs)[(*X)[i].index].getRatioSign() == data::QpRhs::RatioSign::equal) eqOc = true;
+      //if (j < (*Y).size() && (*RHSs)[(*Y)[j].index].getRatioSign() == data::QpRhs::RatioSign::equal) eqOc = true;
       if (i < (*X).size() && j < (*Y).size()) {
 	if ((*X)[i].index < (*Y)[j].index) {
 	  xVal = (*X)[i].value.asDouble();
 	  yVal = 0.0;
-	  if (xVal < yVal) XdomY = false;
-	  else if (xVal > yVal) YdomX = false;
+	  if (xVal < yVal) YdomX = false;
+	  else if (xVal > yVal) XdomY = false;
 	  i++;
 	} else if ((*X)[i].index > (*Y)[j].index) {
 	  xVal = 0.0;
 	  yVal = (*Y)[j].value.asDouble();
-	  if (xVal < yVal) XdomY = false;
-	  else if (xVal > yVal) YdomX = false;
+	  if (xVal < yVal) YdomX = false;
+	  else if (xVal > yVal) XdomY = false;
 	  j++;
 	} else if ((*X)[i].index == (*Y)[j].index) {
 	  assert((*RHSs)[(*X)[i].index].getRatioSign() != data::QpRhs::RatioSign::greaterThanOrEqual);
 	  if ((*X)[i].value.asDouble() < (*Y)[j].value.asDouble() ) {
-	    XdomY = false;
+	    YdomX = false;
 	  }
 	  else if ((*X)[i].value.asDouble() > (*Y)[j].value.asDouble() ) {
-	    YdomX = false;
+	    XdomY = false;
 	  }
 	  i++; j++;
 	}
       } else if (i < (*X).size()) {
 	xVal = (*X)[i].value.asDouble();
 	yVal = 0.0;
-	if (xVal < yVal) XdomY = false;
-	else if (xVal > yVal) YdomX = false;
+	if (xVal < yVal) YdomX = false;
+	else if (xVal > yVal) XdomY = false;
 	i++;
       } else if (j < (*Y).size()) {
 	xVal = 0.0;
 	yVal = (*Y)[j].value.asDouble();
-	if (xVal < yVal) XdomY = false;
-	else if (xVal > yVal) YdomX = false;
+	if (xVal < yVal) YdomX = false;
+	else if (xVal > yVal) XdomY = false;
 	j++;
       }
-      if (!XdomY && !YdomX) break;
+      if (!YdomX && !XdomY) break;
     }
 
-    if (XdomY && YdomX) return 0;
+    if (YdomX && XdomY) return 0;
     if (eqOc) return 3;
-    if (XdomY) return 1;
-    if (YdomX) return -1;
+    if (YdomX) return 1;
+    if (XdomY) return -1;
     return 2;
+  }
+
+  bool dominatedTo0ok(extSol::QpExternSolver& externSolver,
+		      std::vector<data::IndexedElement>* X,
+		      std::vector<data::IndexedElement>* Y,
+		      bool useObj,
+		      std::vector<data::QpRhs>* RHSs,
+		      data::IndexedElement x,
+		      data::IndexedElement y)
+  {
+    // X = column of dominated variable x
+    // Y = column of dominator variable y
+    //
+    // Assumption outside this function:
+    // 1. y dominates x, hence x <= y is valid.
+    // 2. y is total-dominator for every row in which y occurs.
+    //
+    // This function checks the remaining danger:
+    // rows where x occurs but y does not occur.
+    //
+    // In such rows, setting x:1 -> 0 must not hurt feasibility.
+    //
+    // For <= rows: lhs must not increase, so ax >= 0.
+    // For >= rows: lhs must not decrease, so ax <= 0.
+    // For == rows: lhs must not change, so ax == 0.
+    //
+    // For MINIMIZE objective: setting x:1 -> 0 must not worsen obj,
+    // so obj_x >= 0.
+
+    const double eps = 1e-9;
+    int n = getnVars();
+
+    if (useObj) {
+      if (x.index < n) {
+	double xObj = x.value.asDouble();
+
+	// MINIMIZE:
+	// objective change when x:1 -> 0 is -xObj.
+	// Need -xObj <= 0, hence xObj >= 0.
+	if (xObj < -eps) {
+	  return false;
+	}
+      }
+    }
+
+    int i = 0;
+    int j = 0;
+
+    while (i < (int)X->size() || j < (int)Y->size()) {
+
+      if (i < (int)X->size() && j < (int)Y->size()) {
+
+	int rowX = (*X)[i].index;
+	int rowY = (*Y)[j].index;
+
+	if (rowX < rowY) {
+	  // x occurs, y does not occur.
+	  // This is the dangerous case.
+
+	  double ax = (*X)[i].value.asDouble();
+	  data::QpRhs::RatioSign sense = (*RHSs)[rowX].getRatioSign();
+
+	  if (sense == data::QpRhs::RatioSign::smallerThanOrEqual) {
+	    // x:1 -> 0 changes lhs by -ax.
+	    // For <=, lhs must not increase: -ax <= 0, hence ax >= 0.
+	    if (ax < -eps) {
+	      return false;
+	    }
+	  }
+	  else if (sense == data::QpRhs::RatioSign::greaterThanOrEqual) {
+	    // For >=, lhs must not decrease: -ax >= 0, hence ax <= 0.
+	    if (ax > eps) {
+	      return false;
+	    }
+	  }
+	  else if (sense == data::QpRhs::RatioSign::equal) {
+	    // Equality must not change.
+	    if (fabs(ax) > eps) {
+	      return false;
+	    }
+	  }
+	  else {
+	    return false;
+	  }
+
+	  i++;
+	}
+	else if (rowX > rowY) {
+	  // y occurs, x does not occur.
+	  // Safe under the external assumption:
+	  // y=1 total-dominates this row.
+	  //
+	  // Conservative option:
+	  // reject equalities involving y.
+	  // I would keep this for now.
+
+	  data::QpRhs::RatioSign sense = (*RHSs)[rowY].getRatioSign();
+
+	  if (sense == data::QpRhs::RatioSign::equal) {
+	    return false;
+	  }
+
+	  j++;
+	}
+	else {
+	  // x and y both occur in the same row.
+	  // Safe under the external assumption:
+	  // y=1 total-dominates this row.
+	  //
+	  // Again conservative: reject equalities for now.
+
+	  data::QpRhs::RatioSign sense = (*RHSs)[rowX].getRatioSign();
+
+	  if (sense == data::QpRhs::RatioSign::equal) {
+	    return false;
+	  }
+
+	  i++;
+	  j++;
+	}
+      }
+      else if (i < (int)X->size()) {
+	// Remaining rows where x occurs but y does not.
+
+	int rowX = (*X)[i].index;
+	double ax = (*X)[i].value.asDouble();
+	data::QpRhs::RatioSign sense = (*RHSs)[rowX].getRatioSign();
+
+	if (sense == data::QpRhs::RatioSign::smallerThanOrEqual) {
+	  if (ax < -eps) {
+	    return false;
+	  }
+	}
+	else if (sense == data::QpRhs::RatioSign::greaterThanOrEqual) {
+	  if (ax > eps) {
+	    return false;
+	  }
+	}
+	else if (sense == data::QpRhs::RatioSign::equal) {
+	  if (fabs(ax) > eps) {
+	    return false;
+	  }
+	}
+	else {
+	  return false;
+	}
+
+	i++;
+      }
+      else if (j < (int)Y->size()) {
+	// Remaining rows where y occurs but x does not.
+	// Safe if y is total-dominator for its support.
+	//
+	// Conservative: reject equalities involving y.
+
+	int rowY = (*Y)[j].index;
+	data::QpRhs::RatioSign sense = (*RHSs)[rowY].getRatioSign();
+
+	if (sense == data::QpRhs::RatioSign::equal) {
+	  return false;
+	}
+
+	j++;
+      }
+    }
+
+    return true;
   }
 
   bool checkOnTotalDomination(int dom, int maxLPstage, double *lhsMin, double *lhsMax) {
     int size = QlpStSolve->getExternSolver(maxLPstage).getCol_snapshot(dom)->size();
     bool isTotalDom = true;
+    return false;
     std::vector<data::IndexedElement > *COL = QlpStSolve->getExternSolver(maxLPstage).getCol_snapshot(dom);
     for (int i = 0; i < size;i++) {
       data::IndexedElement ColElem = (*COL)[i];
@@ -1545,11 +1757,11 @@ public:
       rhs = rhs / normer;
       data::QpRhs::RatioSign sense = (*QlpStSolve->getExternSolver( maxLPstage ).getRowRhs_snapshot())[i].getRatioSign();
       if (sense == data::QpRhs::RatioSign::smallerThanOrEqual) {
-	if (lhsMax[i] - fabs(ColElem.value.asDouble()) > rhs) {
+	if (lhsMax[i]/normer - fabs(ColElem.value.asDouble()) > rhs) {
 	  return false;
 	}	
       } else if (sense == data::QpRhs::RatioSign::greaterThanOrEqual) {
-	if (lhsMin[i] + fabs(ColElem.value.asDouble()) < rhs) {
+	if (lhsMin[i]/normer + fabs(ColElem.value.asDouble()) < rhs) {
 	  return false;
 	}
       } else if (sense == data::QpRhs::RatioSign::equal) {
@@ -1654,29 +1866,42 @@ public:
 	if (eas[sortcols[i]] == UNIV || eas[sortcols[iplusk]] == UNIV) continue;
 	if (assigns[sortcols[i]] != 2 || assigns[sortcols[iplusk]] != 2) continue;
 	//if (QlpStSolve.getExternSolver(maxLPstage).getCol_snapshot(sortcols[i])->size() > n-2) continue;
-	int xdy = XdomY( QlpStSolve.getExternSolver(maxLPstage),
+	int ydx = YdomX( QlpStSolve.getExternSolver(maxLPstage),
 			 QlpStSolve.getExternSolver(maxLPstage).getCol_snapshot(sortcols[i]),QlpStSolve.getExternSolver(maxLPstage).getCol_snapshot(sortcols[iplusk]),
 			 QlpStSolve.getExternSolver(maxLPstage).getObj_snapshot(sortcols[i]),QlpStSolve.getExternSolver(maxLPstage).getObj_snapshot(sortcols[iplusk]),
 			 useObj, QlpStSolve.getExternSolver(maxLPstage).getRowRhs_snapshot(), sortcols[i], sortcols[iplusk]);
-	if (xdy == 1 || xdy == 0 | xdy == -1) {
-	  int dominator=sortcols[i];
-	  if (xdy==-1) dominator=sortcols[iplusk];
+	if (ydx == 1 || ydx == 0 | ydx == -1) {
+	  int dominated=sortcols[i];
+	  int dominator=sortcols[iplusk];
+	  if (ydx==-1) {
+	    dominated=sortcols[iplusk];
+	    dominator=sortcols[i];
+	  }
 	  bool td = checkOnTotalDomination(dominator, maxLPstage, lhsMin.data(), lhsMax.data());
-	  if (0&&td) {
-	    //std::cerr << "found td!" << std::endl;
-	    if (xdy==0 || xdy==1) {
-	      clist.push_back(make_pair(-sortcols[iplusk]-1,0));
+	  if (td) {
+	    bool dok = dominatedTo0ok(
+				      QlpStSolve.getExternSolver(maxLPstage),
+				      QlpStSolve.getExternSolver(maxLPstage).getCol_snapshot(dominated),
+				      QlpStSolve.getExternSolver(maxLPstage).getCol_snapshot(dominator),
+				      useObj,
+				      QlpStSolve.getExternSolver(maxLPstage).getRowRhs_snapshot(),
+				      QlpStSolve.getExternSolver(maxLPstage).getObj_snapshot(dominated),
+				      QlpStSolve.getExternSolver(maxLPstage).getObj_snapshot(dominator)
+				      );
+ 	    //std::cerr << "found td!" << std::endl;
+	    if (ydx==0 || ydx==1) {
+	      if (dok) clist.push_back(make_pair(-sortcols[iplusk]-1,0));
 	      //x_j can be fixed to 0
 	      //foundFixing = true;
 	    } else {
-	      clist.push_back(make_pair(-sortcols[i]-1,0));
+	      if (dok) clist.push_back(make_pair(-sortcols[i]-1,0));
 	      //x_i can be fixed to 0
 	      //foundFixing = true;
 	    }
-	    xdy = 10;
+	    ydx = 10;
 	  }
 	}
-	if (/*k == 1 &&*/ xdy==0) {
+	if (/*k == 1 &&*/ ydx==0) {
 	  if (sortcols[i] >= sortcols[iplusk]) continue;
 	  latestHitI = i;
 	  latestHitIplusK = iplusk;
@@ -1809,18 +2034,18 @@ public:
 	}
 	int sokoI=-10;
 	int sokoIK=-10;
-	if (xdy==-1) {
+	if (ydx==-1) {
 	  //cerr << "SYMMERR" << endl;
 	  //if (info_level > 5) cerr << "DOMINANCE TYPE 1!! " << i << "," << iplusk << " | " << sortcols[i] << ", " << sortcols[iplusk] << endl;
 	  //clist.push_back(make_pair(sortcols[iplusk],sortcols[i]));
 	  sokoI = sortcols[iplusk];
 	  sokoIK = sortcols[i];
 	}
-	if (xdy==1) {
+	if (ydx==1) {
 	  sokoI = sortcols[i];
 	  sokoIK = sortcols[iplusk];
 	}
-	if (xdy==1 || xdy==-1) {
+	if (ydx==1 || ydx==-1) {
 	  latestHitI = i;
 	  latestHitIplusK = iplusk;
 	  //if (outputs < 5) cerr << "info DOMINANCE TYPE " << k << "!! " << i << "," << iplusk << " | " << sokoI << ", " << sokoIK << endl;
@@ -2309,7 +2534,7 @@ public:
     qbp->setInputFileName("");
 
     qbp->setFinalOffset(orgQlp.getObjFuncOffset().asDouble());
-
+    delete binQlpPt;
   }
 
 
@@ -2324,6 +2549,7 @@ public:
     int SimplificationFailed=makeBinary(orgQlp, orgQlpBinarized);
     if(SimplificationFailed) return SimplificationFailed;
     yInit( orgQlpBinarized,inputfile);
+    qbp->initRestGameTT(&qlp);
     this->qbp->setFinalOffset( orgQlp.getObjFuncOffset().asDouble());
     return 0;
   }
@@ -2539,38 +2765,10 @@ public:
       bitcnts.push_back(integers[i].bitcnt);
       pt2leaders.push_back(integers[i].pt2leader);
     }
-    if ((processNo & 1) == 0) {
-      if (fabs(qbp->getGlobalScore()) < -qbp->getNegativeInfinity()) {
-	double min_slack = qbp->finalSolutionCheck(bitcnts,pt2leaders,objInverted);
-	for (int i = 0; i < qbp->nVars(); i++) {
-	  //cerr << "x" << i << "(" << qbp->getType(i) << "," << qbp->getBlock(i) << "," << integers[i].bitcnt << ") ";
-	  if (qbp->getType(i) == 5000 /*CONTINUOUS*/) {
-	    if (0&&qbp->getLowerBound(i) == qbp->getUpperBound(i)) {
-	      cerr << qbp->getLowerBound(i) << " ";
-	    } else if (qbp->getBlock(i) == 1) cerr << qbp->getFirstStageSolutionValue(i) << " ";
-	    else cerr << "c" <<  qbp->getBlock(i) << " ";
-	  } else if (qbp->getBlock(i) == 1){
-	    if (integers[i].bitcnt > 1) {
-	      //cerr << "Var " << i<< " hat " << integers[i].bitcnt << "bits. Leader:" << integers[i].pt2leader;
-	      if (integers[i].pt2leader == i) {
-		int res = 0;
-		for (int z = 0;z < integers[i].bitcnt;z++) {
-		  res = 2*res + qbp->getFirstStageSolutionValue(i+z);
-		  //cerr << " | " << qbp->getFirstStageSolutionValue(i+z) << " | ";
-		}
-		cerr << res << " ";
-		i+=integers[i].bitcnt;
-		i--;
-	      } else cerr << "Error: missing bit" << endl;
-	    } else
-	      cerr << qbp->getFirstStageSolutionValue(i) << " ";
-	  } else {
-	    cerr << "s" << qbp->getBlock(i) << " ";
-	  }
-	}
-	cerr << endl;
-      }
-    }
+
+    if ((processNo & 1) == 0 &&
+        fabs(qbp->getGlobalScore()) < -qbp->getNegativeInfinity())
+      showFirstStageSummary(bitcnts, pt2leaders);
     while (qbp->getVarPriorityQueueSize() > 0) {
       qbp->extractVarPriorityQueueMinimum();
     }
@@ -2639,6 +2837,7 @@ public:
       cerr << "useAlphabeta=" << qbp->getUseAlphabeta() << endl;
       cerr << "useScout=" << qbp->getUseScout() << endl;
       cerr << "useMonotones=" << (int)qbp->getUseMonotones() << endl;
+      cerr << "useRGTT=" << (int)qbp->getUseRGTT() << endl;
       cerr << "isSimplyRestricted=" << qbp->getIsSimplyRestricted() << endl;
       cerr << "writeOutputFile=" << qbp->getWriteOutputFile() << endl;
       cerr << "maintainPv=" << qbp->getMaintainPv() << endl;
@@ -2693,7 +2892,15 @@ public:
 
 	  restrictlhs.clear();
 	  restrictrhs=0.0;
+	  std::vector<double> firstOut;
+	  std::vector<unsigned char> firstKnown;
+	  qbp->getOutputFirstStage(firstOut, firstKnown);
 	  for (int g=0; g < fstStSol.size();g++) {
+	    if (g >= (int)firstKnown.size() ||
+		!firstKnown[g] ||
+		qbp->getBlock(g) != 1 ||
+		qbp->getType(g) != BINARY)
+	      continue;
             if (0&&qbp->getType(g) != 0 /*i.e. not BINARY*/) continue;
 	    data::IndexedElement e;
 	    if (isZero(fstStSol[g])) {
@@ -3106,39 +3313,11 @@ public:
       bitcnts.push_back(integers[i].bitcnt);
       pt2leaders.push_back(integers[i].pt2leader);
     }
-    if ((processNo & 1) == 0) {
-      if (fabs(qbp->getGlobalScore()) < -qbp->getNegativeInfinity()) {
-	double min_slack = qbp->finalSolutionCheck(bitcnts,pt2leaders,objInverted);
-	for (int i = 0; i < qbp->nVars(); i++) {
-	  //cerr << "x" << i << "(" << qbp->getType(i) << "," << qbp->getBlock(i) << "," << integers[i].bitcnt << ") ";
-	  if (qbp->getType(i) == 5000 /*CONTINUOUS*/) {
-	    if (0&&qbp->getLowerBound(i) == qbp->getUpperBound(i)) {
-	      cerr << qbp->getLowerBound(i) << " ";
-	    } else if (qbp->getBlock(i) == 1) cerr << qbp->getFirstStageSolutionValue(i) << " ";
-	    else cerr << "c" <<  qbp->getBlock(i) << " ";
-	  } else if (qbp->getBlock(i) == 1){
-	    if (integers[i].bitcnt > 1) {
-	      //cerr << "Var " << i<< " hat " << integers[i].bitcnt << "bits. Leader:" << integers[i].pt2leader;
-	      if (integers[i].pt2leader == i) {
-		int res = 0;
-		for (int z = 0;z < integers[i].bitcnt;z++) {
-		  res = 2*res + qbp->getFirstStageSolutionValue(i+z);
-		  //cerr << " | " << qbp->getFirstStageSolutionValue(i+z) << " | ";
-		}
-		cerr << res << " ";
-		i+=integers[i].bitcnt;
-		i--;
-	      } else cerr << "Error: missing bit" << endl;
-	    } else
-	      cerr << qbp->getFirstStageSolutionValue(i) << " ";
-	  } else {
-	    cerr << "s" << qbp->getBlock(i) << " ";
-	  }
-	}
-	cerr << endl;
-      }
-    }
 
+    if ((processNo & 1) == 0 &&
+        fabs(qbp->getGlobalScore()) < -qbp->getNegativeInfinity())
+      showFirstStageSummary(bitcnts, pt2leaders);
+ 
     if (qbp->getInfoLevel() >= -OUT_OFFSET) return r;
     else return (r > (coef_t)0 ? (coef_t)1 : (coef_t)0);
   }

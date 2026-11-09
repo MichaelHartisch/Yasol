@@ -68,8 +68,11 @@ class HTable {
 	uint64_t hash;
 	int size;
 public:
-	int getSize() { return size; }
-	uint64_t getHashConstant(int lit) {
+        int getSize() { return size; }
+        uint64_t getHash() const {
+	  return hash;
+	}
+        uint64_t getHashConstant(int lit) {
 		return hashconsts[lit&1][lit>>1];
 	}
 	HTable( int num_vars, int s) {

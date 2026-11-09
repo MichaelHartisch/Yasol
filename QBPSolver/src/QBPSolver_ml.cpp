@@ -368,6 +368,7 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, boo
       }
       vardata[va] = mkVarData(from, decisionLevel());
       if (!isFixed(va)) fixdata[va] = mkVarData(from, registeredLevel());
+      restGameOnAssign(va); 
       involvedReals.clear();
       listOfBoundMvs_lim[trail.size()-1] = listOfBoundMvs.size();
 
@@ -435,6 +436,7 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, boo
     }
     vardata[va] = mkVarData(from, decisionLevel());
     if (!isFixed(va)) fixdata[va] = mkVarData(from, registeredLevel());
+    restGameOnAssign(va); 
     involvedReals.clear();
     listOfBoundMvs_lim[trail.size()-1] = listOfBoundMvs.size();
     for (int i=0; i < VarsInConstraints[va].size();i++) {
@@ -879,6 +881,7 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, int
       }
       vardata[va] = mkVarData(from, decisionLevel());
       if (!isFixed(va)) fixdata[va] = mkVarData(from, registeredLevel());
+      restGameOnAssign(va);
       involvedReals.clear();
       listOfBoundMvs_lim[trail.size()-1] = listOfBoundMvs.size();
       if(UniversalConstraintsExist) KeepAllClean(va, val);
@@ -944,6 +947,7 @@ int64_t QBPSolver::assign(int va, int val, int t, CRef from, bool &conflict, int
     }
     vardata[va] = mkVarData(from, decisionLevel());
     if (!isFixed(va)) fixdata[va] = mkVarData(from, registeredLevel());
+    restGameOnAssign(va);
     involvedReals.clear();
     listOfBoundMvs_lim[trail.size()-1] = listOfBoundMvs.size();
     
@@ -1352,6 +1356,37 @@ void QBPSolver::unassign(int vcon, bool useDM, bool keepAssign) {
       cerr << "Error: do not unassign as variable is not assigned." << endl;
       return;
     }
+if (0&&vcon != var) {
+    cerr << "RG VCON != VAR:"
+         << " vcon=x" << vcon
+         << " var=x" << var
+         << " vconLevel=" << vardata[vcon].level
+         << " varLevel=" << vardata[var].level
+         << " vconReason=" << vardata[vcon].reason
+         << " varReason=" << vardata[var].reason
+         << " keepAssign=" << keepAssign
+         << " trailSize=" << trail.size()
+         << " DL=" << decisionLevel()
+         << endl;
+}
+if (0&&ttQlp != 0 && type[vcon] == BINARY) {
+    cerr << "RG UNASSIGN x" << vcon
+         << "=" << (int)assigns[vcon]
+         << " level=" << vardata[vcon].level
+         << " reason=" << vardata[vcon].reason
+         << " folded=" << (int)rgFolded[vcon]
+         << " decision=" << (int)rgIsDecision[vcon]
+         << " pending=" << rgPendingPos[vcon]
+         << " DL=" << decisionLevel()
+         << " trail=" << trail.size()
+         << endl;
+}
+    
+    bool reallyUnassign =
+      !(keepAssign && vardata[vcon].level <= 0);
+    if (reallyUnassign)
+      restGameOnUnassign(var); 
+    
     if (vardata[var].reason != CRef_Undef) dl--;
     if (dl > 0) {
       if (vcon != var) {
@@ -1513,14 +1548,23 @@ int64_t QBPSolver::hs_assign(float alpha, int va, int val, int t, CRef from, boo
     }
     vardata[va] = mkVarData(from, decisionLevel());
     if (!isFixed(va)) fixdata[va] = mkVarData(from, registeredLevel());
+    restGameOnAssign(va);
     return ASSIGN_OK;
 }
 
 void QBPSolver::hs_unassign(int vcon) {
     //return;
     int var = trail.last();
+    int oldLevel = vardata[vcon].level;
+
+    if (oldLevel > 0)
+        restGameOnUnassign(var);
+    
     vardata[vcon].reason = CRef_Undef;
     if (vardata[vcon].level <= 0) return; // auf Level 0 gesetzte Variablen bleiben gesetzt
+
+
+    
     HT->unassign(var,assigns[var]);
     trail.pop();
     if (eas[var] == UNIV) scenario.pop();
@@ -2590,9 +2634,11 @@ if (isReal) {
     num_conflicts_per_level.push(0);
     num_leaves.push(0);
     fstStSol.push_back(0.0);
+    fstStKnown.push_back(0);
     progA.push_back(0.0);
     progB.push_back(0.0);
     progY.push_back(0.0);
+    progSamples.push_back(0);
     progCnt = 0;
     varbuf   .capacity(v+3);
     block    .push(blo);

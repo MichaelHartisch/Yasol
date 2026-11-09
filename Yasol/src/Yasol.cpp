@@ -46,6 +46,7 @@ void printUsage(const std::string& programName) {
               << " --useCover=b           - binary to turn off/on cover cuts (default 1)\n"
               << " --usePump=b            - binary to turn off/on feasibility pump (default 1)\n"
               << " --useMonotones=b       - 0..7 to control the exploitation of monotes (default 7)\n"
+	      << " --useRGTT=b            - 0..7 to control the use of restgame transposition table (default 0)\n"
               << " --isSimplyRestricted=b - binary to turn off/on the exploitation of a simple structure\n"
               << "                          of the universal constraints (the uncertainty set) (default 0)\n"
               << " --useCglRootCuts=b     - binary to turn off/on cut generation from CGL library (default 0)\n"
@@ -154,6 +155,9 @@ int main(int argc, char** argv) {
     }
     else if (strncmp(buf,"useMonotones=",13)==0) {
       yasol.yip.useMonotones = buf[13] - '0';      
+    }
+    else if (strncmp(buf,"useRGTT=",8)==0) {
+      yasol.yip.useRGTT = buf[8] - '0';      
     }
     else if (strncmp(buf,"useAlphaCuts=",13)==0) {
       yasol.yip.useAlphaCuts = buf[13] - '0';      

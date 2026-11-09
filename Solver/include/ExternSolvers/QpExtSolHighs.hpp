@@ -29,7 +29,64 @@
 
 //#ifdef COMPILE_WITH_HIGHS
 
+#ifdef EQ
+#pragma push_macro("EQ")
+#undef EQ
+#define YASOL_RESTORE_MACRO_EQ
+#endif
+
+#ifdef LEQ
+#pragma push_macro("LEQ")
+#undef LEQ
+#define YASOL_RESTORE_MACRO_LEQ
+#endif
+
+#ifdef GEQ
+#pragma push_macro("GEQ")
+#undef GEQ
+#define YASOL_RESTORE_MACRO_GEQ
+#endif
+
+#ifdef BOUND
+#pragma push_macro("BOUND")
+#undef BOUND
+#define YASOL_RESTORE_MACRO_BOUND
+#endif
+
+#ifdef FREE
+#pragma push_macro("FREE")
+#undef FREE
+#define YASOL_RESTORE_MACRO_FREE
+#endif
+
+
 #include "Highs.h"
+
+
+#ifdef YASOL_RESTORE_MACRO_FREE
+#pragma pop_macro("FREE")
+#undef YASOL_RESTORE_MACRO_FREE
+#endif
+
+#ifdef YASOL_RESTORE_MACRO_BOUND
+#pragma pop_macro("BOUND")
+#undef YASOL_RESTORE_MACRO_BOUND
+#endif
+
+#ifdef YASOL_RESTORE_MACRO_GEQ
+#pragma pop_macro("GEQ")
+#undef YASOL_RESTORE_MACRO_GEQ
+#endif
+
+#ifdef YASOL_RESTORE_MACRO_LEQ
+#pragma pop_macro("LEQ")
+#undef YASOL_RESTORE_MACRO_LEQ
+#endif
+
+#ifdef YASOL_RESTORE_MACRO_EQ
+#pragma pop_macro("EQ")
+#undef YASOL_RESTORE_MACRO_EQ
+#endif
 
 namespace extSol {
 
@@ -233,6 +290,27 @@ private:
         std::vector<bool> lazyRowIndicator;
         std::vector<int> indicators;
         ExtSolverParameters SolveParameters;
+
+        // Cache für getLazyRows()
+        std::vector<double> selectRowSolution;
+        std::vector<double> selectRowMinAx;
+        std::vector<double> selectRowMaxAx;
+        std::vector<double> selectRowLB;
+        std::vector<double> selectRowUB;
+        //std::vector< std::vector<data::IndexedElement> > selectRowCols;
+        std::vector<double> COLnormers;
+        bool selectRowCacheValid = false;
+        bool COLsNormalized = false;
+
+        std::vector<double> pendingColLB;
+        std::vector<double> pendingColUB;
+  
+        std::vector<HighsInt> dirtyBoundCols;
+        std::vector<unsigned char> dirtyBoundFlag;
+  
+        void resetBoundBuffer();
+        void markBoundDirty(unsigned int i);
+        void flushBoundChanges();
 };
 
 }

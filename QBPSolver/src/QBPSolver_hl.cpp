@@ -27,6 +27,7 @@ using namespace std;
 
 #include "QBPSolver.h"
 #include "yInterface.h"
+#include "CutAdder.h"
 #include <cmath>
 #include "FeasibilityPump.h"
 
@@ -146,6 +147,8 @@ static void adjustLpIts(int i) {
 
 // CONTENT
 /*
+  void CreateCutsInALoop(extSol::QpExternSolver& externSolver, std::vector<std::vector<data::IndexedElement> > &targetListOfCutsLhs, std::vector<data::QpNum> &targetListOfCutsRhs, std::vector<unsigned int> &candis, bool& general_valid, double a, int pick, int t, int decLev, unsigned int initime, int *solu, int *fixs, int*blcks, int orgN, bool root);
+
   void evaluateSearchResult(SearchResult&, char*);
 
   void strengthenLPwithScenarioSelection(std::vector<int>&)
@@ -176,6 +179,425 @@ static void adjustLpIts(int i) {
   int heuristic_II(stack_container &STACK, double &score, bool &lastMBCwasSuccess, bool& neverTriedH, int &pick2, int &savedDecisionLevel);
   */
 
+std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* QBPSolver::cmirize(vector<double> &xlpopt, std::vector<data::QpNum> &lbVec, std::vector<data::QpNum> ubVec, std::vector<data::IndexedElement>& lhsIn, double rhsIn) {
+  int remCutCnt=0;
+
+  std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* subresCut=nullptr;
+  std::vector<std::pair<unsigned int,double>> tempvec;
+  for (int i=0;i < lhsIn.size();i++)
+    tempvec.emplace_back(lhsIn[i].index,lhsIn[i].value.asDouble());
+  double beta=rhsIn;
+
+  subresCut = /*((yInterface*)yIF)->*/CutAdder::CMIRizeEQ( QlpStSolve->getExternSolver( maxLPStage ), xlpopt, lbVec, ubVec, tempvec, (double)beta, type.getData(), assigns.getData(), decisionLevel(), ini_time, optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(), '>');
+  //if (subresCut != nullptr)
+  //  cerr << "+";
+  //else cerr << "-";
+
+  return subresCut;
+}
+
+void QBPSolver::CreateCutsInALoop(extSol::QpExternSolver& externSolver, std::vector<std::vector<data::IndexedElement> > &targetListOfCutsLhs, std::vector<data::QpNum> &targetListOfCutsRhs, std::vector<unsigned int> &candisOld, bool& general_valid, double a, int pick, int t, int decLev, unsigned int initime, int *solu /*debugging info only*/, int *fixs, int*blcks, int orgN, bool root) {
+      static std::vector<data::QpNum> oldListOfCutsRhs;
+      static std::vector<std::vector<data::IndexedElement> > oldListOfCutsLhs;
+      static std::vector<unsigned int> candis;
+      bool output = false;//true;
+      int startDL = decisionLevel();
+      increaseDecisionLevel();
+      while (rembase.size() <= decisionLevel()+1) {
+	//if (getShowWarning()) cerr << "Warning: rembase too small in a loop." << endl;
+	extSol::QpExternSolver::QpExtSolBase base;
+	externSolver.getBase(base);
+	rembase.push_back( base );
+      }
+      
+      listOfCuts_lim[decisionLevel()] = listOfEnteredCuts.size();
+      //trail_lim.push(trail.size());
+      //cerr << "enter main loop cuts." << endl;
+
+      double Before = externSolver.getObjValue().asDouble();
+      int numberRows = externSolver.getRowCount();
+      int numberRowsAtBegin = externSolver.getRowCount();
+      double origLpObj = Before;      
+      int totalNumberApplied = 0;
+      double objVal=Before;
+      int loop_cnt = 0;
+      int loop2_cnt=0;
+      bool hugeImpact=false;
+      bool equalObj=false;
+      pair<coef_t, uint64_t> hash;
+      HTCutentry *HTCe;
+      targetListOfCutsRhs.clear();
+      targetListOfCutsLhs.clear();
+
+      if (QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() != extSol::QpExternSolver::OPTIMAL) {
+	  unsigned int lpt=time(NULL);
+	  QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(),-1,/*-1*/feasPhase?-1:/*3*/3-4 /*simplex iterationen*/,false);
+	  if (status == algorithm::Algorithm::IT_LIMIT || status == algorithm::Algorithm::ERROR) {
+	    if(getShowWarning()) cerr << "Warning: after cuts in a loop, controlled trouble" << endl;
+	  }
+	  LPtim += time(NULL)-lpt;
+	  LPcnt++;
+      }
+
+      assert( externSolver.getSolutionStatus() == extSol::QpExternSolver::OPTIMAL ||
+	      externSolver.getSolutionStatus() == extSol::QpExternSolver::NUM_BEST ||
+	      externSolver.getSolutionStatus() == extSol::QpExternSolver::OPTIMAL_INFEAS);
+      bool firstRound=true;
+      double resetThresh=0.01;
+      do {
+	//cerr << "loop cuts." << loop_cnt << endl;
+	loop_cnt+=2;
+	loop2_cnt++;
+
+	if (QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() != extSol::QpExternSolver::OPTIMAL) {
+	  unsigned int lpt=time(NULL);
+	  QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(),-1,/*-1*/feasPhase?-1:/*3*/3-4 /*simplex iterationen*/,false);
+	  if (status == algorithm::Algorithm::IT_LIMIT || status == algorithm::Algorithm::ERROR) {
+	    if(getShowWarning()) cerr << "Warning: after cuts in a loop, controlled trouble" << endl;
+	  }
+	  LPtim += time(NULL)-lpt;
+	  LPcnt++;
+	}
+	candis.clear();
+	const double dif=1e-4;
+	for (int iii=solution.size()-1; iii >= 0; iii--) {
+	  if (solution[iii].asDouble() < 1.0-dif && solution[iii].asDouble() >= dif)
+	    candis.push_back(iii);
+	}
+
+	//perturbObjective();
+	if (QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() != extSol::QpExternSolver::OPTIMAL) {
+	  if(getShowWarning()) cerr << "Warning: stop in cut-loop. LP not solved." << endl;
+	  
+	  while (startDL < decisionLevel()-1)
+	    trail_lim.pop();
+	  DELETE_CUTS(decisionLevel());
+	  
+	  while (startDL < decisionLevel())
+	    trail_lim.pop();	  
+	  //while(externSolver.getRowCount() > numberRowsAtBegin)
+	  //  DELETE_LATEST_CUT(decisionLevel());
+	  assert(numberRowsAtBegin <= externSolver.getRowCount());
+	  return;
+	}
+
+	//cerr << "loop cuts contd." << loop_cnt << endl;	
+	
+	// Get current solution value
+	objVal = externSolver.getObjValue().asDouble();
+      
+	// Generate and apply cuts
+	std::vector<std::vector<data::IndexedElement> > listOfCutsLhsTMP;
+	std::vector<data::QpNum> listOfCutsRhsTMP;
+	int remCutCnt=0;
+	listOfCutsLhsTMP.clear();
+	listOfCutsRhsTMP.clear();
+
+	if (firstRound) {
+	  firstRound= false;
+	  for (int ii=0; ii < oldListOfCutsRhs.size();ii++) {
+	    listOfCutsLhsTMP.push_back(std::move(oldListOfCutsLhs[ii]));
+	    listOfCutsRhsTMP.push_back(std::move(oldListOfCutsRhs[ii]));
+	  }
+	  for (int h = 0; h < cutsRhsGlobal4Ever.size(); h++){
+	    listOfCutsLhsTMP.push_back((cutsLhsGlobal4Ever[h]));
+	    listOfCutsRhsTMP.push_back((cutsRhsGlobal4Ever[h]));
+	  }	  
+	}
+	//size_t before = listOfCutsLhsTMP.size();
+	remCutCnt = generateImplicationCuts( listOfCutsLhsTMP, listOfCutsRhsTMP, candis, root);
+	//checkDuplicateCuts("IMPLICATION",listOfCutsLhsTMP, listOfCutsRhsTMP, before);
+	//before = listOfCutsLhsTMP.size();
+	
+	remCutCnt = generateCliqueCuts(listOfCutsLhsTMP, listOfCutsRhsTMP, candis, root);	
+	//checkDuplicateCuts("CLIQUE",listOfCutsLhsTMP, listOfCutsRhsTMP, before);
+	//before = listOfCutsLhsTMP.size();
+
+        remCutCnt=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhsTMP, listOfCutsRhsTMP, listOfCutsVars, loop2_cnt>1?4:t, block[pick] , general_valid, candis, ((yInterface*)yIF)->MirSmart, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
+	//checkDuplicateCuts("MIRSMART",listOfCutsLhsTMP, listOfCutsRhsTMP, before);
+	//before = listOfCutsLhsTMP.size();
+	
+	remCutCnt=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhsTMP, listOfCutsRhsTMP, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->ModK, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(), a);
+	//checkDuplicateCuts("MODK",listOfCutsLhsTMP, listOfCutsRhsTMP, before);
+	//before = listOfCutsLhsTMP.size();
+
+	remCutCnt=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhsTMP, listOfCutsRhsTMP, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->GMI, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
+	//checkDuplicateCuts("GMI",listOfCutsLhsTMP, listOfCutsRhsTMP, before);
+	//before = listOfCutsLhsTMP.size();
+
+	remCutCnt=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhsTMP, listOfCutsRhsTMP, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->Cover, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
+	//checkDuplicateCuts("COVER",listOfCutsLhsTMP, listOfCutsRhsTMP, before);
+	//before = listOfCutsLhsTMP.size();
+
+	int cntPro=0;
+	std::vector<int> rhs3Indicators;
+	int numberRowsTMP = externSolver.getRowCount();
+	const int cutStackBefore = listOfEnteredCuts.size();
+	//const int rowsBefore = externSolver.getRowCount();
+	for (int ll = 0; ll < listOfCutsRhsTMP.size();ll++) {
+	  if (listOfCutsLhsTMP[ll].size() < 1) {
+	    listOfCutsRhsTMP[ll] = 0.0;
+	    assert(listOfCutsRhsTMP[ll] <= 0.0);
+	    continue;
+	  }
+	  std::vector<std::pair<unsigned int, double> > cutvec;
+	  bool hasBigX=false;
+	  for (int i=0;i<listOfCutsLhsTMP[ll].size();i++){
+	    cutvec.push_back( std::make_pair( listOfCutsLhsTMP[ll][i].index, listOfCutsLhsTMP[ll][i].value.asDouble() ) );
+	    if (listOfCutsLhsTMP[ll][i].index > orgN) hasBigX = true;
+	  }
+	  if (hasBigX==true) continue;
+
+	  if (computeCutRatio(listOfCutsLhsTMP[ll]) > 1000000) {
+	    continue;
+	  }
+
+	  hash = HTC->computeHash(listOfCutsLhsTMP[ll], listOfCutsRhsTMP[ll].asDouble());
+	  if (!HTC->getEntry(&HTCe,hash.second, hash.first)) {
+	    listOfEnteredCuts.push( make_pair(QlpStSolve->addUserCut(maxLPStage, listOfCutsLhsTMP[ll],
+				    data::QpRhs::greaterThanOrEqual, listOfCutsRhsTMP[ll]), -1) );
+	    listOfEnteredCutHashs.push(hash);
+	    HTC->setEntry(hash.first, hash.second);
+	    cntPro++;
+	    rhs3Indicators.push_back(ll);
+	    //cerr << "numberRowsTMP:" << numberRowsTMP << " #rows:" << externSolver.getRowCount() << " rhs3Indicators.:" << rhs3Indicators.size() << endl;	  
+	  } else {
+	    listOfCutsLhsTMP[ll].clear();
+	    listOfCutsRhsTMP[ll] = 0.0;
+	  }
+	  //cerr << "IND numberRowsTMP:" << numberRowsTMP << " #rows:" << externSolver.getRowCount() << " rhs3Indicators.:" << rhs3Indicators.size() << endl;	  
+	}
+
+	if (cntPro==0) {
+	  //cerr << "cntPro." << cntPro << endl;
+	  break;
+	}
+	int numberRowsBeforeSolve=externSolver.getRowCount();
+	QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(), -1,-1 /*simplex iterationen*/,false, false);
+	//cerr << "rhs3Indicators.size()=" << rhs3Indicators.size() << " obj=" << externSolver.getObjValue().asDouble() << " lb=" << lb.asDouble() << endl;
+	
+	int numberRowsNow = externSolver.getRowCount();
+	std::vector<data::QpNum> duals( numberRowsNow );
+        externSolver.getDuals(duals);
+	
+	extSol::QpExternSolver::QpExtSolBase base;
+	externSolver.getBase(base);
+	if (base.variables.size() < nVars()) {
+	  if(getShowError()) cerr << "Error: got no base in cut in cut-loop" << endl;
+	  
+	  while (startDL < decisionLevel()-1)
+	    trail_lim.pop();
+	  DELETE_CUTS(decisionLevel());
+	  
+	  while (startDL < decisionLevel())
+	    trail_lim.pop();	  
+	  //while(externSolver.getRowCount() > numberRowsAtBegin)
+	  //  DELETE_LATEST_CUT(decisionLevel());
+	  assert(numberRowsAtBegin <= externSolver.getRowCount());
+	  return;
+	}
+
+	for (int ll = 0;ll < rhs3Indicators.size();ll++) {
+	  assert(numberRowsTMP + ll <= numberRowsNow);
+	  if (base.constraints[numberRowsTMP+ll] == extSol::QpExternSolver::Basic)
+	    //if (duals[numberRowsTMP+ll] < 1e-8)
+	    rhs3Indicators[ll] = -rhs3Indicators[ll]-1;
+	}
+	//assert(numberRowsAtBegin <= externSolver.getRowCount());      
+	//func_DELETE_CUTS(decisionLevel());
+	//assert(numberRowsAtBegin <= externSolver.getRowCount());
+
+	rollbackCutsToSize(cutStackBefore);
+	assert(externSolver.getRowCount() == numberRowsTMP);
+	/* 
+	while(externSolver.getRowCount() > **numberRowsAtBegin**numberRowsTMP) {
+	  DELETE_LATEST_CUT(decisionLevel());
+	}
+	*/
+	QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(), -1,-1 /*simplex iterationen*/,false, false);
+	cntPro=0;
+	for (int ii = 0;ii < rhs3Indicators.size();ii++) {
+	  if (rhs3Indicators[ii] < 0) continue;
+	  int ll = rhs3Indicators[ii];
+	  if (listOfCutsLhsTMP[ll].size() < 1) {
+	    listOfCutsRhsTMP[ll] = 0.0;
+	    assert(listOfCutsRhsTMP[ll] <= 0.0);
+	    assert(0);
+	    continue;
+	  }
+	  std::vector<std::pair<unsigned int, double> > cutvec;
+	  bool hasBigX=false;
+	  for (int i=0;i<listOfCutsLhsTMP[ll].size();i++){
+	    cutvec.push_back( std::make_pair( listOfCutsLhsTMP[ll][i].index, listOfCutsLhsTMP[ll][i].value.asDouble() ) );
+	    if (listOfCutsLhsTMP[ll][i].index > orgN) hasBigX = true;
+	  }
+	  if (hasBigX==true) {  assert(0); continue; }
+
+	  hash = HTC->computeHash(listOfCutsLhsTMP[ll], listOfCutsRhsTMP[ll].asDouble());
+	  if (!HTC->getEntry(&HTCe,hash.second, hash.first)) {
+	    listOfEnteredCuts.push( make_pair(QlpStSolve->addUserCut(maxLPStage, listOfCutsLhsTMP[ll],
+				    data::QpRhs::greaterThanOrEqual, listOfCutsRhsTMP[ll]), -1) );
+	    listOfEnteredCutHashs.push(hash);
+	    HTC->setEntry(hash.first, hash.second);
+	    cntPro++;
+	    targetListOfCutsLhs.push_back(listOfCutsLhsTMP[ll]);
+	    targetListOfCutsRhs.push_back(listOfCutsRhsTMP[ll]);
+	  } else {
+	    listOfCutsLhsTMP[ll].clear();
+	    listOfCutsRhsTMP[ll] = 0.0;
+	  }
+	}
+
+	// Increment the counter of total cuts applied
+	totalNumberApplied += cntPro;
+      
+	// If no cuts were applied, then done
+	if ( cntPro==0 ) {
+	  //cerr << "cntPro2= cuts." << cntPro << endl;
+	  break;
+	}
+	//trail_lim.push(trail.size());
+	increaseDecisionLevel();
+	while (rembase.size() <= decisionLevel()+1) {
+	  //if (getShowWarning()) cerr << "Warning: rembase too small in a loop II." << endl;
+	  extSol::QpExternSolver::QpExtSolBase base;
+	  externSolver.getBase(base);
+	  rembase.push_back( base );
+	}
+	listOfCuts_lim[decisionLevel()] = listOfEnteredCuts.size();
+	// Resolve
+	QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(), -1,-1 /*simplex iterationen*/,false, false);
+
+	int lastVar = orgN-1;
+	int lastBlk = blcks[lastVar];
+	if (output) std::cerr <<"last block " << lastBlk << " var:" << lastVar << std::endl;
+	int fc=0;
+	if (root && lastBlk==1 && solution.size()>=nVars() && status == algorithm::Algorithm::FEASIBLE) {
+	  /*int*/ fc = dualCostFix(solution, a, -lb.asDouble(), pick, true );
+	}
+	//fc = rootDualFixing(externSolver, externSolver.getRowCount(), nVars(), -global_score, solution);
+
+	//if (lastBlk==1) fc=doDualFixing(model.solver()->getNumRows(), model.solver()->getNumCols(), types, fixs, intLB);
+	//else fc = 0;
+
+	if ((output)&& status == algorithm::Algorithm::FEASIBLE) std::cerr <<"After applying cuts, objective value changed from "
+			      <<objVal <<" to " << externSolver.getObjValue().asDouble() <<std::endl <<std::endl;
+	//std::cerr << "DL=" << decLev << " " << QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() << extSol::QpExternSolver::OPTIMAL << " -lb=" << -lb.asDouble() << " gdb=" << global_dual_bound << std::endl;
+	if (decLev <= 1 && (QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::OPTIMAL /*|| QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus()==extSol::QpExternSolver::INFEASIBLE*/)) {
+	  if (-externSolver.getObjValue().asDouble() < global_dual_bound - fabs(global_dual_bound) * 1e-5)
+	    global_dual_bound = -externSolver.getObjValue().asDouble();
+	  if (global_dual_bound < global_score)
+	    global_dual_bound = global_score;
+	}
+
+	if (status == algorithm::Algorithm::INFEASIBLE) break;
+	
+	equalObj = (fabs(externSolver.getObjValue().asDouble()-objVal) >
+		    0.00001+fabs(externSolver.getObjValue().asDouble())*0.00001 ? false : true );
+	if (fabs(externSolver.getObjValue().asDouble()-objVal) / (fabs(externSolver.getObjValue().asDouble())+fabs(objVal)+1e-10) > 0.0025 || fc > 0)
+	  hugeImpact = true;
+	else 
+	  hugeImpact = false;
+	if (fabs(externSolver.getObjValue().asDouble()-objVal) / (fabs(externSolver.getObjValue().asDouble())+fabs(objVal)+1e-10) > resetThresh) {
+	  loop_cnt = 0;
+	  resetThresh *= 1.5;
+	}
+	if (output) std::cerr << "Quotient of progress: " << fabs(externSolver.getObjValue().asDouble()-objVal) / (fabs(externSolver.getObjValue().asDouble())+fabs(objVal))<< std::endl;
+	if (output) std::cerr << ( (!equalObj  ) && ((loop_cnt < 15) || (hugeImpact && loop_cnt < 30)) ? "stay in loop" : "break loop") <<std::endl;
+	if (output) std::cerr << "loop_cnt = " << loop_cnt << " hugeImpact=" << hugeImpact << " equalObj=" << equalObj <<  std::endl;
+	if (decisionLevel() >= nVars()) break;
+	if (hugeImpact) loop_cnt--;//-=5;
+	//loop_cnt = fmax(loop_cnt,-10);
+      } while( (!equalObj  ) && ((loop_cnt < 20) || (hugeImpact && loop_cnt < 30)));
+      cerr << "startDL=" << startDL << " curDL=" << decisionLevel() << endl;
+      if (output) {
+	std::cerr <<std::endl <<std::endl;
+	std::cerr << "----------------------------------------------------------" 
+		  <<std::endl;
+	std::cerr << "Cut generation phase completed:" <<std::endl;
+	std::cerr << "   " << totalNumberApplied << " cuts were applied in total," 
+		  <<std::endl;
+	std::cerr << "   changing the lp objective value from " << origLpObj 
+		  << " to " << externSolver.getObjValue().asDouble() <<std::endl;
+	std::cerr << "----------------------------------------------------------" 
+		  <<std::endl;
+	std::cerr <<std::endl <<std::endl;
+      }
+
+      assert(numberRowsAtBegin <= externSolver.getRowCount());      
+      while (startDL < decisionLevel()-1)
+	//decreaseDecisionLevel();
+	trail_lim.pop();
+      DELETE_CUTS(decisionLevel());
+      assert(numberRowsAtBegin <= externSolver.getRowCount());      
+      
+      while (startDL < decisionLevel())
+	decreaseDecisionLevel();
+      cerr << "last DL=" << decisionLevel() << endl;
+      QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(), -1,-1 /*simplex iterationen*/,false, false);
+      cerr << "start Lpval=" << Before << " last LPval=" << -lb.asDouble() << endl;
+      //trail_lim.pop();
+      
+      //while(externSolver.getRowCount() > numberRowsAtBegin)
+      //	DELETE_LATEST_CUT(decisionLevel());
+#ifdef CONTROL_SIZES
+      ca_vec<pair<double, uint32_t> > cutsorter;
+      pairSortLt psl;
+      for (uint32_t ll = 0 ; ll < targetListOfCutsRhs.size();ll++) {
+	//targetListOfCutsRhs[ll] = targetListOfCutsRhs[ll].asDouble() - 1e-11;
+	if (targetListOfCutsLhs[ll].size() < 1) {
+	  assert(targetListOfCutsRhs[ll] == 0.0);
+	  if (info_level >= 2) cerr << "L=" << targetListOfCutsLhs[ll].size() << " ";
+	  continue;
+	}
+	//std::pair<coef_t,uint64_t> hp;
+	//std::vector<std::pair<int,double> > cpropQ;
+	//std::vector< std::pair<int,int> > clist;
+	data::QpRhs RHS_chg;
+	RHS_chg.set(data::QpRhs::RatioSign::smallerThanOrEqual, targetListOfCutsRhs[ll]);
+	cutsorter.push(pair<double,uint32_t>((double)-computeEfficacy(targetListOfCutsLhs[ll], targetListOfCutsRhs[ll], solution)*computeObjParallelismApprox(targetListOfCutsLhs[ll], targetListOfCutsRhs[ll], constraints[0])/(double)targetListOfCutsLhs[ll].size(),ll) );
+      }
+      sort(cutsorter,psl);
+      increaseDecisionLevel();
+      while (rembase.size() <= decisionLevel()+1) {
+	//if (getShowWarning()) cerr << "Warning: rembase too small in a loop III." << endl;
+	extSol::QpExternSolver::QpExtSolBase base;
+	externSolver.getBase(base);
+	rembase.push_back( base );
+      }
+      for (int ll = 0; ll < cutsorter.size();ll++) {
+	hash = HTC->computeHash(targetListOfCutsLhs[cutsorter[ll].second], targetListOfCutsRhs[cutsorter[ll].second].asDouble());
+	if (!HTC->getEntry(&HTCe,hash.second, hash.first)) {
+	  listOfEnteredCuts.push( make_pair(QlpStSolve->addUserCut(maxLPStage, targetListOfCutsLhs[cutsorter[ll].second],
+								   data::QpRhs::greaterThanOrEqual, targetListOfCutsRhs[cutsorter[ll].second]) , -1));
+	  listOfEnteredCutHashs.push(hash);
+	  HTC->setEntry(hash.first, hash.second);
+	}
+      }
+      unsigned int lpt=time(NULL);
+      QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(), -1,-1 /*simplex iterationen*/,false/*, false*/);
+      if (status == algorithm::Algorithm::IT_LIMIT || status == algorithm::Algorithm::ERROR/*extSol::QpExternSolver::ABORT_IT_LIM && status != extSol::QpExternSolver::ABORT_TIME_LIM*/) {
+	//if (status != extSol::QpExternSolver::OPTIMAL && status != extSol::QpExternSolver::INFEASIBLE) {
+	if(getShowWarning()) cerr << "Warning: GMI controlled trouble inline IIIii" << endl;
+      }
+      LPtim += time(NULL)-lpt;
+      LPcnt++;
+      assert(numberRowsAtBegin <= externSolver.getRowCount());
+      cerr << "LPval after inaloop:" << -lb.asDouble() << " but collected #cuts=" << targetListOfCutsRhs.size() << endl;
+      DELETE_CUTS(decisionLevel());
+      decreaseDecisionLevel();
+      cerr << "lastlast DL=" << decisionLevel() << endl;
+      QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(), -1,-1 /*simplex iterationen*/,false, false);
+
+#endif
+      
+      cerr << "start Lpval=" << Before << " lastlast LPval=" << -lb.asDouble() << endl;
+      oldListOfCutsRhs = targetListOfCutsRhs;
+      oldListOfCutsLhs = targetListOfCutsLhs;
+
+      return;
+    }
+
 void QBPSolver::evaluateSearchResult(SearchResult& V, char* originStr, int pick, bool LimHorSrch, int sfather_ix, bool lastMBCwasSuccess) {
   for (int iii = 0; iii < nVars();iii++) {
     if (block[iii] == 1 && assigns[iii] != extbool_Undef) {
@@ -183,6 +605,7 @@ void QBPSolver::evaluateSearchResult(SearchResult& V, char* originStr, int pick,
       fstStSol[iii] = (double)assigns[iii];
     }
   }
+  fstStKnownFromTrail();
   UpdForecast(fstStSol);
   global_score = V.value;
   discoveredNews += 500;
@@ -448,6 +871,7 @@ int QBPSolver::evaluateTreeLeaf(stack_container &STACK, bool &lastMBCwasSuccess,
 	      fstStSol[iii] = solution[iii].asDouble();
 	    }
 	  }
+	  fstStKnownFromCandidate();
 	  UpdForecast(fstStSol);
 	  global_score = -lb.asDouble();
 	  s_breadth=START_BREADTH;
@@ -688,6 +1112,7 @@ int QBPSolver::evaluateNode(stack_container &STACK, bool &statusOK, double &scor
 		      fstStSol[iii] = IPSol[iii];
 		  }
 		}
+		fstStKnownFromCandidate();
 		UpdForecast(fstStSol);
 		global_score = score = c.header.rhs = value;
 		discoveredNews += 500;
@@ -1053,7 +1478,7 @@ int QBPSolver::evaluateNode(stack_container &STACK, bool &statusOK, double &scor
 #endif
 #endif
 
-	if (cntCov < max(1,1 + /*5*/(int)sqrt((double)binVars())-decisionLevel()) ) {
+	if (0&&cntCov < max(1,1 + /*5*/(int)sqrt((double)binVars())-decisionLevel()) ) {
 	  //if (decisionLevel()==1) cerr << "COV3" << endl;
 
 	  if ((time(NULL) - ini_time)/10 < time(NULL) - T0 && decisionLevel() > (int)log2(1+log2((double)binVars()))) break;
@@ -1073,11 +1498,12 @@ int QBPSolver::evaluateNode(stack_container &STACK, bool &statusOK, double &scor
 	  statusOK=false;
 	  int ncuts=0;
 	  if (useCover&&block[Lpick]==maxBlock) ncuts =((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, decisionLevel(), block[pick] , general_valid, candis, ((yInterface*)yIF)->Cover, type.getData(), assigns.getData(), ini_time, optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(), a);
-	  if (getUseGMIinner()) ncuts =((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, decisionLevel(), block[pick] , general_valid, candis, ((yInterface*)yIF)->MirSmart/*GMI*/, type.getData(), assigns.getData(), ini_time, optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(), a);
+	  if (getUseGMIinner()) ncuts =((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, 4+decisionLevel(), block[pick] , general_valid, candis, ((yInterface*)yIF)->MirSmart/*GMI*/, type.getData(), assigns.getData(), ini_time, optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(), a);
 	  if (!(isPow2(decisionLevel()) &&decisionLevel() > 3)) {
 	  } else {}
 	  if (search_stack.stack_pt>2 && search_stack.stack[search_stack.stack_pt-1].status == AFTER_LOOP) {
-	    if (!(isPow2(decisionLevel()) &&decisionLevel() > 3)) ncuts =((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, decisionLevel(), block[pick] , general_valid, candis, ((yInterface*)yIF)->GMI/*MirSmart*/, type.getData(), assigns.getData(), ini_time, optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(), a);
+	    if (!(isPow2(decisionLevel()) &&decisionLevel() > 3))
+	      ncuts =((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, decisionLevel(), block[pick] , general_valid, candis, ((yInterface*)yIF)->GMI/*MirSmart*/, type.getData(), assigns.getData(), ini_time, optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(), a);
 	    ncuts =((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, decisionLevel(), block[pick] , general_valid, candis, ((yInterface*)yIF)->ModK, type.getData(), assigns.getData(), ini_time, optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(), a); 
 	  }
 	  if (ncuts == 0){
@@ -1540,11 +1966,18 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
   int remSize=QlpStSolve->getExternSolver( maxLPStage ).getRowCount();
   bool tooManyLPlines = false;
   bool showWUDo_gencuts=false;
+  int kkkkk=0;
+  double prevLPval0=n_infinity;
+  double prevLPval1=n_infinity;
+  double prevLPval2=n_infinity;
+  double prevLPval3=n_infinity;
+  const bool forceWorkerCutsNow = (forceMpiTreeCutsOnce && decisionLevel() >= 2 && !feasPhase && status == algorithm::Algorithm::FEASIBLE);
   
   if (1) {
     bool comeFromLart=false;
     //modAssertPPH(getNodestackSizePPH() == decisionLevel());
   Lart:;
+    kkkkk++;
     //modAssertPPH(getNodestackSizePPH() == decisionLevel());
     if (info_level >= -6 && decisionLevel() < 2) cerr << "Solution Status:" << QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() << endl;
     if (decisionLevel() <= 1 && QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::INFEASIBLE) {
@@ -1598,12 +2031,13 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
       if (showWUDo_gencuts) cerr << "pass K1: in DL=" << decisionLevel() << endl;
     }
 
-    if (/*startFromOutside &&*/ !feasPhase && /*GlSc2 < global_score &&*/ Ntabus == 0 && USE_GMI_UNLIMITED && getUseGMIroot() && decisionLevel() <= 1 && (!feasPhase || !rootLPsolEx) && (!useRestarts || !rootLPsolEx ) && status == algorithm::Algorithm::FEASIBLE  && (GMtim < 0.2*(time(NULL) - ini_time) || !rootLPsolEx || neverBeenInGmi/*GMtim<2*/ /*|| global_score > prev_global_score+fabs(prev_global_score/100)*/ || prev_closed+prev_closed/10 < trail.size() || comeFromLart )) {
+    if ((!feasPhase && enforceCuts && !feasPhase && USE_GMI_UNLIMITED && getUseGMIroot() && decisionLevel() <= 1 && status == algorithm::Algorithm::FEASIBLE) || (/*startFromOutside &&*/ !feasPhase && /*GlSc2 < global_score &&*/ Ntabus == 0 && USE_GMI_UNLIMITED && getUseGMIroot() && decisionLevel() <= 1 && (!feasPhase || !rootLPsolEx) && (!useRestarts || !rootLPsolEx ) && status == algorithm::Algorithm::FEASIBLE  && (GMtim < 0.2*(time(NULL) - ini_time) || !rootLPsolEx || neverBeenInGmi || kkkkk<3/*GMtim<2*/ /*|| global_score > prev_global_score+fabs(prev_global_score/100)*/ || prev_closed+prev_closed/10 < trail.size() || comeFromLart )) ) {
       if ( (decisionLevel()<5 && (sfather_ix == 0 || father_ix==1))) {
 	if (showWUDo_gencuts) cerr << "pass gmi root: in DL=" << decisionLevel() << endl;
       }
       //assert(0);
       neverBeenInGmi = false;
+      enforceCuts = false;
       if(0){
 	HTCutentry *HTCe;
 	pair<coef_t, uint64_t> hash;
@@ -1756,6 +2190,16 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
       }
 
       for (int kkk=0, kkkk=0, never=0; kkk < GMI_ROUNDSvar + GMI_round_bonus && kkkk < KKKK_limit; kkk++, kkkk++,never++) {
+	prevLPval3 = prevLPval2;
+	prevLPval2 = prevLPval1;
+	prevLPval1 = prevLPval0;
+	prevLPval0 = -lb.asDouble();
+	cerr << "LPb0=" << prevLPval0 << " LPb1=" << prevLPval1 << " LPb2=" << prevLPval2 << " LPb3=" << prevLPval3 << endl;
+	if (kkkk>2 && fabs(prevLPval3-prevLPval0)<0.001*fabs(prevLPval3+prevLPval0)+0.001) {
+	  kkk = GMI_ROUNDSvar+GMI_round_bonus-1;
+	  kkkk = KKKK_limit-1;
+	  kkkkk=1000;
+	}
 	if (0&&kkkk>0 && GMtim+(time(NULL)-gmistim) > 0.5*(time(NULL) - ini_time)) {
 	  kkk = GMI_ROUNDSvar+GMI_round_bonus-1;
 	  kkkk = KKKK_limit-1;
@@ -1941,7 +2385,8 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	    }
 	  }
 	}
-	if (1||QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
+	if (!feasPhase && QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
+	  assert(!feasPhase);
 	  unsigned int lpt=time(NULL);
 	  QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(), -1,-1 /*simplex iterationen*/,false,false);
 	  if (status == algorithm::Algorithm::IT_LIMIT || status == algorithm::Algorithm::ERROR/*extSol::QpExternSolver::ABORT_IT_LIM && status != extSol::QpExternSolver::ABORT_TIME_LIM*/) {
@@ -1960,7 +2405,8 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	  //cerr << endl << "Changes:" << prevDeltaDist << " -> " << dist-lstDist << ", " << prevEval << " -> " << -lb.asDouble() << endl;
 	  if (info_level >= 5) cerr << endl << "Changes:" << lstDist << " -> " << dist << ", " << prevEval << " -> " << -lb.asDouble() << " | "<< (dist-lstDist > 0) << (-lb.asDouble() < prevEval) << endl;
 	  //if (-lb.asDouble() < old_lb - fabs(old_lb)*0.005 && GMI_round_bonus < 100) {
-	  if (/*dist-lstDist > 10*/ ((dist/*-lstDist*/ > 0.8*lstDist && dist / binVars() > 0.01/*fabs(-lb.asDouble()) / 100.0 */) /*prevDeltaDist*/ || -lb.asDouble() < prevEval - fabs(prevEval)/20000 - fabs(-lb.asDouble())/20000) && GMI_round_bonus < 1000) {
+	  if (/*dist-lstDist > 10*/ ((dist/*-lstDist*/ > 0.8*lstDist && dist / binVars() > 0.01/*fabs(-lb.asDouble()) / 100.0 */) /*prevDeltaDist*/ || -lb.asDouble() < prevEval - fabs(prevEval)/20000 - fabs(-lb.asDouble())/20000) && GMI_round_bonus < 1000
+	      /* && fabs(-lb.asDouble() - global_dual_bound) < 0.1*fabs(prevEval-global_dual_bound)*/ ) {
 	    if (info_level >= 5) cerr << "inc " << -lb.asDouble() << " >? " << prevEval << endl;
 	    if (info_level >= 5) cerr << "dist=" << dist << " lstDist=" << lstDist << endl;
 
@@ -2065,7 +2511,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	  //cerr << "Abort cut generation. " << ((never>0 && (GMtim+(time(NULL)-gmistim) > 0.2*(time(NULL) - ini_time)) && time(NULL) - ini_time > 100) ) << endl;
 	}
 	
-	if ( (0&&TrailHasIncreased == false && (GlSc2 >= global_score && GlSc2 > n_infinity)) || kkk == GMI_ROUNDSvar+GMI_round_bonus-1 || kkkk == KKKK_limit-1 || ((double)(time(NULL) - ini_time)*0.2 + supTi + 5 < (double)(time(NULL)-gmistim+GMtim) && time(NULL) - ini_time > 200) /* || global_dual_bound < -lb.asDouble() - fabs(lb.asDouble() * 0.0002)*/ || ((never>0 && (GMtim+(time(NULL)-gmistim) > 0.2*(time(NULL) - ini_time)) && time(NULL) - ini_time > fstCutsLimit)  )) {
+	if ( (0&&TrailHasIncreased == false && (GlSc2 >= global_score && GlSc2 > n_infinity)) || kkk == GMI_ROUNDSvar+GMI_round_bonus-1 || kkkk == KKKK_limit-1 || ((double)(time(NULL) - ini_time)*0.2 + supTi + 5 < (double)(time(NULL)-gmistim+GMtim) && time(NULL) - ini_time > 200) /* || global_dual_bound < -lb.asDouble() - fabs(lb.asDouble() * 0.0002)*/ || ((kkkkk>2 && never>0 && (GMtim+(time(NULL)-gmistim) > 0.2*(time(NULL) - ini_time)) && time(NULL) - ini_time > fstCutsLimit)  )) {
 	  //break;
 	  unsigned int lpt=time(NULL);
 	  QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE, decisionLevel(),-1,-1 /*simplex iterationen*/,false/*, false*/);
@@ -2077,197 +2523,6 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	  LPtim += time(NULL)-lpt;
 	  LPcnt++;
 	  statusOK=true;
-
-	  if (status == algorithm::Algorithm::FEASIBLE && solution.size() >= nVars()) {
-	    std::vector<double> *IPSol;
-	    std::vector<double> IPSol1;
-	    std::vector<double> IPSol2;
-	    std::vector<double> IPSol3;
-	    double value1 = n_infinity;
-	    double value2 = n_infinity;
-	    double value3 = n_infinity;
-	    double valueM = dont_know;
-	    int selVar=-1;
-	    if (info_level >= -6) cerr << "TRY FIS. real rows:" << QlpStSolve->getExternSolver( maxLPStage ).getRowCount() << endl;
-	    bool fIS=false;
-	    time_t T0 = time(NULL);
-	    bool fIS1 = SearchNonBinarized(solution, IPSol1, selVar, sorter, true);
-	    //fIS1 = false;
-
-	    if(0){
-	      unsigned int lpt=time(NULL);
-	      QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(), -1,-1 /*simplex iterationen*/,false/*, false*/);
-	      if (status == algorithm::Algorithm::IT_LIMIT || status == algorithm::Algorithm::ERROR/*extSol::QpExternSolver::ABORT_IT_LIM && status != extSol::QpExternSolver::ABORT_TIME_LIM*/) {
-		//if (status != extSol::QpExternSolver::OPTIMAL && status != extSol::QpExternSolver::INFEASIBLE) {
-		if(getShowWarning()) cerr << "Warning: GMI controlled trouble inline I" << endl;
-		break;
-	      }
-	      LPtim += time(NULL)-lpt;
-	      LPcnt++;
-	      statusOK=true;
-	    }
-	    time_t T1 = time(NULL)-T0;
-	    bool fIS2 = false;//FindIntegerSolution(solution, IPSol2, selVar, sorter, false/*true*/,true);
-	    if(0){
-	      unsigned int lpt=time(NULL);
-	      QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(), -1,-1 /*simplex iterationen*/,false/*, false*/);
-	      if (status == algorithm::Algorithm::IT_LIMIT || status == algorithm::Algorithm::ERROR/*extSol::QpExternSolver::ABORT_IT_LIM && status != extSol::QpExternSolver::ABORT_TIME_LIM*/) {
-		//if (status != extSol::QpExternSolver::OPTIMAL && status != extSol::QpExternSolver::INFEASIBLE) {
-		if(getShowWarning()) cerr << "Warning: GMI controlled trouble inline II" << endl;
-		break;
-	      }
-	      LPtim += time(NULL)-lpt;
-	      LPcnt++;
-	      statusOK=true;
-	    }
-	    time_t T2 = time(NULL)-T0-T1;
-	    bool fIS3 = false;//FindIntegerSolution(solution, IPSol3, selVar, sorter, true,true);
-	    if(0){
-	      unsigned int lpt=time(NULL);
-	      QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(), -1,-1 /*simplex iterationen*/,false/*, false*/);
-	      if (status == algorithm::Algorithm::IT_LIMIT || status == algorithm::Algorithm::ERROR/*extSol::QpExternSolver::ABORT_IT_LIM && status != extSol::QpExternSolver::ABORT_TIME_LIM*/) {
-		//if (status != extSol::QpExternSolver::OPTIMAL && status != extSol::QpExternSolver::INFEASIBLE) {
-		if(getShowWarning()) cerr << "Warning: GMI controlled trouble inline III" << endl;
-		break;
-	      }
-	      LPtim += time(NULL)-lpt;
-	      LPcnt++;
-	      statusOK=true;
-	    }
-	    time_t T3 = time(NULL)-T0-T1-T2;
-	    if (info_level >= -6) cerr << "TIMES FOR FIS: " << T1 << "," << T2 << "," << T3 << endl; 
-	    for (int z=1;z<=1/*3*/;z++) {
-	      if (z==1) {
-		IPSol = & IPSol1;
-		if (fIS1 == false) {
-		  value1 = n_infinity;
-		  continue;
-		}
-	      } else if (z==2) {
-		IPSol = & IPSol2;
-		if (fIS2 == false) {
-		  value2 = n_infinity;
-		  continue;
-		}
-	      } else if (z==3) {
-		IPSol = & IPSol3;
-		if (fIS3 == false) {
-		  value3 = n_infinity;
-		  continue;
-		}
-	      }
-	      Constraint &c = constraintallocator[constraints[0]];
-	      double value=0.0;
-	      for (int j = 0; j < c.size();j++) {
-		if (sign(c[j])) value = value - c[j].coef*(*IPSol)[var(c[j])];
-		else            value = value + c[j].coef*(*IPSol)[var(c[j])];
-	      }
-	      value -= objOffset;
-	      if (info_level >= -6) cerr << z << ":FindIntegerFound value=" << value << " a=" << a << " rhs=" << c.header.rhs << endl;
-	      if (value > a && value >= c.header.rhs  && block[Lpick] == maxBlock) {
-		fIS = checkIPsol(*IPSol);
-		if (info_level >-8) cerr << "FIS:" << fIS << " z=" << z << endl;
-		if(1)for (int zz=0;zz<nVars();zz++) {
-		    if (type[zz] == BINARY && !isZero((*IPSol)[zz],1e-7) && !isOne((*IPSol)[zz],1e-7))
-		      fIS = false;
-		  }
-	      }
-	      if (fIS) {
-		if (info_level >= -6) cerr << "fIS ok bei z=" << z << endl;
-		if (z == 1) { value1 = value; fIS1 = fIS; }
-		else if (z == 2) { value2 = value; fIS2 = fIS; }
-		else if (z == 3) { value3 = value; fIS3 = fIS; }
-	      } else {
-		if (info_level >= -6) cerr << "fIS false bei z=" << z << endl;
-		if (z == 1) { fIS1 = fIS; }
-		else if (z == 2) { fIS2 = fIS; }
-		else if (z == 3) { fIS3 = fIS; }
-	      }
-	    }
-	    fIS = fIS1;
-	    IPSol = &IPSol1;
-	    valueM = value1;
-	    if (!fIS || (fIS2 && value2 > valueM)) {
-	      fIS = fIS2;
-	      valueM = value2;
-	      IPSol = &IPSol2;
-	    } 
-	    if (!fIS || (fIS3 && value3 > valueM)) {
-	      fIS = fIS3;
-	      valueM = value3;
-	      IPSol = &IPSol3;
-	    } 
-	    if (fIS) {
-	      if (info_level >= -6) cerr << "with fIS" << endl;
-	      if (info_level >= -6) cerr << "fIS=" << fIS << " fIS1=" << fIS1 << " fIS2=" << fIS2 << " fIS3=" << fIS3 << endl;
-	      if (info_level >= -6) cerr << "valM=" << valueM << " val1=" << value1 << " val2=" << value2 << " val3=" << value3 << endl;
-	    } else {
-	      if (info_level >= -6) cerr << "no fIS" << endl;
-	      if (info_level >= -6) cerr << "fIS=" << fIS << " fIS1=" << fIS1 << " fIS2=" << fIS2 << " fIS3=" << fIS3 << endl;
-	      if (info_level >= -6) cerr << "valM=" << valueM << " val1=" << value1 << " val2=" << value2 << " val3=" << value3 << endl;
-	    }
-	    //if (!fIS) 
-	    //  fIS = FindIntegerSolution(solution, IPSol, selVar, sorter, false/*true*/);
-	    if (fIS) {
-	      {
-		Constraint &c = constraintallocator[constraints[0]];
-		double value=0.0;
-		for (int j = 0; j < c.size();j++) {
-		  if (sign(c[j])) value = value - c[j].coef*(*IPSol)[var(c[j])];
-		  else            value = value + c[j].coef*(*IPSol)[var(c[j])];
-		}
-		value -= objOffset;
-		if (info_level >= -5) cerr << "info: FindInteger.Found. value=" << value << " a=" << a << " rhs=" << c.header.rhs << endl;
-		if (value > a && value >= c.header.rhs  && block[Lpick] == maxBlock && !solutionAcceptancedIsBlocked(decisionLevel())) {
-		  fIS = checkIPsol(*IPSol);
-		  if (info_level >= -6) cerr << "FIS:" << fIS << endl;
-		  if (fIS) {
-		    if (/*!feasPhase*/getMaintainPv() && block[Lpick] == maxBlock && block[Lpick] < PV.size() && value > stageValue[block[Lpick]]) {
-		      stageValue[block[Lpick]] = value;
-		      for (int iii = 0; iii < nVars();iii++) {
-			PV[block[Lpick]][iii] = (*IPSol)[iii];
-		      }					  
-		      if (LATE_PV_CP) {				
-			for (int iii=0;iii<10;iii++) cerr << PV[block[Lpick]][iii];
-			cerr << " -3-> " << stageValue[block[Lpick]] << endl;	  
-		      }
-		    }
-			  
-		    double c0 = 0.0;
-		    Constraint & c = constraintallocator[constraints[0]];
-		    for (int hh=0;hh<c.size();hh++)
-		      c0 = c0 + (sign(c[hh]) ? -1.0 : 1.0) * c[hh].coef * (*IPSol)[var(c[hh])]; 
-		    if (fabs(value-c0) > 1e-7) {
-		      if(getShowError()) cerr << "Error: solution checked, but Lp-solver objective wrong." << c0 << " != " << -lb.asDouble() << endl;
-		      value = c0;
-		    }
-		    if (block[Lpick] == 1) {
-		      for (int iii = 0; iii < nVars();iii++) {
-			if (block[iii] == 1) {
-			  fstStSol[iii] = (*IPSol)[iii];
-			}
-		      }
-			    
-		      UpdForecast(fstStSol);
-		      global_score = value;
-		      s_breadth=START_BREADTH;
-		      discoveredNews += 500;
-		      aliveTimer = time(NULL);
-		      coef_t gap;
-		      gap = fabs(100.0*(-global_dual_bound + (-lb.asDouble())) / (fabs(lb.asDouble())+1e-10) );
-		      progressOutput("++fis", global_score, global_dual_bound, !LimHorSrch, objInverted,sfather_ix);
-		      uviRELA_Suc = 1.0;
-		      uviRELA_cnt = 1.0;
-		      deltaMiniS_time = time(NULL);
-		      lastMBCwasSuccess =true;
-		      strongExtSol = true;
-		    }    
-			  
-		  }
-		}
-	      }
-	    }
-	  }
 
 	  if (decisionLevel() <= 2) {
 	    if (info_level >= 2) cerr << "Final Relaxation: " << -lb.asDouble() << " DL=" << decisionLevel() << endl;
@@ -2338,6 +2593,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	      double para = computeParallelismApprox(listOfCutsLhs3[ll], listOfCutsRhs3[ll],
 					       listOfCutsLhs3[zz], listOfCutsRhs3[zz]);
 	      if (para > maxPara) maxPara = para;
+	      if (maxPara > 1.1) break;
 	    }
 	    //cerr << "mPara= " << maxPara << endl;
 	    if (maxPara > 1.1) continue;
@@ -2444,6 +2700,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	      double para = computeParallelismApprox(listOfCutsLhs3[ll], listOfCutsRhs3[ll],
 					       listOfCutsLhs3[ll], listOfCutsRhs3[ll]);
 	      if (para > maxPara) maxPara = para;
+	      if (maxPara > 1.1) break;
 	    }
 	    //cerr << "mPara2=" << maxPara << endl;
 	    if (maxPara > 1.1) continue;
@@ -2549,6 +2806,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 		double para = computeParallelismApprox(listOfCutsLhs3[ll], listOfCutsRhs3[ll],
 						 listOfCutsLhs3[ll], listOfCutsRhs3[ll]);
 		if (para > maxPara) maxPara = para;
+		if (maxPara > 1.1) break;
 	      }
 	      if (maxPara > 1.1) { continue; }
 	      double powKkkk = 1.0;
@@ -2747,19 +3005,29 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	    if ( (!useCglRootCuts || QlpStSolve->getExternSolver(maxLPStage).getRowCount() > 50000 || kkk>1)) {
 	      int lllc=0;
 	      lncuts = generateImplicationCuts( listOfCutsLhs2, listOfCutsRhs2, candis, true);
+	      lncuts = generateCliqueCuts(listOfCutsLhs2, listOfCutsRhs2, candis, true);	
 	      if (useCglRootCuts) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->CGL_LIB/*+(kkk>1?0:1)*/, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
+	      else {
+		CreateCutsInALoop(QlpStSolve->getExternSolver( maxLPStage), listOfCutsLhs2, listOfCutsRhs2, candis, general_valid, a, pick, t, /*decisionLevel()*/0/*root*/, ini_time, optSol.getData(), VIsFixed.getData(), block.getData(), nVars(), true);
+		lncuts = listOfCutsRhs2.size();
+	      }
 	      if (1) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->ModK, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
 	      if (useCover) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->Cover/*+(kkk>1?0:1)*/, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);	      
-	      if (useMirS) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->MirSmart/*+(kkk>1?0:1)*/, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
+	      if (useMirS) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, 4+t, block[pick] , general_valid, candis, ((yInterface*)yIF)->MirSmart/*+(kkk>1?0:1)*/, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
 	      if (use_gmiS  && getUseGMI() && USE_GMI_UNLIMITED) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->GMI, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
 	      //if (lncuts>lllc) cerr << "YYYEEEESSSSS" << lncuts;
 	      //assert(lllc==0);
 	    } else  {
 	      lncuts = generateImplicationCuts( listOfCutsLhs2, listOfCutsRhs2, candis, true);
+	      lncuts = generateCliqueCuts(listOfCutsLhs2, listOfCutsRhs2, candis, true);	
 	      if(useCglRootCuts) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->CGL_LIB/*+(kkk>1?0:1)*/, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
+	      else {
+		CreateCutsInALoop(QlpStSolve->getExternSolver( maxLPStage), listOfCutsLhs2, listOfCutsRhs2, candis, general_valid, a, pick, t, /*decisionLevel()*/0/*root*/, ini_time, optSol.getData(), VIsFixed.getData(), block.getData(), nVars(), true);
+		lncuts = listOfCutsRhs2.size();
+	      }
 	      if (1) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->ModK, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
 	      if (useCover) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->Cover/*CGL_LIB*//*+(kkk>1?0:1)*/, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
-	      if (useMirS) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->MirSmart/*CGL_LIB*//*+(kkk>1?0:1)*/, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
+	      if (useMirS) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs2, listOfCutsRhs2, listOfCutsVars, 4+t, block[pick] , general_valid, candis, ((yInterface*)yIF)->MirSmart/*CGL_LIB*//*+(kkk>1?0:1)*/, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
 	    }
 	    if (info_level >= -6) cerr << "end gmi cuts." << endl;
 	    if (info_level >= -6) cerr << "#gmi:" << lncuts << "," << listOfCutsRhs2.size() << " " << objIsInteger() << " " << decisionLevel() << endl;
@@ -2977,11 +3245,14 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	  statusOK=true;
 	}
 
+	//cerr << "cutsizer=" << cutsorter.size() << endl;
 	for (int lll = 0; lll < cutsorter.size()/*listOfCutsRhsGlobal.size()*/; lll++)
 	  {
 	    int ll = cutsorter[lll].second;
 	    //THIS IS A BIG QUESTION://if ((double)listOfCutsLhsGlobal[ll].size() > /*avglen*/ /*log2*/sqrt(nVars()) ) continue;
-	    if ((double)listOfCutsLhsGlobal[ll].size() > /*avglen*/ log2((double)binVars())*sqrt((double)binVars()) ) continue;
+	    if ((double)listOfCutsLhsGlobal[ll].size() > /*avglen*/ log2((double)binVars())*sqrt((double)binVars()) ) {
+	      continue;
+	    }
 	    double lhs = 0.0;
 	    HTCutentry *HTCe;
 	    pair<coef_t, uint64_t> hash;
@@ -3040,7 +3311,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	    //at root ...
 	    
 	    bool accepted = addACut(false, true /**/, listOfCutsLhsGlobal[ll], rhs);
-
+	    if (accepted) cutsAdded++;
 	    hash = HTC->computeHash(listOfCutsLhsGlobal[ll], listOfCutsRhsGlobal[ll].asDouble());
 	    if (!HTC->getEntry(&HTCe,hash.second, hash.first)) {
 	      if (0) {
@@ -3098,7 +3369,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	      }
 	    }
 
-	    if (1) {
+	    if (0) {
 	      const double GMI_PORTION = sqrt((double)listOfCutsRhsGlobal.size());
 	      //cerr << "global cuts do exist: " << listOfCutsRhsGlobal.size() << endl;
 	      if (kkk == (int)GMI_PORTION) {
@@ -3193,6 +3464,19 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	    }
 	  }
 
+  if (!feasPhase) {
+    unsigned int lpt=time(NULL);
+    QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(),-1,/*-1*/feasPhase?-1:/*3*/3-4 /*simplex iterationen*/,false);
+    if (status == algorithm::Algorithm::IT_LIMIT || status == algorithm::Algorithm::ERROR/*extSol::QpExternSolver::ABORT_IT_LIM && status != extSol::QpExternSolver::ABORT_TIME_LIM*/) {
+      //if (status != extSol::QpExternSolver::OPTIMAL && status != extSol::QpExternSolver::INFEASIBLE) {
+      if(getShowWarning()) cerr << "Warning: after Cover controlled trouble" << endl;
+    }
+    LPtim += time(NULL)-lpt;
+    LPcnt++;
+    statusOK=true;
+  }
+
+	
 	if (getShowExtendedOutput()) cerr << cutsAdded << " cuts of " << listOfCutsRhsGlobal.size() << " many cuts have been chosen. Lpval=" << -lb.asDouble() << endl;
 	static int remCutsAdded=nVars()*2;
 	if (cutsAdded >= remCutsAdded) {
@@ -3205,7 +3489,8 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	//if (gap < SOLGAP) break_from_outside = true;
 	if (gap < SOLGAP) return _StepResultLeaf(STACK,global_score, global_dual_bound,true,"29");
       } else suppressLart = true;
-      if ((time(NULL)-ini_time < 100 || GMtim < 0.05*(time(NULL) - ini_time)) && !suppressLart) {
+      if (getShowInfo()) cerr << "nochmal? : time(NULL)-ini_time=" << time(NULL)-ini_time << " 0.05*(time(NULL) - ini_time)=" << 0.05*(time(NULL) - ini_time) << " GMtim=" << GMtim << " suppressLart=" << suppressLart << " kkkkk=" << kkkkk <<endl;
+      if ((time(NULL)-ini_time < 100 || kkkkk<3 || GMtim < 0.05*(time(NULL) - ini_time)) && !suppressLart) {
 	comeFromLart=true;
 	if (info_level >= -5) cerr << "Change in Dual Bounds: " << prevDualBnd - (-lb.asDouble()) << " >?> " << 0.1 * fabs(prevDualBnd) << endl; 
 	//if (prevDualBnd - (-lb.asDouble()) > 0.1 * fabs(prevDualBnd)) 
@@ -3464,19 +3749,22 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 
 	if(1)
 #endif
-	  if (block[Lpick]<maxBlock || decisionLevel()<=log2((double)binVars()) || (search_stack.stack_pt>0 && search_stack.stack[search_stack.stack_pt-1].status == AFTER_LOOP))
-	  if ( (decisionLevel()<50000 && (sfather_ix == 0 || father_ix==1)) || ( (isPow2(decisionLevel()) || trail_lim[trail_lim.size()-1] - trail_lim[trail_lim.size()-2] > 10 || decisionLevel() < 7 || (decisionLevel() > 1 && search_stack.stack[search_stack.stack_pt-1].status == AFTER_LOOP))
+	  if ( (forceWorkerCutsNow || block[Lpick]<maxBlock || decisionLevel()<=log2((double)binVars())*sqrt((double)binVars()) || (search_stack.stack_pt>0 && search_stack.stack[search_stack.stack_pt-1].status == AFTER_LOOP)))
+	    if ( ((/*0&&decisionLevel()<50000*/block[Lpick]<maxBlock && (sfather_ix == 0 || father_ix==1) ) || ( (isPow2(decisionLevel()/(sfather_ix+1)) || trail_lim[trail_lim.size()-1] - trail_lim[trail_lim.size()-2] > 10 || forceWorkerCutsNow || /*decisionLevel() < 7 ||*/ (decisionLevel() > 1 && search_stack.stack[search_stack.stack_pt-1].status == AFTER_LOOP))
 	       && !useRestarts
+	       && (sfather_ix == 0 || father_ix==1)									
 	       && status == algorithm::Algorithm::FEASIBLE
 	       && 1//!tooManyLPlines
 	       && decisionLevel() > 5 && (decisionLevel() <= (int)log2((double)binVars()) * sqrt((double)binVars()) ||   search_stack.stack[search_stack.stack_pt-1].status == AFTER_LOOP)
 	       && 1 //block[Lpick] == maxBlock
 	       && (decisionLevel() < 7 || father_ix == 1 || search_stack.stack[search_stack.stack_pt-1].status == AFTER_LOOP) //father_ix <= RIGHTPART_GMI
-										 &&  (getUseGMIinner() || getUseLaP())
+	       &&  (getUseGMIinner() || getUseLaP())
+
+										    
 										 )   || (0&&block[Lpick] == maxBlock && /*ggap < 0.5 &&*/ num_props < 100*num_decs && decisionLevel() <= (int)log2((double)binVars()) && (isPow2(decisionLevel()) || trail_lim[trail_lim.size()-1] - trail_lim[trail_lim.size()-2] > 10) && father_ix <= RIGHTPART_GMI && !tooManyLPlines && /*!feasPhase &&*/ /*(double)LPtim/(double)LPcnt < 0.02*(double)(time(NULL)-ini_time) &&*/ decisionLevel()<=log2((double)binVars())/*&&num_props < 200*num_decs*/&&/*listOfCutsLhs2.size()==0&&*/(getUseGMIinner() || getUseLaP()) && Ntabus == 0 && /*!feasPhase &&*/ decisionLevel() < (int)/*log*/log2((double)binVars())*sqrt((double)binVars()) && decisionLevel() < maxBaCLevel && /*block[pick]==maxBlock &&*/ !useRestarts && status == algorithm::Algorithm::FEASIBLE && ( (irand(random_seed,scaler) == 0 && /*decisionLevel() > 10 &&*/ num_props < 200*num_decs && a > n_infinity && 0&&a > -lb.asDouble() - 0.01*fabs(-lb.asDouble()) && father_ix == 1)
 
 
-																																																																																														    || (decisionLevel() < 2*(int)/*log*/(log2((double)binVars())*sqrt((double)binVars()) * (num_props < 200*num_decs ? 1.0 : /*sqrt*/((double)200*num_decs / (double)num_props))) /*&& num_props < 200*num_decs*//*|| father_ix == 1*/) || (0&&father_ix == 1 && sfather_ix > 6 && irand(random_seed,scaler) == 0) /*|| decisionLevel() == 1*/)  )) {
+																																																																																																								|| (decisionLevel() < 2*(int)/*log*/(log2((double)binVars())*sqrt((double)binVars()) * (num_props < 200*num_decs ? 1.0 : /*sqrt*/((double)200*num_decs / (double)num_props))) /*&& num_props < 200*num_decs*//*|| father_ix == 1*/) || (0&&father_ix == 1 && sfather_ix > 6 && irand(random_seed,scaler) == 0) /*|| decisionLevel() == 1*/)  ) ) ) {
 	  //if ((processNo & 1) == 1 && decisionLevel() <= 1 && !feasPhase && useGMI &&  !useRestarts && status == algorithm::Algorithm::FEASIBLE
 	  //		) {
 	  //if (!tooManyLPlines && !feasPhase && /*(double)LPtim/(double)LPcnt < 0.02*(double)(time(NULL)-ini_time) &&*/ decisionLevel()<=1/*log2((double)nVars())*//*&&num_props < 200*num_decs*/&&/*listOfCutsLhs2.size()==0&&*/useGMI && /*!feasPhase &&*/ decisionLevel() < (int)/*log*/log2((double)nVars())*sqrt((double)nVars()) && decisionLevel() < maxBaCLevel && /*block[pick]==maxBlock &&*/ !useRestarts && status == algorithm::Algorithm::FEASIBLE && ( (irand(random_seed,scaler) == 0 && /*decisionLevel() > 10 &&*/ num_props < 200*num_decs && a > n_infinity && 0&&a > -lb.asDouble() - 0.01*abs(-lb.asDouble()) && father_ix == 1)
@@ -3486,7 +3774,32 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	      if (showWUDo_gencuts) cerr << "pass GMI NOT ROOT: in DL=" << decisionLevel() << endl;
 
 #endif
-	  int nncuts=0;
+	  bool useDeeperCuts = forceWorkerCutsNow;
+	  if (forceWorkerCutsNow) {
+	    forceMpiTreeCutsOnce = false;	    
+	    if(getShowInfo()) cerr << "MPI FORCED TREE CUTS: DL="
+		 << decisionLevel()
+		 << " trail=" << trail.size()
+		 << endl;
+	  }
+	  if ( (block[Lpick]<maxBlock || decisionLevel()<=log2((double)binVars()) || (search_stack.stack_pt>0 && search_stack.stack[search_stack.stack_pt-1].status == AFTER_LOOP)))
+	    if ( ((/*0&&decisionLevel()<50000*/block[Lpick]<maxBlock && (sfather_ix == 0 || father_ix==1)) || ( (isPow2(decisionLevel()/(sfather_ix+1)) || trail_lim[trail_lim.size()-1] - trail_lim[trail_lim.size()-2] > 10 || /*decisionLevel() < 7 ||*/ (decisionLevel() > 1 && search_stack.stack[search_stack.stack_pt-1].status == AFTER_LOOP))
+	       && !useRestarts
+	       && (sfather_ix == 0 || father_ix==1)									
+	       && status == algorithm::Algorithm::FEASIBLE
+	       && 1//!tooManyLPlines
+	       && decisionLevel() > 5 && (decisionLevel() <= (int)log2((double)binVars()) * sqrt((double)binVars()) ||   search_stack.stack[search_stack.stack_pt-1].status == AFTER_LOOP)
+	       && 1 //block[Lpick] == maxBlock
+	       && (decisionLevel() < 7 || father_ix == 1 || search_stack.stack[search_stack.stack_pt-1].status == AFTER_LOOP) //father_ix <= RIGHTPART_GMI
+										 &&  (getUseGMIinner() || getUseLaP())
+										 )   || (0&&block[Lpick] == maxBlock && /*ggap < 0.5 &&*/ num_props < 100*num_decs && decisionLevel() <= (int)log2((double)binVars()) && (isPow2(decisionLevel()) || trail_lim[trail_lim.size()-1] - trail_lim[trail_lim.size()-2] > 10) && father_ix <= RIGHTPART_GMI && !tooManyLPlines && /*!feasPhase &&*/ /*(double)LPtim/(double)LPcnt < 0.02*(double)(time(NULL)-ini_time) &&*/ decisionLevel()<=log2((double)binVars())/*&&num_props < 200*num_decs*/&&/*listOfCutsLhs2.size()==0&&*/(getUseGMIinner() || getUseLaP()) && Ntabus == 0 && /*!feasPhase &&*/ decisionLevel() < (int)/*log*/log2((double)binVars())*sqrt((double)binVars()) && decisionLevel() < maxBaCLevel && /*block[pick]==maxBlock &&*/ !useRestarts && status == algorithm::Algorithm::FEASIBLE && ( (irand(random_seed,scaler) == 0 && /*decisionLevel() > 10 &&*/ num_props < 200*num_decs && a > n_infinity && 0&&a > -lb.asDouble() - 0.01*fabs(-lb.asDouble()) && father_ix == 1)
+
+|| (decisionLevel() < 2*(int)/*log*/(log2((double)binVars())*sqrt((double)binVars()) * (num_props < 200*num_decs ? 1.0 : /*sqrt*/((double)200*num_decs / (double)num_props))) /*&& num_props < 200*num_decs*//*|| father_ix == 1*/) || (0&&father_ix == 1 && sfather_ix > 6 && irand(random_seed,scaler) == 0) /*|| decisionLevel() == 1*/)  ) ) ) {
+	      useDeeperCuts = true;
+	    }
+
+	      
+	      int nncuts=0;
 	  unsigned int gmistim=time(NULL);
 	  //cntC++;
 	  scaler++;
@@ -3495,14 +3808,14 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	  std::vector<unsigned int> candis;
 	  //for (int kkk = 0; /*cntCov < max(1,1 + (int)sqrt((double)nVars())-decisionLevel())*/kkk<1 ; kkk++) {
 	      // // for (int kkk=0; kkk < (decisionLevel() <3 ? 2 : 1) /*&& (double)LPtim/(double)LPcnt < 0.02*(double)(time(NULL)-ini_time)+5*/; kkk++) {
-	      for (int kkk=0; kkk < (decisionLevel() < log2((double)binVars()) ? 41 : 11) /*&& (double)LPtim/(double)LPcnt < 0.02*(double)(time(NULL)-ini_time)+5*/; kkk++) {
-		if (!feasPhase && QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
-		  unsigned int lpt=time(NULL);
-		  clearDirtyVars(false);
-		  QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(),-1,/*-1*/feasPhase?-1:/*3*/3-4 /*simplex iterationen*/,true/*false*/);
-		  LPtim += time(NULL)-lpt;
-		  LPcnt++;
-		}
+	  for (int kkk=0; kkk < (decisionLevel() < log2((double)binVars()) ? 41 : 11) /*&& (double)LPtim/(double)LPcnt < 0.02*(double)(time(NULL)-ini_time)+5*/; kkk++) {
+	    if (!feasPhase && QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
+	      unsigned int lpt=time(NULL);
+	      clearDirtyVars(false);
+	      QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(),-1,/*-1*/feasPhase?-1:/*3*/3-4 /*simplex iterationen*/,true/*false*/);
+	      LPtim += time(NULL)-lpt;
+	      LPcnt++;
+	    }
 	    if (QlpStSolve->getExternSolver( maxLPStage ).getSolutionStatus() != extSol::QpExternSolver::OPTIMAL)break;
 	    //if ((double)(time(NULL) - ini_time)*0.02 + 5 < (double)(time(NULL)-gmistim)) break;
 	    if (info_level >= 4) cerr << "DL=" << decisionLevel() << "nlb2=" << -lb.asDouble() << endl;
@@ -3578,11 +3891,26 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 		    }
 		    if (1||!useCglRootCuts || (decisionLevel()>10 && search_stack.stack[search_stack.stack_pt-1].status != AFTER_LOOP)) {
 		      int lllc = lncuts;
-		      if (getUseGMIinner() && USE_GMI_UNLIMITED/*1||!use_cmir*/)
-			lncuts = generateImplicationCuts( listOfCutsLhs3, listOfCutsRhs3, candis, false);   
-		      if (use_gmiS && getUseGMI() && USE_GMI_UNLIMITED) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs3, listOfCutsRhs3, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->GMI, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
-		      if (useCover)lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs3, listOfCutsRhs3, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->Cover, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
-		      if (useMirS && getUseGMI() && USE_GMI_UNLIMITED) if (getUseGMIinner() && USE_GMI_UNLIMITED/*1||!use_cmir*/)lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs3, listOfCutsRhs3, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->MirSmart, type.getData(), assigns.getData(), ini_time,isOnTrack()?optSol.getData():(int*)0, VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
+		      //int before = 0;
+		      if (getUseGMIinner() && USE_GMI_UNLIMITED/*1||!use_cmir*/) {
+			lncuts = generateImplicationCuts( listOfCutsLhs3, listOfCutsRhs3, candis, false);
+			//checkDuplicateCuts("IMPLICATION tree",listOfCutsLhs3, listOfCutsRhs3, before);
+			//before = listOfCutsLhs3.size();
+
+			//lncuts = generateCliqueCuts(listOfCutsLhs3, listOfCutsRhs3, candis, false);	
+		      }
+		      if (/*useDeeperCuts &&*/ use_gmiS && getUseGMI() && USE_GMI_UNLIMITED) lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs3, listOfCutsRhs3, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->GMI, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
+		      //checkDuplicateCuts("GMI tree",listOfCutsLhs3, listOfCutsRhs3, before);
+		      //before = listOfCutsLhs3.size();
+
+		      if (useDeeperCuts && useCover)lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs3, listOfCutsRhs3, listOfCutsVars, t, block[pick] , general_valid, candis, ((yInterface*)yIF)->Cover, type.getData(), assigns.getData(), ini_time,optSol.getData(), VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
+		      //checkDuplicateCuts("IMPLICATION tree",listOfCutsLhs3, listOfCutsRhs3, before);
+		      //before = listOfCutsLhs3.size();
+			
+		      if (useDeeperCuts && useMirS && getUseGMI() && USE_GMI_UNLIMITED) if (getUseGMIinner() && USE_GMI_UNLIMITED/*1||!use_cmir*/)lncuts=((yInterface*)yIF)->GenerateCutAndBranchCuts(QlpStSolve->getExternSolver( maxLPStage ), listOfCutsLhs3, listOfCutsRhs3, listOfCutsVars, 4+t, block[pick] , general_valid, candis, ((yInterface*)yIF)->MirSmart, type.getData(), assigns.getData(), ini_time,isOnTrack()?optSol.getData():(int*)0, VIsFixed.getData(), block.getData(), eas.getData(), nVars(),a);
+		      //checkDuplicateCuts("MIRSMART tree",listOfCutsLhs3, listOfCutsRhs3, before);
+		      //before = listOfCutsLhs3.size();
+
 		    }
 		  }
 		}
@@ -3668,8 +3996,9 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 						   listOfCutsLhs3[cutsorter[zz].second], listOfCutsRhs3[cutsorter[zz].second]);
 		  if (para > maxPara) {
 		    //cerr << "newMaxPara=" << para << endl;
-		    if (para > 29) assert(0);
+		    //if (para > 29) assert(0);
 		    maxPara = para;
+		    if (maxPara > 1.1) break;
 		  }
 		}
 		//cerr << "mPara=" << maxPara << endl;
@@ -3862,6 +4191,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
     STACK.miniBCrounds = 1;
 
     fixedRatio=0.0;
+    
     if (objIsInteger() && (floor(global_dual_bound+0.000001) - ceil(global_score-0.000001)) / objIsInteger() <= 2.0) {
       assumptionOk = false;
     } else if (!feasPhase && useMiniSearch && (isPow2(decisionLevel()) ||  (isinMbc > 0 && prevNumDecs + 1000 < num_decs))) assumptionOk = makeAssumption(decisionLevel(), STACK.savedVars, 1, solution, fstStSol, perc, fixedRatio);
@@ -4056,7 +4386,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	for (int z = 0; z < solution.size() && z < nVars();z++) {
 	  if (type[z] != BINARY) continue;
 	  if ((isZero(solution[z].asDouble()) || isOne(solution[z].asDouble()))) {
-	    if (fabs(solution[z].asDouble()-(double)fstStSol[z]) < 1e-9)
+	    if (firstStageValueKnown(z) && fabs(solution[z].asDouble()-(double)fstStSol[z]) < 1e-9)
 	      cntRINS++; 
 	    if (always0[z] == true || always1[z] == true)
 	      cntAlw++;
@@ -5357,6 +5687,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 		  //cerr << fstStSol[iii] << ", ";
 		} else fstStSol[iii] = block[iii]+10;
 	      }
+	      fstStKnownFromTrail();
 	      UpdForecast(fstStSol);
 	      int obii = objIsInteger();
 	      if (obii) {
@@ -5567,27 +5898,114 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 			    brokenCnt[jj]++;
 			    sorter.push(jj);
        
-			    if (0&&bitcnt > 1) {
-			      int zz = leader;
+			    if (0&&bitcnt > 3) {
+			      const int first = leader;
+			      const int last  = leader + bitcnt;   // exklusiv
+			      
 			      sorter.pop();
-			      if (0) {
-				while (zz < bitcnt && (assigns[zz] != 2 || solution[jj].asDouble() >= /*0.99999*/1.0-LP_EPS || solution[jj].asDouble() < LP_EPS/*0.00001*/)) {
-				  zz++;
-				}
-			      } else {
-				zz = leader + bitcnt - 1;
-				while (zz >= 0 && (assigns[zz] != 2 || solution[jj].asDouble() >= /*0.99999*/1.0-LP_EPS || solution[jj].asDouble() < LP_EPS/*0.00001*/)) {
-				  zz--;
-				}
+			      
+			      // ------------------------------------------------------------
+			      // 1. Höchstwertiges freies gebrochenes Bit suchen
+			      //    Da leader das höchstwertige Bit ist, laufen wir von links
+			      //    nach rechts.
+			      // ------------------------------------------------------------
+			      
+			      int zz = first;
+			      
+			      while (zz < last) {
+				const double x = solution[zz].asDouble();
+				
+				const bool isFree = (assigns[zz] == 2);
+				const bool isFrac = (x >= LP_EPS && x <= 1.0 - LP_EPS);
+				
+				if (isFree && isFrac)
+				  break;
+				
+				++zz;
 			      }
-			      assert(zz < leader + bitcnt && zz >= 0);
-
-			      brokenCnt[zz]++;
+			      
+			      assert(zz >= first && zz < last);
+			      
+			      // ------------------------------------------------------------
+			      // 2. Gewicht des gewählten Bits bestimmen
+			      //
+			      //    first              hat Gewicht 2^(bitcnt-1)
+			      //    first+1            hat Gewicht 2^(bitcnt-2)
+			      //    ...
+			      //    last-1             hat Gewicht 2^0
+			      //
+			      //    Für Variable k:
+			      //       Gewicht = 2^(last-1-k)
+			      // ------------------------------------------------------------
+			      
+			      const int exp_zz = (last - 1) - zz;
+			      const double w_zz = std::ldexp(1.0, exp_zz);
+			      
+			      const double x_zz = solution[zz].asDouble();
+			      
+			      // ------------------------------------------------------------
+			      // 3. Niederwertige noch freie Bits aufsummieren
+			      //
+			      //    Nur Bits rechts von zz betrachten.
+			      //    Nur noch freie Bits zählen, also assigns[k] == 2.
+			      // ------------------------------------------------------------
+			      
+			      double lower_free_sum = 0.0;
+			      
+			      for (int k = zz + 1; k < last; ++k) {
+				
+				if (assigns[k] != 2)
+				  continue;
+				
+				const double xk = solution[k].asDouble();
+				const int exp_k = (last - 1) - k;
+				const double wk = std::ldexp(1.0, exp_k);
+				
+				lower_free_sum += wk * xk;
+			      }
+			      
+			      // ------------------------------------------------------------
+			      // 4. Branching-Reihenfolge bestimmen
+			      //
+			      //    Interpretation:
+			      //
+			      //    w_zz * x_zz + lower_free_sum >= w_zz
+			      //
+			      //    heißt:
+			      //    Der LP-Wert des betrachteten Blocks erreicht schon die
+			      //    Schwelle, ab der das höchstwertige Bit eigentlich 1 sein
+			      //    sollte.
+			      //
+			      //    Dann zuerst zz = 1, sonst zuerst zz = 0.
+			      // ------------------------------------------------------------
+			      
+			      const double block_part = w_zz * x_zz + lower_free_sum;
+			      
+			      sorter.clear();
+			      
+			      best_pick = zz;
+			      
+			      if (block_part >= w_zz) {
+				val[0] = 1;
+				best_pol = 1;
+				val[1] = 0;   // erst zz = 1, dann zz = 0
+			      } else {
+				val[0] = 0;
+				val[1] = 1;   // erst zz = 0, dann zz = 1
+				best_pol = 0;
+			      }
+			      
 			      sorter.push(zz);
+			      
+			      jj = last - 1;
+			      brokenCnt[zz]++;
+			      ac = false;
 			      if (largestDev < (solution[zz].asDouble() > 0.5 ? 1.0-solution[zz].asDouble() : solution[zz].asDouble())) {
 				largestDev = (solution[zz].asDouble() > 0.5 ? 1.0-solution[zz].asDouble() : solution[zz].asDouble());
 			      }
 			      jj = leader + bitcnt - 1;
+			      //cerr << "Decision overruled." << endl;
+			      break;
 			    } else {
 			      if (largestDev < (solution[jj].asDouble() > 0.5 ? 1.0-solution[jj].asDouble() : solution[jj].asDouble())) {
 				largestDev = (solution[jj].asDouble() > 0.5 ? 1.0-solution[jj].asDouble() : solution[jj].asDouble());
@@ -5667,6 +6085,38 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 			      kk = CM.NextAdjacentInConflictGraph(kk);
 			    }
 			  }
+			  if (!forced20 && !forced21) {
+			    YasolSymmetryResult stabSymres = YasolOrbitalSym.getStabilizerOrbits(assigns.getData(), VIsFixed.getData(), nVars(), -1);
+			    for (int jjj=0;jjj< sorter.size();jjj++) {
+			      //std::pair<int,int> oi = getOrbitChainConflictInfo(sorter[jjj], symres, assigns.getData());
+			      std::pair<int,int> oi = getOrbitChainConflictInfo(sorter[jjj], stabSymres, assigns.getData());
+			      if (oi.first != -1) {
+				int v = oi.first / 2;
+				int s = oi.first % 2;
+			      
+				//std::cerr << "left orbit variable "
+				//	  << v << " is forced to " << s << "\n";
+				coeva0 = sorter[jjj];
+				forced20 = 0;
+				break;
+				// Weil v links von pick liegt und v=0 gilt,
+				// folgt für die Kette: pick = 0.
+			      }
+			    
+			      if (oi.second != -1) {
+				int v = oi.second / 2;
+				int s = oi.second % 2;
+			      
+				//std::cerr << "right orbit variable "
+				//	  << v << " is forced to " << s << "\n";
+				forced21 = true;
+				coeva1 = sorter[jjj];
+				break;
+				// Weil v rechts von pick liegt und v=1 gilt,
+				// folgt für die Kette: pick = 1.
+			      }
+			    }
+			  }
 			}
 			if (1)  {
 			  if (info_level >= 2) if (forced21 && forced20) cerr << " BOTH ";
@@ -5730,7 +6180,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 			std::vector<double> IPSol;
 			int selVar=-1;
 			bool fIS = false;//SearchNonBinarized(solution, IPSol, selVar, sorter, true);
-			if(isInMiniBC()) {
+			if(0&&isInMiniBC()) {
 			  fIS = FindIntegerSolution(solution, IPSol, selVar, sorter, true, true);
 			  if (decisionLevel() < log2((double)binVars()) && fIS) {
 			    IPSol.clear();
@@ -5783,6 +6233,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 				      fstStSol[iii] = IPSol[iii];
 				  }
 				}
+				fstStKnownFromCandidate();
 				UpdForecast(fstStSol);
 				global_score = score = c.header.rhs = value;
 				discoveredNews += 500;
@@ -6327,6 +6778,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	       if (-lpsteps > 50100 && (isInMiniBC() || decisionLevel() < sqrt((double)binVars()) )) lpsteps = -50100;
 	       lpsteps = -110-QlpStSolve->getExternSolver(maxLPStage).getRowCount();
 	       //end Vorschlag
+	       lpsteps = -110-1000-QlpStSolve->getExternSolver(maxLPStage).getRowCount()/10;
 #endif
                                                                                                                                                    //if (sfather_ix <= 1 && decisionLevel() >= 4) lpsteps = -100-3;
                                                                                                                                                    //else lpsteps = -100 - 1000000;
@@ -6345,7 +6797,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 				      if (baselevel >= 1 && rembase[baselevel].variables.size()>0) {
 					if (rembase[baselevel].constraints.size() < m) {
 					  for (int i = rembase[baselevel].constraints.size(); i < m; i++)
-					    rembase[baselevel].constraints.push_back(extSol::QpExternSolver::NotABasicStatus);
+					    rembase[baselevel].constraints.push_back(extSol::QpExternSolver::Basic/*NotABasicStatus*/);
 					}
 					QlpStSolve->getExternSolver( maxLPStage ).setBase(rembase[baselevel]);
 				      }
@@ -6870,6 +7322,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 						fstStSol[z] = solutionh0[z].asDouble();
 					      }
 					    }
+					    fstStKnownFromCandidate();
 					    UpdForecast(fstStSol);
 					    global_score = miniprobe_dual_bound;
 					    if(getShowWarning()) cerr << "Warning: Possibly missed improvment to " << global_score << endl;
@@ -7293,7 +7746,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 				  if (loss1 > loss0) best_pol = 0;
 				  else best_pol = 1;
 				  LPHA=true;
-				  if (strongExtSol && block[pick] == 1) {
+				  if (strongExtSol && block[pick] == 1 && firstStageValueKnown(pick)) {
 				    best_pol = fstStSol[pick];
 				  }
 				  //if (AVGlossCnt > 5 && fmax(loss1,loss0) < 0.1*AVGloss) LPHA=false;
@@ -7306,7 +7759,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 				  //best_value = pick_value;
 				  if (loss1 > loss0) best_pol = 0;
 				  else best_pol = 1;
-				  if (strongExtSol && block[pick] == 1) {
+				  if (strongExtSol && block[pick] == 1 && firstStageValueKnown(pick)) {
 				    best_pol = fstStSol[pick];
 				  }
 				  if (eas[pick] == UNIV && getShowError()) cerr << "Error: UNIV hat hier nichts zu suchen" << endl;
@@ -7750,7 +8203,13 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 		      }
 		      if (best_pick< 0 || best_pick >= nVars()) {
 			assert(sorter.size() > 0);
-			if(getShowError())  cerr << "Error: found no best pick." << endl;
+			if(getShowError())  {
+			  cerr << "Error: found no best pick. sorter.size=" << sorter.size() << endl;
+			  for (int vi=0;vi<sorter.size();vi++) {
+			    cerr << " [" << sorter[vi] << "," << solution[sorter[vi]].asDouble() << "]";
+			  }
+			  cerr << endl;
+			}
 			best_pick = sorter[0];
 			assert(best_pick >= 0 && best_pick < nVars());
 			//assert(!isFixed(best_pick));
@@ -7779,7 +8238,11 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
                       //8a add on
 		      if (getMaintainPv() && !feasPhase && best_pick >= 0 && !isInMiniBC() && binVars() - trail.size() > SLthresh2 && ac && block[Lpick]==maxBlock) {
 			//best_pick = sorter[0];
-			if (reducedStrongBranching && sfather_ix+father_ix == 0) best_pol = (PV[0][sorter[0]] > 0.5 ? 1 : 0);
+			if (reducedStrongBranching && sfather_ix+father_ix == 0
+			    && sorter.size()>0 &&
+			    (isZero(PV[0][sorter[0]], 1e-6) ||
+			     isOne(PV[0][sorter[0]], 1e-6)))
+			  best_pol = (PV[0][sorter[0]] > 0.5 ? 1 : 0);
 			if (best_pol == 0) {
 			  val[0] /*= valII[0]*/ = 0; val[1] /*= valII[1]*/ = 1;
 			} else {
@@ -7937,6 +8400,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 					      fstStSol[iii] = solutionh0[iii].asDouble();
 					  }
 					}
+					fstStKnownFromCandidate();
 					UpdForecast(fstStSol);
 					global_score = score = c.header.rhs = value;
 					discoveredNews += 500;
@@ -8058,6 +8522,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 					      fstStSol[iii] = solutionh0[iii].asDouble();
 					  }
 					}
+					fstStKnownFromCandidate();
 					UpdForecast(fstStSol);
 					global_score = score = c.header.rhs = value;
 					discoveredNews += 500;
@@ -8328,6 +8793,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 				      fstStSol[z] = solutionh0[z].asDouble();
 				    }
 				  }
+				  fstStKnownFromCandidate();
 				  //global_score = result;
 				  UpdForecast(fstStSol);
 				  //cerr << "Warning: Possibly lost a score update to " << global_score << endl;
@@ -8791,6 +9257,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 		    fstStSol[iii] = (double)(solutionTmp[iii].asDouble());
 		  }
 		}
+		fstStKnownFromCandidate();
 		UpdForecast(fstStSol);
 		global_score = ObjectiveValue;
 		s_breadth=START_BREADTH;
@@ -8887,6 +9354,8 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
     std::vector<data::QpNum> IntegerSolution;
     double IntegerScore=global_score;
     int pumpruns=0;
+
+    //cerr << "enter pump. neverTriedStartSolutionSearch=" << neverTriedStartSolutionSearch << " feasPhase=" << feasPhase << " usePump=" << usePump << " (binVars()-trail.size() > SLthresh)=" << (binVars()-trail.size() > SLthresh) << endl; 
     
     //if (0&&global_score <= dont_know && decisionLevel() <= 1 && /*time(NULL)-ini_time > 30 &&*/ (neverTriedStartSolutionSearch || decisionLevel()>1) && sfather_ix == 0 && binVars()-trail.size() > 30  && allowPump && best_cont_ix >= 0 &&  ((trail_lim.size()>1&&block[trail[trail_lim[trail_lim.size() - 2]]]<maxBlock ) || decisionLevel()<=1) && block[Lpick] == maxBlock && sfather_ix==0 && eas[Lpick] == EXIST && block[Lpick] == maxBlock && (neverTriedStartSolutionSearch || /*feasPhase ||*/ decisionLevel() >1)){
     if ((usePump && !solutionAcceptancedIsBlocked(decisionLevel()) && /*||*/ 1/*QlpStSolve->getExternSolver( maxLPStage ).getRowCount()*5 < binVars()-trail.size()*/ ) && binVars()-trail.size() > SLthresh && neverTriedStartSolutionSearch && block[Lpick] == maxBlock && block[Lpick] == 1){
@@ -8920,6 +9389,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	  for (int z = 0, ccnt=0; z < solution.size();z++) {
 	    if (eas[z]==UNIV) break;
 	    if (type[z] == BINARY && assigns[z]==extbool_Undef && !isFixed(z)  &&
+		firstStageValueKnown(z) &&
 		(fabs(solution[z].asDouble()-(double)fstStSol[z]) < LP_EPS &&
 		 (always0[z] || always1[z]) && irand(random_seed,runs)==0 
 		 ) ) {
@@ -8961,7 +9431,9 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	QLPSTSOLVE_SOLVESTAGE((double)constraintallocator[constraints[0]].header.rhs,maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE, 1 , -1, -1 /*simplex iterationen*/,false);
 
 
-	if (FP.FindIntegerSolution(IntegerSolution, IntegerScore, type.getData(),1,/*AR*/0,1,CompTime,this)){
+	if (FP.FindIntegerSolution(IntegerSolution, IntegerScore, type.getData(),1,/*AR*/0,1,CompTime,((yInterface*)yIF)->qlp,this)){
+	//if (FP.FindIntegerSolutionHighsFP(IntegerSolution, IntegerScore, type.getData(),CompTime,this)) {
+	
 	  if (info_level >-8) cerr << "score=" << score << " Iscore=" << IntegerScore << endl;
 	  ImprovedPump=((-score)-IntegerScore)/fabs(score);
 	  if (info_level >-8) cerr <<"improved by " <<ImprovedPump*100 << " percent in run " << runs << endl;
@@ -9012,6 +9484,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	      //if(type[iii]==BINARY && eas[iii]==EXIST)
 	      //	killer[iii] =(IntegerSolution[iii].asDouble() < 0.5 ? 0 : 1);
 	    }
+	    fstStKnownFromCandidate();
 	    //UpdForecast(fstStSol);
 	    coef_t gap;
 	    aliveTimer = time(NULL);
@@ -9421,7 +9894,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 		  fstStSol[iii] = solution[iii].asDouble();
 		}
 	      }
-                                    
+	      fstStKnownFromCandidate();
 	      UpdForecast(fstStSol);
 	      global_score = c0;
 	      s_breadth=START_BREADTH;	      
@@ -9501,6 +9974,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 			fstStSol[iii] = IPSol[iii];
 		    }
 		  }
+		  fstStKnownFromCandidate();
 		  UpdForecast(fstStSol);
 		  global_score = score = c.header.rhs = value;
 		  s_breadth=START_BREADTH;

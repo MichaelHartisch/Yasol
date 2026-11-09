@@ -203,6 +203,26 @@ private:
         std::vector<int> indicators;
         ExtSolverParameters SolveParameters;
 
+        // Cache für getLazyRows()
+        std::vector<double> selectRowSolution;
+        std::vector<double> selectRowMinAx;
+        std::vector<double> selectRowMaxAx;
+        std::vector<double> selectRowLB;
+        std::vector<double> selectRowUB;
+        //std::vector< std::vector<data::IndexedElement> > selectRowCols;
+        std::vector<double> COLnormers;
+        bool selectRowCacheValid = false;
+        bool COLsNormalized = false;
+
+        std::vector<double> pendingColLB;
+        std::vector<double> pendingColUB;
+
+        std::vector<HighsInt> dirtyBoundCols;
+        std::vector<unsigned char> dirtyBoundFlag;
+
+        void resetBoundBuffer();
+        void markBoundDirty(unsigned int i);
+        void flushBoundChanges();
 };
 
 }

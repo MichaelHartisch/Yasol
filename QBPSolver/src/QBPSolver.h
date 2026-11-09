@@ -91,6 +91,41 @@
 
 #endif
 
+/*
+#include <cassert>
+static void checkDuplicateCuts(
+    const char* source,
+    const std::vector<std::vector<data::IndexedElement>>& cuts,
+    const std::vector<data::QpNum>& rhs,
+    size_t first)
+{
+    for (size_t k = first; k < cuts.size(); ++k) {
+        const auto& row = cuts[k];
+
+        for (size_t i = 0; i < row.size(); ++i) {
+            for (size_t j = i + 1; j < row.size(); ++j) {
+                if (row[i].index != row[j].index)
+                    continue;
+
+                std::cerr << "DUPLICATE CUT INDEX:"
+                          << " source=" << source
+                          << " cut=" << k
+                          << " var=x" << row[i].index
+                          << " rhs=" << rhs[k].asDouble()
+                          << std::endl;
+
+                for (const auto& e : row)
+                    std::cerr << e.value.asDouble()
+                              << "*x" << e.index << " ";
+
+                std::cerr << std::endl;
+                assert(false);
+            }
+        }
+    }
+}
+*/
+
 #define USEFRQUENTRESET 0
 
 //#define PSEUDO_DERIVATIVE
@@ -131,6 +166,7 @@
 
 //NEW FOR ALL-SYSTEM
 #include "ExternSolvers/QpExternSolver.hpp"
+#include "YasolSymmetry.h"
 #define ASSIGN_OK -1
 
 
@@ -191,6 +227,7 @@
 #define REK_PRECO     8
 #define AFTER_LOOP   16
 #define START_W_E    32
+#define WAIT_REMOTE  64
 #define TIMELIMIT		999
 #define FINISHED   1000
 
@@ -303,7 +340,7 @@ YPUBLIC:
     }
   }
   bool isLfix(int pick, double value, std::vector<std::pair<double, int>> &L) {
-    if (L[pick].first < value)
+    if (L[pick].first <= value)
       return true;
     return false;
   }
@@ -365,7 +402,7 @@ struct lpSortLt {
         const ca_vec<double>&  n_avWeight;
         const std::vector< std::vector< std::pair<int,int> > >& column_pos;
         const std::vector< std::vector< std::pair<int,int> > >& column_neg;
-
+  
         const bool &sortmode;
         const ca_vec<uint64_t> &brokenCnt;
   //const coef_t &lpVal;
@@ -1046,10 +1083,12 @@ YPRIVATE:
     utils::QlpStageSolver *QlpStageTmp;
     utils::QlpStageSolver *QlpStSolveDeep;
     utils::QlpStageSolver *QlpStSolveMiniBC;
+
     int processNo;
     trailInfo* recvBuf;
 
     std::vector<std::pair<double, int>> lurking; // objective > X => variable = 0 | 1, i.e. last bit encodes direction
+    std::vector<std::pair<double, int>> rootLurking;
   
     HTable *HT=0;
     HCTable *HTC=0;
@@ -1110,7 +1149,9 @@ YPRIVATE:
     ca_vec<int>     isPseudoGeneral;
     ca_vec<int>      optSol;
     std::vector<double> fstStSol;
+    std::vector<unsigned char> fstStKnown;
     std::vector<double> generalTmp;
+    std::vector<int> generalIntTmp;
     std::vector<bool> always0;
     std::vector<bool> always1;
     std::vector< std::vector<double> > PV;
@@ -1118,6 +1159,7 @@ YPRIVATE:
     std::vector<double> progA;
     std::vector<double> progB;
     std::vector<double> progY;
+    std::vector<unsigned int> progSamples;
     int              progCnt;
     double           progHeuA;
     double           progHeuB;
@@ -1437,6 +1479,141 @@ YPRIVATE:
     std::vector< std::vector< std::pair<int,int> > > column_neg;
     std::vector< std::pair< vector< data::IndexedElement >, std::pair<double, int>> > lin_replacement;
 
+    YasolSymmetry YasolOrbitalSym;
+    YasolSymmetryResult symres;
+    std::pair<int,int> getOrbitChainConflictInfo(
+					       int pick,
+					       const YasolSymmetryResult& symres,
+					       const int8_t *assigns
+					       ) {
+      // Rückgabe:
+      // first  = gefundene fixierte Variable links von pick, kodiert als 2*v+s
+      // second = gefundene fixierte Variable rechts von pick, kodiert als 2*v+s
+      // -1 bedeutet: nichts gefunden.
+	  
+      std::pair<int,int> result(-1, -1);
+      if (pick < 0) return result;
+	  
+      if (!symres.hasOrbit(pick))
+	return result;
+	  
+      int oid = symres.getOrbitID(pick);
+	  
+      if (oid < 0 || oid >= (int)symres.orbits.size())
+	return result;
+	  
+      const std::vector<int>& orb = symres.orbits[oid];
+	  
+      int pos = symres.getOrbitPos(pick);
+      /*for (int i = 0; i < (int)orb.size(); ++i) {
+	if (orb[i] == pick) {
+	  pos = i;
+	  break;
+	}
+	}*/
+	  
+      if (pos < 0)
+	return result;
+	  
+      // Links von pick: suche eine auf 0 gesetzte Variable.
+      // Denn bei orb[0] >= ... >= orb[k-1] gilt:
+      // links = 0  => pick muss ebenfalls 0 sein.
+      for (int i = 0; i < pos; ++i) {
+	int v = orb[i];
+	    
+	if (v < 0 || v >= nVars())
+	  continue;
+	    
+	if (assigns[v] == 0) {
+	  result.first = 2 * v + 0;
+	  break;
+	}
+      }
+	  
+      // Rechts von pick: suche eine auf 1 gesetzte Variable.
+      // Denn bei orb[0] >= ... >= orb[k-1] gilt:
+      // rechts = 1 => pick muss ebenfalls 1 sein.
+      for (int i = pos + 1; i < (int)orb.size(); ++i) {
+	int v = orb[i];
+	    
+	if (v < 0 || v >= nVars())
+	  continue;
+	    
+	if (assigns[v] == 1) {
+	  result.second = 2 * v + 1;
+	  break;
+	}
+      }
+	  
+      return result;
+    }
+  void getOrbitChainFixings(int pick, int pickValue, const YasolSymmetryResult& symres, const int8_t* assignsData, int nAssigns, std::vector<std::pair<int,int>> &fixings) {
+    //std::vector<std::pair<int,int>> fixings;
+    fixings.clear();
+    if (pickValue != 0 && pickValue != 1)
+      return;
+
+    if (!symres.hasOrbit(pick))
+      return;
+
+    const int oid = symres.getOrbitID(pick);
+
+    if (oid < 0 || oid >= (int)symres.orbits.size())
+      return;
+
+    const std::vector<int>& orb = symres.orbits[oid];
+
+    int pos = symres.getOrbitPos(pick);
+    /*for (int i = 0; i < (int)orb.size(); ++i) {
+      if (orb[i] == pick) {
+	pos = i;
+	break;
+      }
+      }*/
+
+    if (pos < 0)
+      return;
+
+    if (pickValue == 0) {
+      // orb[pos] = 0 und orb[pos] >= orb[pos+1] >= ...
+      // => alle rechts müssen 0 sein.
+      for (int i = pos + 1/*0*/; i < (int)orb.size(); ++i) {
+	int v = orb[i];
+	//if (v <= pick) continue;
+
+	if (v < 0 || v >= nAssigns)
+	  continue;
+
+	if (assignsData[v] == 2) {
+	  fixings.push_back(std::make_pair(v, 0));
+	} else if (assignsData[v] == 1) {
+	  // Konflikt: müsste 0 sein, ist aber 1.
+	  fixings.push_back(std::make_pair(v, -1));
+	}
+      }
+    } else {
+      // pickValue == 1
+      // ... >= orb[pos-1] >= orb[pos] = 1
+      // => alle links müssen 1 sein.
+      for (int i = 0; i < (int)/*orb.size()*/pos; ++i) {
+	int v = orb[i];
+	//if (v >= pick) continue;
+	
+	if (v < 0 || v >= nAssigns)
+	  continue;
+
+	if (assignsData[v] == 2) {
+	  fixings.push_back(std::make_pair(v, 1));
+	} else if (assignsData[v] == 0) {
+	  // Konflikt: müsste 1 sein, ist aber 0.
+	  fixings.push_back(std::make_pair(v, -1));
+	}
+      }
+    }
+
+    return;
+  }
+
     ca_vec<double>  p_avWeight;
     ca_vec<double>  n_avWeight;
 
@@ -1545,7 +1722,69 @@ YPUBLIC:
 	void QLPSTSOLVE_WEAKEN_OBJ_FUNC_BOUND(unsigned int stage, const data::QpNum& newbound);
 YPRIVATE:
 
-int GenerateReformulationCut( extSol::QpExternSolver& externSolver, vector< vector< data::IndexedElement > > &listOfCutsLhs,
+  void rollbackCutsToSize(size_t targetSize)
+  {
+    assert(targetSize <= listOfEnteredCuts.size());
+    assert(listOfEnteredCuts.size() ==
+           listOfEnteredCutHashs.size());
+
+    if (listOfEnteredCuts.size() == targetSize)
+        return;
+
+    // Erster Cut, der wieder verschwinden soll
+    const auto firstCutToRemove =
+        listOfEnteredCuts[targetSize].first;
+
+    // StageSolver + externer Solver:
+    // alle Usercuts ab diesem Cut entfernen
+    QlpStSolve->removeUserCutsFromCut(firstCutToRemove);
+
+    // QBPSolver-eigene Buchhaltung zurücksetzen
+    while (listOfEnteredCuts.size() > targetSize) {
+
+        const size_t li =
+            listOfEnteredCutHashs.size() - 1;
+
+        HTC->delEntry(
+            listOfEnteredCutHashs[li].first,
+            listOfEnteredCutHashs[li].second
+        );
+
+        listOfEnteredCutHashs.pop();
+        listOfEnteredCuts.pop();
+    }
+    /*
+    while (listOfEnteredCuts.size() > targetSize) {
+
+      size_t last = listOfEnteredCuts.size() - 1;
+
+      QlpStSolve->removeUserCutsFromCut(
+					listOfEnteredCuts[last].first
+					);
+
+      int rowInSnap = listOfEnteredCuts[last].second;
+
+      if (rowInSnap >= 0) {
+	QlpStSolve->getExternSolver(maxLPStage)
+	  .setLazyStatus(rowInSnap, true);
+      }
+
+      listOfEnteredCuts.pop();
+
+      size_t li = listOfEnteredCutHashs.size() - 1;
+
+      HTC->delEntry(
+		    listOfEnteredCutHashs[li].first,
+		    listOfEnteredCutHashs[li].second
+		    );
+
+      listOfEnteredCutHashs.pop();
+    }
+    */
+  }
+  void CreateCutsInALoop(extSol::QpExternSolver& externSolver, std::vector<std::vector<data::IndexedElement> > &targetListOfCutsLhs, std::vector<data::QpNum> &targetListOfCutsRhs, std::vector<unsigned int> &candis, bool& general_valid, double a, int pick, int t, int decLev, unsigned int initime, int *solu /*debugging info only*/, int *fixs, int*blcks, int orgN, bool root);
+  
+  int GenerateReformulationCut( extSol::QpExternSolver& externSolver, vector< vector< data::IndexedElement > > &listOfCutsLhs,
 		       vector< data::QpNum > &listOfCutsRhs, vector<int> &listOfCutsVars,
 					  int treedepth, int currentBlock, bool &global_valid, std::vector<unsigned int> &candidates, int cuttype, int*types, int8_t* assigns, unsigned int initime, int* solu, int *fixs, int *blcks, int orgN);
  int GenerateCMIRCut( extSol::QpExternSolver& externSolver, vector< vector< data::IndexedElement > > &listOfCutsLhs,
@@ -1850,12 +2089,14 @@ YPRIVATE:
     bool			 useScout;
     bool			 useAlphabeta;
     int8_t			 useMonotones;
+      int8_t			 useRGTT;
     bool			 isSimplyRestricted;
     bool			 writeOutputFile;
     std::string 		 inputFileName;
     bool             usePVinFphase;
     bool             useComponents;
-
+    bool             enforceCuts=true;
+    bool forceMpiTreeCutsOnce = false;
     bool             BendersCutAlarm;
     bool             forbidHashing;
     bool             feasibilityOnly;
@@ -1895,6 +2136,105 @@ YPRIVATE:
     bool solverTimedOut;
     algorithm::Algorithm::QlpSolution resolveDEP();
     data::Qlp *BinQlp();
+    const data::Qlp* ttQlp = 0;
+
+    //BEGIN RG TT
+    // 0 = bisherige Decision-View:
+    //     letzte echte Decision bestimmt den abgeschlossenen Block
+    //
+    // 1 = Completed-Block-View:
+    //     block[pick] bestimmt die Sicht; vollständig belegte frühere
+    //     Blöcke sind Vergangenheit, egal ob Decision oder Propagation
+    //
+    // 2 = langsame Reference-Version zum Debuggen
+    const uint8_t RGTT_VALID = 1u << 0;
+    const uint8_t RGTT_LOWER = 1u << 1;
+    const uint8_t RGTT_UPPER = 1u << 2;
+    const uint8_t RGTT_OLDER = 1u << 3;
+    const int     RGTT_CLASS_SHIFT = 4;
+    const uint8_t RGTT_CLASS_MASK  = 0x70;
+    int rgViewMode = 1;
+    uint64_t restGameNodes = 0;
+    uint64_t restGameDuplicates = 0;
+    uint64_t restGameOracleChecks = 0;
+    struct RestGameKey {
+      uint64_t h1;
+      uint64_t h2;
+      
+      bool operator<(const RestGameKey& o) const {
+        if (h1 != o.h1) return h1 < o.h1;
+        return h2 < o.h2;
+      }
+    };
+    std::set<RestGameKey> restGameKeys;
+    struct RestGameOccurrence {
+      int row;
+      double coef;
+    };
+    uint64_t rgHash1=0ULL;
+    uint64_t rgHash2=0ULL;
+    // feste Struktur
+    std::vector< std::vector<RestGameOccurrence> > rgOcc;
+    ca_vec<double> rgRhs;
+    ca_vec<double> rgObjCoeff;
+    // inkrementelle Entscheidungssicht
+    ca_vec<double> rgFixedSum;
+    ca_vec<int>    rgOpenCount;
+    ca_vec<uint64_t> rgVbits;
+    double rgVoffset;
+    // Status je Variable
+    ca_vec<unsigned char> rgFolded;
+    ca_vec<unsigned char> rgIsDecision;
+    // propagiert, aber noch nicht gefaltet
+    ca_vec<int> rgPending;
+    ca_vec<int> rgPendingPos;
+    // Undo-Struktur nach Claude
+    ca_vec<int>    rgFoldLog;
+    ca_vec<size_t> rgFoldMarks;
+    ca_vec<int>    rgDecBlocks;
+    ca_vec<int>    rgDecVars;
+    ca_vec<unsigned char> rgOracleDecision;
+    int rgForcedPropagationVar = -1;
+    struct RestGameTTEntry {
+      uint64_t hash;
+      uint32_t check;
+      float lower;
+      float upper;
+      int bestMove;
+      uint8_t flags;      
+      RestGameTTEntry()
+	: hash(0),
+        check(0),
+	  lower(0.0f),
+	  upper(0.0f),
+	  bestMove(-1),
+        flags(0) {}
+    };
+    struct RestGameTTBucket {
+      RestGameTTEntry e[2];
+      RestGameTTBucket() {}
+    };
+    RestGameTTBucket* rgTT = 0;
+    uint64_t rgTTNumBuckets = 0;
+    uint64_t rgTTMask = 0;
+    uint64_t rgTTLookups = 0;
+    uint64_t rgTTHits = 0;
+    uint64_t rgTTInserts = 0;
+    uint64_t rgTTFullBuckets = 0;
+
+    ca_vec<double>   rgPreviewRowDelta;
+    ca_vec<int>      rgPreviewRowCount;
+    ca_vec<uint64_t> rgPreviewRowStamp;
+    ca_vec<uint64_t> rgPreviewWordBits;
+    ca_vec<uint64_t> rgPreviewWordStamp;
+    ca_vec<int> rgPreviewRows;
+    ca_vec<int> rgPreviewWords;
+    uint64_t rgPreviewEpoch = 0;
+    int rgOpenVars = 0;
+  
+  uint64_t rgCanonicalBoundGets = 0;
+uint64_t rgCanonicalUsefulBounds = 0;
+    //end restgame structs
 
     ConstraintAllocator  constraintallocator;
     ca_vec<CRef>  constraints;          // List of problem constraints.
@@ -2212,6 +2552,7 @@ YPRIVATE:
       assert(type[vx] == BINARY && type[vy] == BINARY);
       if (optSol.size() > 0) assert(!(exx == (int)(optSol[vx]+0.5) && exy == (int)(optSol[vy]+0.5)  ) );
       CM.AddEdge(x,y);
+      //CM.AddEdge(y,x);
       //if (!CM.EdgeIsInContainer(x,y)) CM.AddEdge(x,y);
       //if (!CM.EdgeIsInContainer(y,x)) CM.AddEdge(y,x);      
 
@@ -2290,15 +2631,21 @@ YPRIVATE:
 	  return fabs(ar*sr - rhs.asDouble())*(double)lhs.size() / (a2*(double)samplesize);
 	}
     }
-
+  
+    std::vector<data::IndexedElement> lhs1;
+    std::vector<data::IndexedElement> lhs2;
     double computeParallelismApprox(std::vector<data::IndexedElement>& lhs1O, data::QpNum & rhs1, std::vector<data::IndexedElement>& lhs2O, data::QpNum & rhs2) {
         double c1_norm = 0.0;
         double c2_norm = 0.0;
         double sprod = 0.0;
 	int maxVar=0;
 
-	std::vector<data::IndexedElement> lhs1;
-	std::vector<data::IndexedElement> lhs2;
+	//std::vector<data::IndexedElement> lhs1;
+	//std::vector<data::IndexedElement> lhs2;
+	if (lhs1.size() < 110) lhs1.reserve(110);
+	if (lhs2.size() < 110) lhs2.reserve(110);
+	lhs1.clear();
+	lhs2.clear();
 	int samplesize1=lhs1O.size();
 	int samplesize2=lhs2O.size();
 	/*
@@ -2501,7 +2848,8 @@ YPRIVATE:
 	  // here should be x_i - x_j = 0
 	} else if (cList[i].first < 0) {
 	  //continue;
-	  if (type[-cList[i].first-1] == EXIST) {
+	  int v = -cList[i].first-1;
+	  if (/*type[-cList[i].first-1] == EXIST*/v < nVars() && type[v] == BINARY && eas[v] == EXIST) {
 	    if (cList[i].second == 0) {
 	      if (-cList[i].first-1 < nVars() && !isFixed(-cList[i].first-1)) {
 		setFixed(-cList[i].first-1, 0, 0);
@@ -2532,6 +2880,7 @@ YPRIVATE:
 	  if(getShowWarning()) cerr << "Warning: prevented entering a shadow variable" << endl;
 	  continue;
 	}
+	//cerr << "x" << cList[i].second+1 << " dominates x" << cList[i].first+1 << endl;
 	data::IndexedElement e;
 	in_learnt.clear();
 	in_cut4Hash.clear();
@@ -2539,14 +2888,17 @@ YPRIVATE:
 	in_learnt.push(q1);
 	e.index = cList[i].first;
 	e.value = -1.0;
+	//cerr << "-x" << cList[i].first+1;
 	in_cut4Hash.push_back(e);
 	CoeVar q2 = mkCoeVar(cList[i].second, 1.0, false);
 	in_learnt.push(q2);
 	e.index = cList[i].second;
 	e.value = 1.0;
+	//cerr << "+x" << cList[i].second+1 << " >= 0.0, bzw. ";
 	in_cut4Hash.push_back(e);
 	hash = HTC->computeHash(in_cut4Hash, 0.0, data::QpRhs::greaterThanOrEqual);
-	//if (i < 10) cerr << "Info SYMMETRIE: x" << cList[i].first << " or not x" << cList[i].second << " Hash=" << hash.first << "," << (void*)hash.second << endl;
+	//if (i < 10) cerr << "Info SYMMETRIE: x" << cList[i].first+1 << " or not x" << cList[i].second+1 << " Hash=" << hash.first << "," << (void*)hash.second << endl;
+	
 	//else if (i==10) cerr << "Info ..." << endl;
 	bool di=true;
 	if (optSol.size() >= nVars()) {
@@ -3912,7 +4264,30 @@ YPUBLIC:
 	  out_learnt.clear();
 	}
 
-    void UpdForecastHeu(double success) {
+
+        bool firstStageValueKnown(int i) {
+	  if (i < 0 || i >= nVars()) return false;
+	  if (block[i] != 1) return false;
+	  if (i >= (int)fstStSol.size()) return false;
+	  if (i >= (int)fstStKnown.size()) return false;
+	  if (!fstStKnown[i]) return false;
+	  
+	  const double v = fstStSol[i];
+	  
+	  if (!std::isfinite(v)) return false;
+	  
+	  if (type[i] == BINARY)
+	    return v == 0.0 || v == 1.0;
+	  
+	  return true;
+        }
+  
+        bool hasUsableForecast(int i) {
+	  return firstStageValueKnown(i) &&
+	    i < (int)progSamples.size() &&
+		progSamples[i] > 0;
+	}
+        void UpdForecastHeu(double success) {
         double alpha = 0.2;
         progHeuCnt++;
             double yt_q = alpha * success + (1-alpha) * progHeuY;
@@ -3929,24 +4304,60 @@ YPUBLIC:
         return progHeuA + progHeuB;
     }
     int getForecastHeuReliability() { return progHeuCnt; }
-    void UpdForecast(std::vector<double> &fstStSol) {
-        double alpha = 0.2;
-        progCnt++;
-        for (int i = 0; i < fstStSol.size();i++) {
-            double yt_q = alpha * fstStSol[i] + (1-alpha) * progY[i];
-            double bt   = yt_q - progY[i];
-            if (progCnt == 1) {
-                yt_q = fstStSol[i];
-                bt = 0.0;
-            }
-            progB[i] = alpha * bt + (1-alpha) * progB[i];
-            progA[i] = yt_q + ((1-alpha) / alpha) * progB[i];
-            progY[i] = yt_q;
+
+    void UpdForecast(std::vector<double>& sol) {
+
+      const double alpha = 0.2;
+      bool updated = false;
+
+      for (int i = 0; i < (int)sol.size(); ++i) {
+
+        if (i >= (int)progSamples.size())
+	  break;
+
+        if (!firstStageValueKnown(i))
+	  continue;
+
+        const double v = sol[i];
+
+        if (progSamples[i] == 0) {
+
+	  // Erste gültige Beobachtung dieser Variable
+	  progY[i] = v;
+	  progA[i] = v;
+	  progB[i] = 0.0;
+
+        } else {
+
+	  const double yt_q =
+	    alpha * v + (1.0-alpha)*progY[i];
+
+	  const double bt = yt_q - progY[i];
+
+	  progB[i] =
+	    alpha * bt + (1.0-alpha)*progB[i];
+
+	  progA[i] =
+	    yt_q + ((1.0-alpha)/alpha)*progB[i];
+
+	  progY[i] = yt_q;
         }
+
+        ++progSamples[i];
+        updated = true;
+      }
+
+      if (updated)
+        ++progCnt;
     }
+
     double forecast(int i) {
-        return progA[i] + progB[i];
+      if (!hasUsableForecast(i))
+        return 0.5;
+      
+      return progA[i] + progB[i];
     }
+
     int getForecastReliability() { return progCnt; }
 	coef_t buyDualBound(int trail_start, coef_t a, coef_t b, int remainD);
 	coef_t buyDualRootBound(int trail_start, coef_t a, coef_t b, int remainD);
@@ -4394,6 +4805,7 @@ YPUBLIC:
       return _StepResult(STACK, v, b, ident);
     }
     int _StepResultInner(stack_container &STACK, coef_t v, coef_t b, const std::string &ident) {
+      static uint64_t rgRetCnt = 0;
       if (!isInMiniBC() /*1||useMcts*/) {
 	if (0&&info_level >= -6) {
 	  cerr << "Ident:" << ident << "," << decisionLevel() << ";";
@@ -4745,6 +5157,1785 @@ cerr << " r-avail rows:" << realAvail<<endl;*/
     void SwapAllIn(int va);
 
 YPUBLIC:
+    void initRestGameTT(const data::Qlp* q) {
+      cerr << "ENTER INIT RESTGAME TT" << endl;
+      ttQlp = q;
+
+      if (ttQlp == 0)
+	return;
+
+      assert((int)ttQlp->getVariableCount() == nVars());
+      cerr << "RGTT Entry  = "
+	   << sizeof(RestGameTTEntry) << endl;
+      cerr << "RGTT Bucket = "
+	   << sizeof(RestGameTTBucket) << endl;
+      int expectedOrgRows = 0;
+      long long nnz = 0;
+
+      restGameOracleChecks = 0;
+      restGameNodes = 0;
+      restGameDuplicates = 0;
+      restGameKeys.clear();
+ 
+      const data::Constraint* c = ttQlp->getFirstConstraint();
+
+      while (c != 0) {
+
+	nnz += c->getElementCount();
+
+	if (c->getRhsRatioSign() == data::QpRhs::equal)
+	  expectedOrgRows += 2;
+	else
+	  expectedOrgRows += 1;
+
+	c = c->getNextConstraintPtr();
+      }
+
+      //assert(expectedOrgRows == num_orgs);
+      //finally all the incremental stuff
+      rgOcc.clear();
+      rgOcc.resize(nVars());
+
+      rgRhs.clear();
+      rgObjCoeff.clear();
+      rgObjCoeff.growTo(nVars());
+
+      rgFixedSum.clear();
+      rgOpenCount.clear();
+
+      const data::QpObjFunc objFunc =
+	ttQlp->getObjectiveFunction();
+      const double rgObjSign =
+	(objFunc.getObjective() == data::QpObjFunc::Objective::min)
+	? -1.0
+	: 1.0;
+      const std::vector<data::QpNum>& obj =
+	ttQlp->getObjectiveFunctionValues();
+      assert((int)obj.size() >= nVars());
+      for (int v = 0; v < nVars(); ++v)
+	rgObjCoeff[v] = rgObjSign*obj[v].asDouble();
+
+      c = ttQlp->getFirstConstraint();
+      int row = 0;
+
+      while (c != 0) {
+
+	rgRhs.push(c->getRhsValue().asDouble());
+	rgFixedSum.push(0.0);
+
+	std::vector<data::IndexedElement> elems;
+	c->getElementsSparse(elems);
+
+	rgOpenCount.push((int)elems.size());
+
+	for (int k = 0; k < (int)elems.size(); ++k) {
+	  RestGameOccurrence o;
+	  o.row  = row;
+	  o.coef = elems[k].value.asDouble();
+
+	  rgOcc[elems[k].index].push_back(o);
+	}
+
+	++row;
+	c = c->getNextConstraintPtr();
+      }
+      assert(row == (int)ttQlp->getConstraintCount());
+      rgOracleDecision.clear();
+      rgOracleDecision.growTo(nVars(), 0);
+
+      rgFolded.clear();
+      rgFolded.growTo(nVars(), 0);
+      rgIsDecision.clear();
+      rgIsDecision.growTo(nVars(), 0);
+
+      rgPending.clear();
+      rgPendingPos.clear();
+      rgPendingPos.growTo(nVars(), -1);
+
+      rgFoldLog.clear();
+      rgFoldMarks.clear();
+      rgDecBlocks.clear();
+      rgDecVars.clear();
+
+      rgVoffset = rgObjSign*ttQlp->getObjFuncOffset().asDouble();
+
+      rgVbits.clear();
+      rgVbits.growTo((nVars()+63)/64, 0);
+
+      // Scratch space for completed-block TT view.
+      // Jetzt sind sowohl rgRhs als auch rgVbits vollständig aufgebaut.
+
+      rgOpenVars = 0;      
+      for (int v = 0; v < nVars(); ++v) {
+	if (type[v] == BINARY) {
+	  rgVbits[v >> 6] |= (1ULL << (v & 63));
+	  ++rgOpenVars;
+	}
+      }
+      
+      rgPreviewRowDelta.clear();
+      rgPreviewRowDelta.growTo(rgRhs.size(), 0.0);
+
+      rgPreviewRowCount.clear();
+      rgPreviewRowCount.growTo(rgRhs.size(), 0);
+
+      rgPreviewRowStamp.clear();
+      rgPreviewRowStamp.growTo(rgRhs.size(), 0ULL);
+
+      rgPreviewWordBits.clear();
+      rgPreviewWordBits.growTo(rgVbits.size(), 0ULL);
+
+      rgPreviewWordStamp.clear();
+      rgPreviewWordStamp.growTo(rgVbits.size(), 0ULL);
+
+      rgPreviewRows.clear();
+      rgPreviewWords.clear();
+
+      rgPreviewEpoch = 0;
+      //rgOpenVars = 0;
+ 
+      RestGameKey initialXorKey = restGameKeyXorSlow();
+
+      rgHash1 = initialXorKey.h1;
+      rgHash2 = initialXorKey.h2;
+
+      // Hier MUSS es noch gleich sein.
+      assert(rgHash1 == initialXorKey.h1);
+      assert(rgHash2 == initialXorKey.h2);
+
+      int rgRootFolds = 0;
+
+      for (int v = 0; v < nVars(); ++v) {
+	if (type[v] == BINARY &&
+	    assigns[v] != extbool_Undef) {
+
+	  assert(vardata[v].level <= 0);
+
+	  ++rgRootFolds;
+	  restGameFold(v, false);
+	}
+      }
+
+      // Jetzt mit dem NEU berechneten Zustand vergleichen.
+      RestGameKey afterRootXorKey = restGameKeyXorSlow();
+
+      cerr << "RG INIT root folds=" << rgRootFolds << endl;
+
+      assert(rgHash1 == afterRootXorKey.h1);
+      assert(rgHash2 == afterRootXorKey.h2);
+
+      cerr << "RESTGAME XOR HASH initialized: "
+	   << rgHash1 << " " << rgHash2 << endl;
+      RestGameKey oldKey = restGameKeyFast();
+      RestGameKey refKey = restGameKeyReference(restGameViewBlock(1));
+      assert(oldKey.h1 == refKey.h1);
+      assert(oldKey.h2 == refKey.h2);
+    
+      if (0&&rgTT != 0) {
+	delete[] rgTT;
+	rgTT = 0;
+      }
+
+      rgTTNumBuckets = 1ULL << 21; //18;
+      rgTTMask = rgTTNumBuckets - 1;
+      if (rgTT == 0) rgTT = new RestGameTTBucket[rgTTNumBuckets];
+      rgTTLookups = 0;
+      rgTTHits = 0;
+      rgTTInserts = 0;
+      rgTTFullBuckets = 0;
+      
+    }
+
+    bool hasRestGameTT() const {
+      return ttQlp != 0;
+    }
+
+    bool restGamePast(int v, int currentBlock) {
+      if (assigns[v] == extbool_Undef)
+	return false;
+
+      // Root-/Level-0-Belegungen sind globale Konstanten.
+      if (vardata[v].level <= 0)
+	return true;
+
+      if (block[v] < currentBlock)
+	return true;
+
+      if (block[v] > currentBlock)
+	return false;
+
+      // Gleicher Block:
+      // Nicht in den aktuellen Search-Stack zurückschauen!
+      // Entscheidend ist, wie die noch lebende Belegung entstanden ist.
+      return rgOracleDecision[v] != 0;
+    }
+
+    RestGameKey restGameKeyReference(int currentBlock) {
+      assert(ttQlp != 0);
+
+      uint64_t h1 = 0x243f6a8885a308d3ULL;
+      uint64_t h2 = 0x13198a2e03707344ULL;
+
+      //
+      // 1. Originalzeilen:
+      //    RHS nach Einsetzen aller aus Restspielsicht vergangenen Variablen.
+      //
+      // WICHTIG:
+      // Wir hashen hier zuerst die Zeilen und DANACH die offenen Variablen,
+      // genau wie in restGameKeyFast().
+      //
+      const data::Constraint* c = ttQlp->getFirstConstraint();
+
+      std::vector<data::IndexedElement> elems;
+      int row = 0;
+
+      while (c != 0) {
+
+        elems.clear();
+        c->getElementsSparse(elems);
+
+        data::QpNum residual = c->getRhsValue();
+        bool rowOpen = false;
+
+        for (unsigned int k = 0; k < elems.size(); ++k) {
+
+	  const int v = elems[k].index;
+
+	  if (restGamePast(v, currentBlock)) {
+
+	    assert(assigns[v] != extbool_Undef);
+
+	    //
+	    // Derzeit betrachten wir hier binäre gesetzte Variablen.
+	    // Für x_v = 0 passiert nichts,
+	    // für x_v = 1 wird a_v vom RHS abgezogen.
+	    //
+	    if (assigns[v] == 1)
+	      residual -= elems[k].value;
+
+	  } else {
+
+	    //
+	    // Mindestens eine Variable der Zeile gehört noch
+	    // zum zukünftigen Restspiel.
+	    //
+	    rowOpen = true;
+	  }
+        }
+
+        //
+        // Eine vollständig geschlossene Zeile gehört nicht mehr
+        // zur Beschreibung des zukünftigen Restspiels.
+        //
+        if (rowOpen) {
+
+	  double r = residual.asDouble();
+
+	  //
+	  // Wie in restGameKeyFast():
+	  // -0.0 auf +0.0 normalisieren.
+	  //
+	  r += 0.0;
+
+	  rgAdd(h1, 0x200000000ULL + (uint64_t)row);
+	  rgAdd(h1, rgDoubleBits(r));
+
+	  rgAdd(h2, 0x900000000ULL + (uint64_t)row);
+	  rgAdd(h2, rgDoubleBits(r));
+        }
+
+        ++row;
+        c = c->getNextConstraintPtr();
+      }
+
+      assert(row == (int)ttQlp->getConstraintCount());
+
+      //
+      // 2. Welche binären Variablen sind noch offen?
+      //
+      // Nicht mehr jede Variable einzeln hashen!
+      //
+      // Stattdessen erzeugen wir exakt dieselbe Bitdarstellung,
+      // die restGameKeyFast() inkrementell in rgVbits hält.
+      //
+      std::vector<uint64_t> bits((nVars() + 63) / 64, 0ULL);
+
+      for (int v = 0; v < nVars(); ++v) {
+
+        if (type[v] != BINARY)
+	  continue;
+
+        if (!restGamePast(v, currentBlock))
+	  bits[v >> 6] |= (1ULL << (v & 63));
+      }
+
+      //
+      // Exakt dieselbe Hash-Sequenz wie in restGameKeyFast().
+      //
+      for (int w = 0; w < (int)bits.size(); ++w) {
+
+        rgAdd(h1, 0x400000000ULL + (uint64_t)w);
+        rgAdd(h1, bits[w]);
+
+        rgAdd(h2, 0xb00000000ULL + (uint64_t)w);
+        rgAdd(h2, bits[w]);
+      }
+
+      //
+      // Zielfunktionsoffset absichtlich NICHT Teil des strukturellen Keys.
+      // Der wird später separat über rgVoffset behandelt.
+      //
+
+      RestGameKey k;
+      k.h1 = h1;
+      k.h2 = h2;
+
+      return k;
+    }
+
+    double restGameObjectiveOffset(int currentBlock) {
+      assert(ttQlp != 0);
+      const data::QpObjFunc objFunc =
+        ttQlp->getObjectiveFunction();
+      const double s =
+        (objFunc.getObjective() == data::QpObjFunc::Objective::min)
+        ? -1.0
+        : 1.0;
+      double offset =
+        s * ttQlp->getObjFuncOffset().asDouble();
+      const std::vector<data::QpNum>& obj =
+        ttQlp->getObjectiveFunctionValues();
+      for (int v = 0; v < nVars(); ++v) {
+        if (!restGamePast(v, currentBlock))
+	  continue;
+        if (assigns[v] == extbool_Undef)
+	  continue;
+        offset +=
+	  s * obj[v].asDouble() * (double)assigns[v];
+      }
+      return offset;
+    }
+    void countRestGameReference(int currentBlock) {
+      if (ttQlp == 0)
+        return;
+
+      RestGameKey k = restGameKeyReference(currentBlock);
+
+      ++restGameNodes;
+
+      if (!restGameKeys.insert(k).second)
+        ++restGameDuplicates;
+
+      if ((restGameNodes % 10000) == 0) {
+
+        cerr << "RESTGAME nodes=" << restGameNodes
+             << " unique=" << restGameKeys.size()
+             << " duplicates=" << restGameDuplicates
+             << " factor="
+             << ((double)restGameNodes /
+                 (double)restGameKeys.size())
+             << endl;
+	cerr << "RG CANON gets=" << rgCanonicalBoundGets
+	     << " useful=" << rgCanonicalUsefulBounds
+	     << endl;
+      }
+    }
+    void restGameFold(int v, bool putOnLog) {
+      assert(ttQlp != 0);
+      assert(assigns[v] != extbool_Undef);
+      assert(!rgFolded[v]);
+
+      const double x = (double)assigns[v];
+
+      for (int k = 0; k < (int)rgOcc[v].size(); ++k) {
+	const RestGameOccurrence& o = rgOcc[v][k];
+	const int r = o.row;
+	//
+	// Alten Zeilenzustand aus dem Hash entfernen.
+	// Geschlossene Zeilen sind NICHT im Hash.
+	//
+	if (rgOpenCount[r] > 0) {
+	  double oldResidual = rgRhs[r] - rgFixedSum[r];
+	  oldResidual += 0.0;
+	  rgHash1 ^= rgRowToken1(r, oldResidual);
+	  rgHash2 ^= rgRowToken2(r, oldResidual);
+	}
+	//
+	// Restspielzustand ändern.
+	//
+	rgFixedSum[r] += o.coef * x;
+	rgOpenCount[r]--;
+	//
+	// Neuen Zeilenzustand hinein.
+	// Falls openCount jetzt 0 ist, verschwindet die Zeile komplett.
+	//
+	if (rgOpenCount[r] > 0) {
+	  double newResidual = rgRhs[r] - rgFixedSum[r];
+	  newResidual += 0.0;
+	  rgHash1 ^= rgRowToken1(r, newResidual);
+	  rgHash2 ^= rgRowToken2(r, newResidual);
+	}
+      }
+      if (type[v] == BINARY) {
+	const int w = v >> 6;
+	//
+	// Altes Bitwort heraus.
+	//
+	rgHash1 ^= rgWordToken1(w, rgVbits[w]);
+	rgHash2 ^= rgWordToken2(w, rgVbits[w]);
+	rgVbits[w] &= ~(1ULL << (v & 63));
+	//
+	// Neues Bitwort hinein.
+	//
+	rgHash1 ^= rgWordToken1(w, rgVbits[w]);
+	rgHash2 ^= rgWordToken2(w, rgVbits[w]);
+	--rgOpenVars;
+	assert(rgOpenVars >= 0);
+      }
+      
+      rgVoffset += rgObjCoeff[v] * x;
+      rgFolded[v] = 1;
+      restGameRemovePending(v);
+      if (putOnLog)
+        rgFoldLog.push(v);
+      
+    }
+    void restGameUnfoldOne(int v) {
+      assert(rgFolded[v]);
+      assert(assigns[v] != extbool_Undef);
+
+      const double x = (double)assigns[v];
+
+      for (int k = 0; k < (int)rgOcc[v].size(); ++k) {
+	const RestGameOccurrence& o = rgOcc[v][k];
+	const int r = o.row;
+	//
+	// Alten Zustand heraus.
+	// Die Zeile kann momentan vollständig geschlossen sein.
+	//
+	if (rgOpenCount[r] > 0) {
+	  double oldResidual = rgRhs[r] - rgFixedSum[r];
+	  oldResidual += 0.0;
+	  rgHash1 ^= rgRowToken1(r, oldResidual);
+	  rgHash2 ^= rgRowToken2(r, oldResidual);
+	}
+	//
+	// Unfold.
+	//
+	rgFixedSum[r] -= o.coef * x;
+	rgOpenCount[r]++;
+	//
+	// Nach dem Unfold ist diese Zeile wieder offen.
+	//
+	if (rgOpenCount[r] > 0) {
+	  double newResidual = rgRhs[r] - rgFixedSum[r];
+	  newResidual += 0.0;
+	  rgHash1 ^= rgRowToken1(r, newResidual);
+	  rgHash2 ^= rgRowToken2(r, newResidual);
+	}
+      }
+
+      if (type[v] == BINARY) {
+	const int w = v >> 6;
+
+	rgHash1 ^= rgWordToken1(w, rgVbits[w]);
+	rgHash2 ^= rgWordToken2(w, rgVbits[w]);
+
+	rgVbits[w] |= (1ULL << (v & 63));
+
+	rgHash1 ^= rgWordToken1(w, rgVbits[w]);
+	rgHash2 ^= rgWordToken2(w, rgVbits[w]);
+	++rgOpenVars;
+      }
+      rgVoffset -= rgObjCoeff[v] * x;
+      rgFolded[v] = 0;
+    }
+    void restGameAddPending(int v) {
+      if (rgPendingPos[v] >= 0)
+	return;
+
+      rgPendingPos[v] = rgPending.size();
+      rgPending.push(v);
+    }
+    void restGameRemovePending(int v) {
+      int p = rgPendingPos[v];
+      if (p < 0)
+	return;
+
+      int w = rgPending.last();
+
+      rgPending[p] = w;
+      rgPendingPos[w] = p;
+
+      rgPending.pop();
+      rgPendingPos[v] = -1;
+    }
+    void restGameFoldPendingBefore(int newBlock) {
+      size_t i = 0;
+
+      while (i < rgPending.size()) {
+
+	int v = rgPending[i];
+
+	if (assigns[v] != extbool_Undef &&
+	    !rgFolded[v] &&
+	    block[v] < newBlock) {
+
+	  // restGameFold entfernt v aus rgPending;
+	  // deshalb i hier NICHT erhöhen.
+	  restGameFold(v,true);
+
+	} else {
+	  ++i;
+	}
+      }
+    }
+    void restGameAssignDecision(int v) {
+      assert(assigns[v] != extbool_Undef);
+      const int newBlock = block[v];
+      const int newLevel = vardata[v].level;
+
+      /*
+      // Eine reguläre Entscheidung pro Decision-Level.
+      if (rgDecVars.size() > 0) {
+
+        const int prev = rgDecVars.last();
+        const int prevLevel = vardata[prev].level;
+
+        if (prevLevel >= newLevel) {
+
+	  std::cerr
+	    << "\nRGTT DOUBLE DECISION:"
+	    << " previous=x" << prev
+	    << " block=" << block[prev]
+	    << " level=" << prevLevel
+	    << " value=" << (int)assigns[prev]
+	    << " current=x" << v
+	    << " block=" << newBlock
+	    << " level=" << newLevel
+	    << " value=" << (int)assigns[v]
+	    << " DL=" << decisionLevel()
+	    << " branchVar=" << getBranchingVariable(newLevel)
+	    << std::endl;
+
+	  // Trail des aktuellen Decision-Levels ausgeben.
+	  if (newLevel > 0 &&
+	      newLevel <= trail_lim.size()) {
+
+	    const int begin = trail_lim[newLevel-1];
+
+	    for (int i = begin; i < trail.size(); ++i) {
+	      const int u = trail[i];
+
+	      std::cerr
+		<< "  TRAIL[" << i << "]"
+		<< " x" << u
+		<< " block=" << block[u]
+		<< " level=" << vardata[u].level
+		<< " reason=" << vardata[u].reason
+		<< " RGdecision=" << (int)rgIsDecision[u]
+		<< std::endl;
+	    }
+	  }
+
+	  assert(prevLevel < newLevel);
+        }
+      }
+      */
+      assert(rgDecBlocks.size() == 0 ||
+           newBlock >= rgDecBlocks.last());
+      assert(rgDecBlocks.size() == 0 ||
+           newBlock >= rgDecBlocks.last());
+      rgFoldMarks.push(rgFoldLog.size());
+      if (rgDecBlocks.size()==0 ||
+	  newBlock > rgDecBlocks.last()) {
+        restGameFoldPendingBefore(newBlock);
+      }
+      rgDecBlocks.push(newBlock);
+      rgDecVars.push(v);
+      rgIsDecision[v] = 1;
+      restGameFold(v, true);
+    }
+    void restGameAssignPropagation(int v) {
+      assert(assigns[v] != extbool_Undef);
+
+      // Level-0-Belegungen sind globale Konstanten.
+      if (vardata[v].level == 0) {
+	restGameFold(v,false);
+	return;
+      }
+
+      // Normaler Claude-Fall:
+      // Im aktuell offenen Block bleibt die Propagation pending.
+      //
+      // Falls wir aus irgendeinem Yasol-Sonderpfad eine Variable eines
+      // bereits abgeschlossenen Blocks propagieren, muss sie sofort hinein.
+      if (!(rgDecBlocks.size()==0) &&
+	  block[v] < rgDecBlocks.last()) {
+
+	restGameFold(v,true);
+	return;
+      }
+
+      restGameAddPending(v);
+    }
+    void restGameUndoDecision(int v) {
+      assert(rgDecVars.size()>0);
+      assert(rgDecVars.last() == v);
+      assert(rgFoldMarks.size()>0);
+
+      size_t mark = rgFoldMarks.last();
+
+      while (rgFoldLog.size() > mark) {
+
+	int u = rgFoldLog.last();
+	rgFoldLog.pop();
+
+	restGameUnfoldOne(u);
+
+	// Eine vorher propagierte Variable, die durch diesen
+	// Blockwechsel eingefaltet wurde, wird wieder pending.
+	if (u != v &&
+	    assigns[u] != extbool_Undef &&
+	    !rgIsDecision[u] &&
+	    vardata[u].level > 0) {
+
+	  restGameAddPending(u);
+	}
+      }
+
+      rgIsDecision[v] = 0;
+
+      rgFoldMarks.pop();
+      rgDecBlocks.pop();
+      rgDecVars.pop();
+    }
+    int restGameViewBlock(int fallbackBlock) const {
+      if (!(rgDecBlocks.size()==0))
+	return rgDecBlocks[rgDecBlocks.size()-1];
+      //return rgDecBlocks.last();
+
+      return fallbackBlock;
+    }
+    RestGameKey restGameKeyFast() {
+      uint64_t h1 = 0x243f6a8885a308d3ULL;
+      uint64_t h2 = 0x13198a2e03707344ULL;
+
+      for (int r = 0; r < (int)rgRhs.size(); ++r) {
+
+	if (rgOpenCount[r] <= 0)
+	  continue;
+
+	double residual =
+	  rgRhs[r] - rgFixedSum[r];
+
+	// Claude-Bugfix -0.0 / +0.0
+	residual += 0.0;
+
+	rgAdd(h1, 0x200000000ULL + (uint64_t)r);
+	rgAdd(h1, rgDoubleBits(residual));
+
+	rgAdd(h2, 0x900000000ULL + (uint64_t)r);
+	rgAdd(h2, rgDoubleBits(residual));
+      }
+
+      for (int w = 0; w < (int)rgVbits.size(); ++w) {
+	rgAdd(h1, 0x400000000ULL + (uint64_t)w);
+	rgAdd(h1, rgVbits[w]);
+
+	rgAdd(h2, 0xb00000000ULL + (uint64_t)w);
+	rgAdd(h2, rgVbits[w]);
+      }
+
+      RestGameKey k;
+      k.h1 = h1;
+      k.h2 = h2;
+      return k;
+    }
+    void diagnoseRestGameMismatch(int currentBlock) {
+
+      cerr << "---- VARIABLE CHECK ----" << endl;
+
+      int varMismatches = 0;
+
+      for (int v = 0; v < nVars(); ++v) {
+
+        if (type[v] != BINARY)
+	  continue;
+
+        const bool refPast  = restGamePast(v, currentBlock);
+        const bool fastPast = (rgFolded[v] != 0);
+
+        if (refPast != fastPast) {
+
+	  ++varMismatches;
+
+	  if (refPast != (bool)rgFolded[v]) {
+
+	    cerr << "\n===== FIRST RG VARIABLE MISMATCH =====\n";
+	    cerr << "v=x" << v
+		 << " assign=" << (int)assigns[v]
+		 << " block=" << block[v]
+		 << " level=" << vardata[v].level
+		 << " reason=" << vardata[v].reason
+		 << " refPast=" << refPast
+		 << " folded=" << (int)rgFolded[v]
+		 << " isDecision=" << (int)rgIsDecision[v]
+		 << " pendingPos=" << rgPendingPos[v]
+		 << " DL=" << decisionLevel()
+		 << " stack_pt=" << search_stack.stack_pt
+		 << " trailSize=" << trail.size()
+		 << endl;
+
+	    cerr << "trail position:";
+	    for (int i = 0; i < trail.size(); ++i)
+	      if (trail[i] == v)
+		cerr << " " << i;
+	    cerr << endl;
+
+	    assert(0);
+	    while (1);
+	  }
+	  cerr << "VAR MISMATCH x" << v
+	       << " assign=" << (int)assigns[v]
+	       << " block=" << block[v]
+	       << " level=" << vardata[v].level
+	       << " rootPast=" << (vardata[v].level <= 0)
+	       << " reason=" << vardata[v].reason
+	       << " refPast=" << refPast
+	       << " folded=" << fastPast
+	       << " isDecision=" << (int)rgIsDecision[v]
+	       << " pendingPos=" << rgPendingPos[v];
+
+	  if (vardata[v].level > 0 &&
+	      vardata[v].level <= decisionLevel()) {
+	    cerr << " branchVarAtLevel="
+		 << getDecidedBranchingVariable(vardata[v].level);
+	  }
+
+	  if (vardata[v].level > 0 &&
+	      vardata[v].level < trail_lim.size()) {
+	    
+	    int di = trail_lim[vardata[v].level] - 1;
+	    
+	    cerr << " trailDecisionIndex=" << di;
+	    
+	    if (di >= 0 && di < trail.size())
+	      cerr << " trailDecisionVar="
+		   << trail[di];
+	  }
+	  cerr << endl;
+	  
+	  if (varMismatches >= 20)
+	    break;
+        }
+      }
+
+      cerr << "variable mismatches = "
+	   << varMismatches << endl;
+
+      cerr << "---- ROW CHECK ----" << endl;
+
+      const data::Constraint* c = ttQlp->getFirstConstraint();
+
+      int row = 0;
+      int rowMismatches = 0;
+
+      while (c != 0) {
+
+        std::vector<data::IndexedElement> elems;
+        c->getElementsSparse(elems);
+
+        int refOpenCount = 0;
+        double refFixedSum = 0.0;
+
+        for (int k = 0; k < (int)elems.size(); ++k) {
+
+	  const int v = elems[k].index;
+	  const double a = elems[k].value.asDouble();
+
+	  if (restGamePast(v, currentBlock)) {
+
+	    assert(assigns[v] != extbool_Undef);
+
+	    refFixedSum +=
+	      a * (double)assigns[v];
+
+	  } else {
+
+	    ++refOpenCount;
+	  }
+        }
+
+        const double refResidual =
+	  c->getRhsValue().asDouble() - refFixedSum;
+
+        const double fastResidual =
+	  rgRhs[row] - rgFixedSum[row];
+
+        if (refOpenCount != rgOpenCount[row] ||
+            rgDoubleBits(refResidual + 0.0) !=
+            rgDoubleBits(fastResidual + 0.0)) {
+
+	  ++rowMismatches;
+
+	  cerr << setprecision(17);
+
+	  cerr << "ROW MISMATCH " << row
+	       << " refOpen=" << refOpenCount
+	       << " fastOpen=" << rgOpenCount[row]
+	       << " refFixedSum=" << refFixedSum
+	       << " fastFixedSum=" << rgFixedSum[row]
+	       << " refResidual=" << refResidual
+	       << " fastResidual=" << fastResidual
+	       << " diff=" << (refResidual-fastResidual)
+	       << endl;
+
+	  if (rowMismatches >= 20)
+	    break;
+        }
+
+        ++row;
+        c = c->getNextConstraintPtr();
+      }
+
+      cerr << "row mismatches = "
+	   << rowMismatches << endl;
+
+      cerr << "-------------------------" << endl;
+    }
+    void checkRestGameOracle() {
+      if (ttQlp == 0)
+	return;
+
+      //
+      // Wenn noch keine echte Decision aktiv ist, ist außer Level 0
+      // noch kein strategischer Block abgeschlossen.
+      //
+      const int currentBlock = restGameViewBlock(-1);
+
+      RestGameKey ref  = restGameKeyReference(currentBlock);
+      RestGameKey fast = restGameKeyFast();
+      RestGameKey kXor = restGameKeyXorSlow();
+
+      ++restGameOracleChecks;
+
+      if (restGameOracleChecks == 1) {
+	cerr << "RESTGAME ORACLE active" << endl;
+      }
+
+      RestGameKey xorSlow = restGameKeyXorSlow();
+      if (rgHash1 != xorSlow.h1 ||
+	  rgHash2 != xorSlow.h2) {
+	cerr << "RESTGAME INCREMENTAL XOR HASH MISMATCH" << endl;
+	cerr << "incremental h1 = " << rgHash1 << endl;
+	cerr << "slow        h1 = " << xorSlow.h1 << endl;
+	cerr << "incremental h2 = " << rgHash2 << endl;
+	cerr << "slow        h2 = " << xorSlow.h2 << endl;
+	assert(0);
+      }
+ 
+      if (ref.h1 != fast.h1 ||
+	  ref.h2 != fast.h2) {
+
+	cerr << endl;
+	cerr << "================ RESTGAME ORACLE MISMATCH ================" << endl;
+	cerr << "check       = " << restGameOracleChecks << endl;
+	cerr << "decisionLvl = " << decisionLevel() << endl;
+	cerr << "viewBlock   = " << currentBlock << endl;
+	cerr << "trail.size  = " << trail.size() << endl;
+	cerr << "decBlocks   = " << rgDecBlocks.size() << endl;
+	cerr << "pending     = " << rgPending.size() << endl;
+	cerr << "foldLog     = " << rgFoldLog.size() << endl;
+
+	cerr << "reference h1 = " << ref.h1 << endl;
+	cerr << "fast      h1 = " << fast.h1 << endl;
+	cerr << "reference h2 = " << ref.h2 << endl;
+	cerr << "fast      h2 = " << fast.h2 << endl;
+
+	//
+	// Zusätzlich Zielfunktionsoffset prüfen/anzeigen.
+	//
+	const double refOffset =
+	  restGameObjectiveOffset(currentBlock);
+
+	cerr << setprecision(17);
+	cerr << "reference offset = " << refOffset << endl;
+	cerr << "fast offset      = " << rgVoffset << endl;
+
+	cerr << "==========================================================" << endl;
+	diagnoseRestGameMismatch(currentBlock);
+
+	assert(0);
+	while(1);
+      }
+
+      //
+      // Nur Lebenszeichen, damit wir wissen, dass der Test wirklich läuft.
+      //
+      if ((restGameOracleChecks % 100000) == 0) {
+	cerr << "RESTGAME ORACLE ok: "
+	     << restGameOracleChecks
+	     << " checks"
+	     << endl;
+      }
+    }
+    void restGamePromoteToRoot(int v) {
+      if (ttQlp == 0 || type[v] != BINARY)
+	return;
+
+      //assert(assigns[v] != extbool_Undef);
+      //
+      // Eine Variable kann auf Root-Level fixiert werden,
+      // bevor sie tatsächlich assigned wurde.
+      // Dann existiert noch kein RestGame-Zustand, den wir
+      // "promoten" müssten.
+      //
+      if (assigns[v] == extbool_Undef) {
+        assert(rgPendingPos[v] < 0);
+        assert(!rgFolded[v]);
+        assert(!rgIsDecision[v]);
+        assert(rgOracleDecision[v] == 0);
+        return;
+      }
+    
+      // Für das Referenz-Oracle ist sie jetzt keine lokale Decision mehr.
+      rgOracleDecision[v] = 0;
+
+      // Fall 1: bisher nur pending -> jetzt endgültig falten.
+      if (rgPendingPos[v] >= 0) {
+	assert(!rgFolded[v]);
+	assert(!rgIsDecision[v]);
+
+	restGameFold(v, false);
+	return;
+      }
+
+      // Fall 2: sie war tatsächlich eine Decision.
+      // Decision-Struktur sauber abbauen und anschließend global falten.
+      if (rgIsDecision[v]) {
+	restGameUndoDecision(v);
+	restGameFold(v, false);
+	return;
+      }
+
+      // Fall 3: bereits gefaltet.
+      //
+      // Falls sie vorher eine lokale Propagation war, stand sie im FoldLog.
+      // Als Root-Belegung darf sie dort nicht mehr stehen.
+      if (rgFolded[v]) {
+	if (vardata[v].level > 0) {
+	  assert(rgFoldLog.size() > 0);
+	  assert(rgFoldLog.last() == v);
+	  rgFoldLog.pop();
+	}
+	return;
+      }
+
+      cerr << "RESTGAME: cannot promote x" << v
+	   << " to root"
+	   << " level=" << vardata[v].level
+	   << " pending=" << rgPendingPos[v]
+	   << " folded=" << (int)rgFolded[v]
+	   << " decision=" << (int)rgIsDecision[v]
+	   << endl;
+      assert(0);
+    }
+    void restGameOnAssign(int v) {
+      if (ttQlp == 0 || type[v] != BINARY)
+	return;
+
+      assert(assigns[v] != extbool_Undef);
+      assert(!rgFolded[v]);
+      assert(rgPendingPos[v] < 0);
+      assert(!rgIsDecision[v]);
+
+      const int dl = vardata[v].level;
+
+      // Merkt sich dauerhaft, wie DIESE konkrete Belegung entstanden ist.
+      const bool wasDecision =
+	dl > 0 &&
+	!isFixed(v) &&
+	rgForcedPropagationVar != v &&
+	vardata[v].reason == CRef_Undef &&
+	v == getBranchingVariable(dl);
+      //const bool wasDecision =
+      //	dl > 0 && v == getBranchingVariable(dl);
+
+      rgOracleDecision[v] = wasDecision ? 1 : 0;
+
+      // Globale / Level-0-Belegung = Konstante.
+      if (dl <= 0) {
+	restGameFold(v, false);
+	return;
+      }
+
+      if (wasDecision)
+	restGameAssignDecision(v);
+      else
+	restGameAssignPropagation(v);
+    }
+      
+    void restGameOnUnassign(int v) {
+      if (ttQlp == 0 || type[v] != BINARY)
+        return;
+
+      assert(assigns[v] != extbool_Undef);
+      
+      rgOracleDecision[v] = 0;
+      if (rgIsDecision[v]) {
+        restGameUndoDecision(v);
+        return;
+      }
+
+      if (rgPendingPos[v] >= 0) {
+        restGameRemovePending(v);
+        return;
+      }
+
+      if (rgFolded[v]) {
+
+	if (vardata[v].level <= 0) {
+	  // Level-0-Belegung: nicht im FoldLog
+	  restGameUnfoldOne(v);
+	  return;
+	}
+
+	//
+	// Propagation aus einem bereits abgeschlossenen Block.
+	// Sie wurde mit restGameFold(v,true) gefaltet und steht
+	// deshalb oben auf dem FoldLog.
+	//
+	assert(rgFoldLog.size() > 0);
+	assert(rgFoldLog.last() == v);
+
+	rgFoldLog.pop();
+	restGameUnfoldOne(v);
+	return;
+      }
+      assert(0); // Zustand müsste pending, folded oder decision sein.
+    }
+
+    static inline uint64_t rgRowToken1(int row, double residual) {
+      residual += 0.0;   // -0 -> +0
+      uint64_t x = rgDoubleBits(residual);
+      
+      return rgMix64(
+		     0x13579bdf2468ace0ULL ^
+		     rgMix64((uint64_t)row) ^
+		     rgMix64(x)
+		     );
+    }
+    static inline uint64_t rgRowToken2(int row, double residual) {
+      residual += 0.0;
+      uint64_t x = rgDoubleBits(residual);
+      
+      return rgMix64(
+		     0xfedcba9876543210ULL ^
+		     rgMix64((uint64_t)row + 0x9e3779b97f4a7c15ULL) ^
+		     rgMix64(x + 0xbf58476d1ce4e5b9ULL)
+		     );
+    }
+    static inline uint64_t rgWordToken1(int word, uint64_t bits) {
+      return rgMix64(
+		     0x3141592653589793ULL ^
+		     rgMix64((uint64_t)word) ^
+		     rgMix64(bits)
+		     );
+    }
+    static inline uint64_t rgWordToken2(int word, uint64_t bits) {
+      return rgMix64(
+		     0x2718281828459045ULL ^
+		     rgMix64((uint64_t)word + 0x94d049bb133111ebULL) ^
+		     rgMix64(bits + 0x9e3779b97f4a7c15ULL)
+		     );
+    }
+    RestGameKey restGameKeyXorSlow() {
+      uint64_t h1 = 0x6a09e667f3bcc909ULL;
+      uint64_t h2 = 0xbb67ae8584caa73bULL;
+      // offene Zeilen
+      for (int r = 0; r < (int)rgRhs.size(); ++r) {
+        if (rgOpenCount[r] <= 0)
+            continue;
+        double residual =
+            rgRhs[r] - rgFixedSum[r];
+        residual += 0.0;
+        h1 ^= rgRowToken1(r, residual);
+        h2 ^= rgRowToken2(r, residual);
+      }
+      // offene Variablen als Bitworte
+      for (int w = 0; w < (int)rgVbits.size(); ++w) {
+        h1 ^= rgWordToken1(w, rgVbits[w]);
+        h2 ^= rgWordToken2(w, rgVbits[w]);
+      }
+      RestGameKey k;
+      k.h1 = h1;
+      k.h2 = h2;
+      return k;
+    }
+    bool restGameTTProbeInsert(int openVars) {
+      assert(rgTT != 0);
+      ++rgTTLookups;
+      const uint64_t h1 = rgHash1;
+      const uint64_t h2 = rgHash2;
+      const uint64_t idx = h1 & rgTTMask;
+      RestGameTTBucket& b = rgTT[idx];
+      // echter Hit?
+      for (int s = 0; s < 2; ++s) {
+
+	if (restGameTTValid(b.e[s]) &&
+	    b.e[s].hash == h1 &&
+	    b.e[s].check == restGameTTCheck(h2)) {
+
+	  ++rgTTHits;
+	  restGameTTTouch(b, s);
+	  return true;
+	}
+      }
+      // freien Slot suchen
+      for (int s = 0; s < 2; ++s) {
+	if (!restGameTTValid(b.e[s])) {
+	  restGameTTInitEntry(b.e[s], h1, h2, openVars);
+	  restGameTTTouch(b, s);
+	  ++rgTTInserts;
+	  return false;
+	}
+      }
+
+      // Beide Slots belegt, aber anderer Key.
+      ++rgTTFullBuckets;
+      // Für DIESEN Test bewusst kein Replacement.
+      return false;
+    }
+
+  void restGameTTStoreExact(coef_t value, int openVars, int move=-1) {
+
+      if (rgTT == 0)
+	return;
+
+      const uint64_t idx = rgHash1 & rgTTMask;
+      RestGameTTBucket& b = rgTT[idx];
+
+      RestGameTTEntry* e =
+	restGameTTFindStoreEntry(
+				 b,
+				 rgHash1,
+				 rgHash2,
+				 openVars,
+				 true);          // incomingExact
+      
+      if (e == 0)
+	return;
+
+      const coef_t rel =
+	value - (coef_t)rgVoffset;
+      e->lower = restGameTTFloatLower(rel);
+      e->upper = restGameTTFloatUpper(rel);
+      e->flags |= RGTT_LOWER | RGTT_UPPER;
+      e->bestMove = move;
+    }
+  
+  void restGameTTStoreBound(coef_t value, bool isLower, int openVars, int move = -1,
+                          bool moveRelevant = false) {
+      if (rgTT == 0)
+	return;
+
+      if (value == dont_know)
+	return;
+      const coef_t rel =
+	value - (coef_t)rgVoffset;
+      const uint64_t idx = rgHash1 & rgTTMask;
+      RestGameTTBucket& b = rgTT[idx];
+
+      RestGameTTEntry* e =
+	restGameTTFindStoreEntry(
+				 b,
+				 rgHash1,
+				 rgHash2,
+				 openVars,
+				 false);         // incomingExact
+      
+      if (e == 0)
+	return;
+      if (isLower) {
+	const float f = restGameTTFloatLower(rel);
+	
+	if (!restGameTTHasLower(*e) ||
+	    f > e->lower) {
+	  
+	  e->lower = f;
+	  e->flags |= RGTT_LOWER;
+	  if (moveRelevant)
+	    e->bestMove = move;
+	}
+      } else {
+	const float f = restGameTTFloatUpper(rel);
+	
+	if (!restGameTTHasUpper(*e) ||
+	    f < e->upper) {
+	  
+	  e->upper = f;
+	  e->flags |= RGTT_UPPER;
+	  if (moveRelevant)
+	    e->bestMove = move;
+	}
+      }
+    }
+
+    bool restGameTTGetBounds(coef_t& lower,
+			     bool& hasLower,
+			     coef_t& upper,
+			     bool& hasUpper,
+			     int& bestMove) {
+      static uint64_t rgGetCalls       = 0;
+      static uint64_t rgGetKeyHits     = 0;
+      static uint64_t rgGetBoundHits   = 0;
+      bestMove = -1;
+      rgGetCalls++;
+
+      hasLower = false;
+      hasUpper = false;
+
+      if (rgTT == 0)
+	return false;
+
+      const uint64_t idx = rgHash1 & rgTTMask;
+      RestGameTTBucket& b = rgTT[idx];
+
+      for (int s = 0; s < 2; ++s) {
+	RestGameTTEntry& e = b.e[s];
+	if (!restGameTTValid(e))
+	  continue;
+	
+	if (e.hash != rgHash1 ||
+	    e.check != restGameTTCheck(rgHash2))
+	  continue;
+	
+	if (e.bestMove >= 0)
+	  bestMove = e.bestMove;
+	restGameTTTouch(b, s);
+	
+	if (restGameTTHasLower(e)) {
+	  coef_t l =
+	    (coef_t)e.lower +
+	    (coef_t)rgVoffset;
+	  
+	  if (!hasLower || l > lower)
+	    lower = l;
+	  
+	  hasLower = true;
+	}
+	if (restGameTTHasUpper(e)) {
+	  coef_t u =
+	    (coef_t)e.upper +
+	    (coef_t)rgVoffset;
+	  
+	  if (!hasUpper || u < upper)
+	    upper = u;
+	  
+	  hasUpper = true;
+	}
+      }
+      return hasLower || hasUpper;
+    }
+
+    void restGameCompletedBlockView(int viewBlock,
+				    RestGameKey& k,
+				    double& offset,
+				    int &openVars) {
+      // Ausgangspunkt: der echte inkrementelle Zustand.
+      k.h1 = rgHash1;
+      k.h2 = rgHash2;
+      offset = rgVoffset;
+      openVars = rgOpenVars;
+ 
+      ++rgPreviewEpoch;
+      rgPreviewRows.clear();
+      rgPreviewWords.clear();
+
+      //
+      // Nur diejenigen pending Variablen betrachten,
+      // deren Block aus Sicht von viewBlock abgeschlossen ist.
+      //
+      for (int i = 0; i < rgPending.size(); ++i) {
+
+        const int v = rgPending[i];
+
+        if (assigns[v] == extbool_Undef)
+	  continue;
+
+        if (rgFolded[v])
+	  continue;
+
+        if (block[v] >= viewBlock)
+	  continue;
+
+        const double x = (double)assigns[v];
+
+	assert(type[v] == BINARY);
+	--openVars;
+        //
+        // Objective offset: virtuell mitfalten.
+        //
+        offset += rgObjCoeff[v] * x;
+
+        //
+        // Auswirkungen auf die Zeilen sammeln.
+        //
+        for (int j = 0; j < (int)rgOcc[v].size(); ++j) {
+
+	  const RestGameOccurrence& o = rgOcc[v][j];
+	  const int r = o.row;
+
+	  if (rgPreviewRowStamp[r] != rgPreviewEpoch) {
+	    rgPreviewRowStamp[r] = rgPreviewEpoch;
+	    rgPreviewRowDelta[r] = 0.0;
+	    rgPreviewRowCount[r] = 0;
+	    rgPreviewRows.push(r);
+	  }
+
+	  rgPreviewRowDelta[r] += o.coef * x;
+	  ++rgPreviewRowCount[r];
+        }
+
+        //
+        // Offene Binärvariable virtuell aus dem Bitwort entfernen.
+        //
+        const int w = v >> 6;
+
+        if (rgPreviewWordStamp[w] != rgPreviewEpoch) {
+	  rgPreviewWordStamp[w] = rgPreviewEpoch;
+	  rgPreviewWordBits[w] = rgVbits[w];
+	  rgPreviewWords.push(w);
+        }
+
+        rgPreviewWordBits[w] &= ~(1ULL << (v & 63));
+      }
+
+      //
+      // Zeilen-Hash korrigieren.
+      //
+      for (int i = 0; i < rgPreviewRows.size(); ++i) {
+
+        const int r = rgPreviewRows[i];
+
+        const int oldOpen = rgOpenCount[r];
+        const int newOpen = oldOpen - rgPreviewRowCount[r];
+
+        assert(newOpen >= 0);
+
+        if (oldOpen > 0) {
+	  double oldResidual =
+	    rgRhs[r] - rgFixedSum[r];
+
+	  oldResidual += 0.0;
+
+	  k.h1 ^= rgRowToken1(r, oldResidual);
+	  k.h2 ^= rgRowToken2(r, oldResidual);
+        }
+
+        if (newOpen > 0) {
+	  double newResidual =
+	    rgRhs[r]
+	    - rgFixedSum[r]
+	    - rgPreviewRowDelta[r];
+
+	  newResidual += 0.0;
+
+	  k.h1 ^= rgRowToken1(r, newResidual);
+	  k.h2 ^= rgRowToken2(r, newResidual);
+        }
+      }
+
+      //
+      // Variablen-Bitworte korrigieren.
+      //
+      for (int i = 0; i < rgPreviewWords.size(); ++i) {
+
+        const int w = rgPreviewWords[i];
+
+        k.h1 ^= rgWordToken1(w, rgVbits[w]);
+        k.h2 ^= rgWordToken2(w, rgVbits[w]);
+
+        k.h1 ^= rgWordToken1(w, rgPreviewWordBits[w]);
+        k.h2 ^= rgWordToken2(w, rgPreviewWordBits[w]);
+      }
+    }
+  
+    void restGameTTView(int viewVar,
+			RestGameKey& k,
+			double& offset,
+			int& openVars) {
+      assert(viewVar >= 0);
+      assert(viewVar < nVars());
+
+      if (rgViewMode == 0) {
+
+        // Alte Decision-View.
+        k.h1 = rgHash1;
+        k.h2 = rgHash2;
+        offset = rgVoffset;
+	openVars = rgOpenVars;
+        return;
+      }
+
+      if (rgViewMode == 1) {
+
+        // Unsere jetzige Completed-Block-Semantik.
+        restGameCompletedBlockView(block[viewVar], k, offset, openVars);
+        return;
+      }
+
+      //
+      // Langsame Debug-Variante.
+      //
+      assert(rgViewMode == 2);
+
+      k = restGameKeyReference(block[viewVar]);
+      offset = restGameObjectiveOffset(block[viewVar]);
+      openVars = 0;
+      for (int v = 0; v < nVars(); ++v)
+	if (type[v] == BINARY &&
+	    !restGamePast(v, block[viewVar]))
+        ++openVars;
+    }
+    void debugRestGameCurrentBlock(const char* tag) {
+
+      const int cb = restGameViewBlock(-1);
+
+      RestGameKey ref = restGameKeyReference(cb);
+      RestGameKey fast = restGameKeyFast();
+
+      cerr << tag
+	   << " cb=" << cb
+	   << " DL=" << decisionLevel()
+	   << " trail=" << trail.size()
+	   << " ref=" << std::hex
+	   << ref.h1 << " " << ref.h2
+	   << " fast=" << fast.h1 << " " << fast.h2
+	   << " xor=" << rgHash1 << " " << rgHash2
+	   << std::dec
+	   << endl;
+
+      for (int v = 0; v < nVars(); ++v) {
+
+        if (type[v] != BINARY)
+	  continue;
+
+        if (assigns[v] == extbool_Undef)
+	  continue;
+
+        if (block[v] != cb)
+	  continue;
+
+      }
+    }
+    bool restGameTTProbeInsertCanonical(int viewVar) {
+      assert(viewVar >= 0 && viewVar < nVars());
+      RestGameKey k;
+      double dummyOffset;
+
+      int openVars;
+      
+      restGameTTView(viewVar, k, dummyOffset, openVars);
+      
+      uint64_t save1 = rgHash1;
+      uint64_t save2 = rgHash2;
+      
+      rgHash1 = k.h1;
+      rgHash2 = k.h2;
+      
+      bool r = restGameTTProbeInsert(openVars);
+      
+      rgHash1 = save1;
+      rgHash2 = save2;
+      
+      return r;
+    }
+
+    bool restGameTTGetBoundsCanonical(int viewVar,
+                                  coef_t& lower, bool& hasLower,
+				      coef_t& upper, bool& hasUpper, int &bestMove) {
+      assert(viewVar >= 0 && viewVar < nVars());
+
+      RestGameKey k;
+      double off;
+      int openVars;
+      
+      restGameTTView(viewVar, k, off, openVars);
+
+      uint64_t save1 = rgHash1;
+      uint64_t save2 = rgHash2;
+      double saveOff = rgVoffset;
+
+      rgHash1 = k.h1;
+      rgHash2 = k.h2;
+      rgVoffset = off;
+
+      ++rgCanonicalBoundGets;
+
+      bestMove = -1;
+      bool r = restGameTTGetBounds(lower, hasLower, upper, hasUpper, bestMove);
+
+      if (bestMove >= 0) {
+	const int x = bestMove >> 1;	
+	if (x >= nVars() ||
+	    type[x] != BINARY ||
+	    block[x] != block[viewVar] ||
+	    assigns[x] != extbool_Undef) {	  
+	  bestMove = -1;
+	}
+      }
+      
+      if (r && (hasLower || hasUpper))
+	++rgCanonicalUsefulBounds;
+
+    
+      rgHash1 = save1;
+      rgHash2 = save2;
+      rgVoffset = saveOff;
+
+      return r;
+    }
+
+    void restGameTTStoreBoundCanonical(int viewVar,
+				       coef_t value, bool isLower, int move=-1) {
+      assert(viewVar >= 0 && viewVar < nVars());
+
+      RestGameKey k;
+      double off;
+      int openVars;
+      restGameTTView(viewVar, k, off, openVars);
+      
+      uint64_t save1 = rgHash1;
+      uint64_t save2 = rgHash2;
+      double saveOff = rgVoffset;
+      
+      rgHash1 = k.h1;
+      rgHash2 = k.h2;
+      rgVoffset = off;
+
+      const bool moveRelevant =
+	(isLower && eas[viewVar] == EXIST) ||
+	(!isLower && eas[viewVar] == UNIV);
+      
+      restGameTTStoreBound(value, isLower, openVars,
+			   move, moveRelevant);
+      
+      rgHash1 = save1;
+      rgHash2 = save2;
+      rgVoffset = saveOff;
+    }
+
+    void restGameTTStoreExactCanonical(int viewVar,
+				       coef_t value, int move=-1) {
+      assert(viewVar >= 0 && viewVar < nVars());
+
+      RestGameKey k;
+      double off;
+      int openVars;
+      restGameTTView(viewVar, k, off, openVars);
+      //RestGameKey k = restGameKeyReference(block[viewVar]);
+      //double off = restGameObjectiveOffset(block[viewVar]);
+
+      uint64_t save1 = rgHash1;
+      uint64_t save2 = rgHash2;
+      double saveOff = rgVoffset;
+
+      rgHash1 = k.h1;
+      rgHash2 = k.h2;
+      rgVoffset = off;
+
+      restGameTTStoreExact(value, openVars, move);
+
+      rgHash1 = save1;
+      rgHash2 = save2;
+      rgVoffset = saveOff;
+    }
+    int restGameTTSizeClass(int openVars) const {
+      if (openVars <= 1)  return 0;
+      if (openVars <= 3)  return 1;
+      if (openVars <= 7)  return 2;
+      if (openVars <= 15) return 3;
+      if (openVars <= 31) return 4;
+      return 5;
+    }
+    bool restGameTTIsExact(const RestGameTTEntry& e) const {
+      return restGameTTHasLower(e) &&
+	restGameTTHasUpper(e) &&
+	fabs((double)e.lower - (double)e.upper) <= 1e-6;
+    }
+    int restGameTTQuality(const RestGameTTEntry& e) const {
+      if (!restGameTTValid(e))
+        return -2;
+      if (!restGameTTHasLower(e) &&
+	  !restGameTTHasUpper(e))
+        return -1;
+      return 2 * restGameTTEntryClass(e)
+	+ (restGameTTIsExact(e) ? 1 : 0);
+    }
+    int restGameTTNewQuality(int openVars, bool exact) const {
+      return 2 * restGameTTSizeClass(openVars)
+	+ (exact ? 1 : 0);
+    }
+    void restGameTTTouch(RestGameTTBucket& b, int slot) {
+      assert(slot == 0 || slot == 1);
+      const int other = 1 - slot;
+      b.e[slot].flags &= ~RGTT_OLDER;
+      if (restGameTTValid(b.e[other]))
+        b.e[other].flags |= RGTT_OLDER;
+    }
+    void restGameTTInitEntry(RestGameTTEntry& e,
+			     uint64_t h1,
+			     uint64_t h2,
+			     int openVars) {
+      e = RestGameTTEntry();
+      e.hash  = h1;
+      e.check = restGameTTCheck(h2);
+      e.flags = RGTT_VALID;
+      restGameTTSetClass(e, restGameTTSizeClass(openVars));
+    }
+    RestGameTTEntry* restGameTTFindStoreEntry(
+					      RestGameTTBucket& b,
+					      uint64_t h1,
+					      uint64_t h2,
+					      int openVars,
+					      bool incomingExact) {
+
+      // gleicher Key
+      for (int s = 0; s < 2; ++s) {
+	if (restGameTTValid(b.e[s]) &&
+	    b.e[s].hash == h1 &&
+	    b.e[s].check == restGameTTCheck(h2)) {
+
+	  assert(restGameTTEntryClass(b.e[s]) ==
+		 restGameTTSizeClass(openVars));
+
+	  restGameTTTouch(b, s);
+	  return &b.e[s];
+	}
+      }
+
+      // freier Slot
+      for (int s = 0; s < 2; ++s) {
+	if (!restGameTTValid(b.e[s])) {
+	  restGameTTInitEntry(b.e[s], h1, h2, openVars);
+	  restGameTTTouch(b, s);
+	  return &b.e[s];
+	}
+      }
+
+      // voller Bucket: schlechteren Eintrag bestimmen
+      const int q0 = restGameTTQuality(b.e[0]);
+      const int q1 = restGameTTQuality(b.e[1]);
+
+      int victim;
+
+      if (q0 < q1) {
+	victim = 0;
+      } else if (q1 < q0) {
+	victim = 1;
+      } else {
+	const bool old0 =
+	  (b.e[0].flags & RGTT_OLDER) != 0;
+	const bool old1 =
+	  (b.e[1].flags & RGTT_OLDER) != 0;
+
+	assert(old0 != old1);
+
+	victim = old0 ? 0 : 1;
+      }
+
+      const int qVictim =
+	restGameTTQuality(b.e[victim]);
+
+      const int qNew =
+	restGameTTNewQuality(openVars, incomingExact);
+
+      if (qNew < qVictim)
+	return 0;
+
+      restGameTTInitEntry(
+			  b.e[victim], h1, h2, openVars);
+
+      restGameTTTouch(b, victim);
+
+      return &b.e[victim];
+    }
+    bool restGameTTValid(const RestGameTTEntry& e) const {
+      return (e.flags & RGTT_VALID) != 0;
+    }
+    bool restGameTTHasLower(const RestGameTTEntry& e) const {
+      return (e.flags & RGTT_LOWER) != 0;
+    }
+    bool restGameTTHasUpper(const RestGameTTEntry& e) const {
+      return (e.flags & RGTT_UPPER) != 0;
+    }
+    //bool restGameTTIsExact(const RestGameTTEntry& e) const {
+    //  return (e.flags & RGTT_EXACT) != 0;
+    //}
+    int restGameTTEntryClass(const RestGameTTEntry& e) const {
+      return (e.flags & RGTT_CLASS_MASK) >> RGTT_CLASS_SHIFT;
+    }
+    void restGameTTSetClass(RestGameTTEntry& e, int c) {
+      assert(c >= 0 && c <= 7);
+      e.flags =
+        (e.flags & ~RGTT_CLASS_MASK) |
+        ((uint8_t)c << RGTT_CLASS_SHIFT);
+    }
+    uint32_t restGameTTCheck(uint64_t h2) const {
+      return (uint32_t)(h2 ^ (h2 >> 32));
+    }
+    float restGameTTFloatLower(coef_t x) const {
+      float f = (float)x;
+      if ((coef_t)f > x)
+        f = std::nextafterf(
+			    f, -std::numeric_limits<float>::infinity());
+      return f;
+    }
+    float restGameTTFloatUpper(coef_t x) const {
+      float f = (float)x;
+      if ((coef_t)f < x)
+        f = std::nextafterf(
+			    f, std::numeric_limits<float>::infinity());
+      return f;
+    }
+    inline int encodeRGMove(int x, int value) {
+      assert(x >= 0);
+      assert(value == 0 || value == 1);
+      return 2*x + (1-value);
+    }
+    inline int decodeRGMoveVar(int move) {
+      assert(move >= 0);
+      return move >> 1;
+    }
+    inline int decodeRGMoveValue(int move) {
+      assert(move >= 0);
+      return 1 - (move & 1);
+    }
+    int restGameTTEncodeMove(int viewVar,
+			     int moveVar,
+			     int value) const {
+      if (value != 0 && value != 1)
+        return -1;
+      
+      if (viewVar < 0 || viewVar >= nVars() ||
+	  moveVar < 0 || moveVar >= nVars())
+        return -1;
+      
+      if (type[moveVar] != BINARY)
+        return -1;
+      
+      if (block[moveVar] != block[viewVar])
+        return -1;
+      
+      if (moveVar > (std::numeric_limits<int>::max()-1)/2)
+        return -1;
+      
+      return 2*moveVar + (1-value);
+    }
+    // END RESTGAME SECTION
+  
     coef_t search(int t, void *ifc) {
       coef_t v;
       recvBuf = (trailInfo*)malloc(sizeof(trailInfo)*nVars() + 100);
@@ -5395,11 +7586,107 @@ YPUBLIC:
   return true;
  }
 
+  std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* cmirize(vector<double> &xlpopt, std::vector<data::QpNum> &lbVec, std::vector<data::QpNum> ubVec, std::vector<data::IndexedElement>& lhsIn, double rhsIn);
+  
   int generateImplicationCuts( vector< vector< data::IndexedElement > > &listOfCutsLhs,
 			       vector< data::QpNum > &listOfCutsRhs, vector<unsigned int> &candis, bool root) {
+    /*
+    auto addCheckedImpCut =
+      [&](const char* origin,
+	  const std::vector<data::IndexedElement>& row,
+	  double rhs)
+      {
+	for (size_t i = 0; i < row.size(); ++i) {
+	  for (size_t j = i + 1; j < row.size(); ++j) {
+            if (row[i].index != row[j].index)
+	      continue;
+
+            cerr << "BAD IMPLICATION CUT: "
+                 << origin
+                 << " DL=" << decisionLevel()
+                 << " duplicate=x" << row[i].index
+                 << " rhs=" << rhs
+                 << endl;
+
+            for (const auto& e : row)
+	      cerr << e.value.asDouble()
+		   << "*x" << e.index << " ";
+
+            cerr << endl;
+            assert(false);
+            return;
+	  }
+	}
+
+	listOfCutsLhs.push_back(row);
+	listOfCutsRhs.emplace_back(rhs);
+      };
+    */
         ca_vec<CoeVar> preQ;
 	if (solution.size() < nVars() || status != algorithm::Algorithm::FEASIBLE)
 	  return 0;
+	if (!isPow2(decisionLevel())) return 0;
+
+	const unsigned int m = QlpStSolve->getExternSolver( maxLPStage ).getRowCount();
+	const unsigned int n = QlpStSolve->getExternSolver( maxLPStage ).getVariableCount();
+	vector<data::QpNum> objVals(n);
+	QlpStSolve->getExternSolver( maxLPStage ).getValues(objVals);
+	if (objVals.size() ==0) {
+	  cerr << "Error in generate ImplicationCuts : got no solution." << endl;
+	}
+	vector<double> xlpopt( n );
+	for( unsigned int i = 0; i < n; ++i ){
+	  xlpopt[i] = objVals[i].asDouble();
+	}
+	std::vector<data::QpNum> lbVec(n);
+	QlpStSolve->getExternSolver( maxLPStage ).getLB(lbVec);
+	std::vector<data::QpNum> ubVec(n);
+	QlpStSolve->getExternSolver( maxLPStage ).getUB(ubVec);
+	
+	for (int z = constraints.size()-1; z >= 1;z--) {
+	  Constraint &c = constraintallocator[constraints[z]];
+	  double lhs = 0.0;
+	  double rhs = c.header.rhs;
+	  if (!c.header.learnt) break;//continue;
+	  if (c.size()>=fmax(sqrt(nVars()),40)) continue;
+	  for (int i = 0;i < c.size();i++) {
+	    if (sign(c[i])) {
+	      lhs = lhs - c[i].coef * solution[var(c[i])].asDouble(); 
+	    } else {
+	      lhs = lhs + c[i].coef * solution[var(c[i])].asDouble(); 	      
+	    }
+	  }
+	  if (lhs < rhs - 1e-6*fabs(rhs) - 1e-5) {
+	    if (getShowInfo()) cerr << "found mismatch: lhs=" << lhs << " < rhs=" << rhs << ". csize=" << c.size() << " in DL=" << decisionLevel() << endl;
+	    if (c.size()<fmax(sqrt(nVars()),40)) {
+	      std::vector<data::IndexedElement> specon;//(c.size());
+	      specon.reserve(c.size());
+	      for (int j=0;j<c.size();j++) {
+		specon.emplace_back(var(c[j]),sign(c[j])?-c[j].coef:c[j].coef);
+	      }
+	      std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* cutPt =
+		cmirize(xlpopt, lbVec, ubVec, specon, c.header.rhs);
+	      if (cutPt && !cutPt->empty()) {
+		const auto& newCut = (*cutPt)[0];
+
+		specon.clear();
+		specon.reserve(newCut.first.size());
+		
+		for (const auto& e : newCut.first) {
+		  specon.emplace_back(e.first, e.second);
+		}
+		
+		listOfCutsRhs.emplace_back(newCut.second);
+		listOfCutsLhs.emplace_back(std::move(specon));
+		//listOfCutsRhs.push_back((*cutPt)[0].second);
+		//listOfCutsLhs.push_back(specon);
+	      } else {
+		listOfCutsRhs.emplace_back(c.header.rhs);
+		listOfCutsLhs.emplace_back(specon);
+	      }
+	    }
+	  }
+	}
 	for (int z = 0; z < nVars();z++) {
 	  if (type[z] != BINARY) continue; 
 	  int v = z;
@@ -5421,12 +7708,30 @@ YPUBLIC:
 	      else { specon[1].value = -1.0; negs = negs + 1.0; lhs = lhs - solution[preQ[zz].x>>1].asDouble(); }
 	      if (optSol.size()>0) assert(specon[0].value.asDouble() * optSol[specon[0].index] +
 		     specon[1].value.asDouble() * optSol[specon[1].index] >= 1.0 - negs);
-	      if (lhs < 1.0 - negs) {
+	      if (lhs < 1.0 - negs - 1e-6*fabs(1.0 - negs) - 1e-5) {
 		//cerr << "x=" << v << "val=" << val << " sol[v]=" << solution[v].asDouble() << " X2=" << (preQ[zz].x) << " specon[0].value=" << specon[0].value.asDouble() << " specon[1].value=" << specon[1].value.asDouble() << " rhs=" << 1.0 - negs << " optSol v=:" << optSol[v] << " other=" << optSol[specon[1].index] << endl;
 		char c;
 		//cin >> c;
-		listOfCutsRhs.emplace_back(1.0 - negs);
-		listOfCutsLhs.emplace_back(specon);
+
+		std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* cutPt =
+		  cmirize(xlpopt, lbVec, ubVec, specon, 1.0 - negs);
+		if (cutPt && cutPt && !cutPt->empty()) {
+		  const auto& newCut = (*cutPt)[0];
+		  specon.clear();
+		  specon.reserve(newCut.first.size());
+		  
+		  for (const auto& e : newCut.first) {
+		    specon.emplace_back(e.first, e.second);
+		  }
+		  
+		  listOfCutsRhs.emplace_back(newCut.second);
+		  listOfCutsLhs.emplace_back(std::move(specon));
+		  //listOfCutsRhs.push_back((*cutPt)[0].second);
+		  //listOfCutsLhs.push_back(specon);
+		} else {
+		  listOfCutsRhs.emplace_back(1.0 - negs);
+		  listOfCutsLhs.emplace_back(specon);
+		}
 		//cerr << "+";
 	      }
 	    }
@@ -5434,29 +7739,109 @@ YPUBLIC:
 	}
 	return listOfCutsRhs.size();
      }
+
+     int generateCliqueCuts(vector< vector< data::IndexedElement > > &listOfCutsLhs, vector< data::QpNum > &listOfCutsRhs, vector<unsigned int> &candis, bool root) {
+       if (solution.size() < nVars() ||
+        status != algorithm::Algorithm::FEASIBLE)
+	 return 0;
+       
+       const unsigned int n =
+	 QlpStSolve->getExternSolver(maxLPStage).getVariableCount();
+       
+       vector<data::QpNum> objVals(n);
+       
+       QlpStSolve->getExternSolver(maxLPStage).getValues(objVals);
+       
+       if (objVals.size() == 0) {
+	 cerr << "Error in generateCliqueCuts: got no solution."
+	      << endl;
+	 return 0;
+       }
+       
+       vector<double> xlpopt(n);
+       
+       for (unsigned int i = 0; i < n; ++i)
+	 xlpopt[i] = objVals[i].asDouble();
+
+       std::vector<CliqueManager::CliqueSepClique> cliqueResult;
+
+       CM.separateCliquesHighsLike(xlpopt, type.getData(), cliqueResult);
+
+       int numAdded = 0;
+
+       for (const auto& clique : cliqueResult) {
+
+	 if (clique.literals.size() < 2)
+	   continue;
+
+	 std::vector<data::IndexedElement> cut;
+	 cut.reserve(clique.literals.size());
+
+	 int numZeroLiterals = 0;
+
+	 for (int lit : clique.literals) {
+
+	   const int v = lit >> 1;
+
+	   data::IndexedElement e;
+	   e.index = v;
+
+	   if ((lit & 1) == 0) {
+	     // CM literal 2*v means x_v = 1.
+	     //
+	     // Clique inequality contains +x_v <= ...
+	     // After multiplication by -1:
+	     e.value = -1.0;
+	   }
+	   else {
+	     // CM literal 2*v+1 means x_v = 0,
+	     // i.e. the clique inequality contains (1-x_v).
+	     //
+	     // After conversion to >=:
+	     e.value = 1.0;
+	     ++numZeroLiterals;
+	   }
+
+	   cut.push_back(e);
+	 }
+
+	 const double rhs =
+	   (double)numZeroLiterals - 1.0;
+
+	 listOfCutsLhs.emplace_back(std::move(cut));
+	 listOfCutsRhs.emplace_back(rhs);
+
+	 ++numAdded;
+       }
+
+       cerr << "CLIQUE-CUT: added "
+	    << numAdded
+	    << " cuts"
+	    << endl;
+
+       return listOfCutsRhs.size();
+     }
   
      inline int nVars() const { return vardata.size(); }
      inline int binVars() const { return vardata.size()-contData.size(); }
 	inline void varBumpActivity(Var v, bool pol, int dlen) { varBumpActivity(v, var_inc, pol, dlen); }
 	inline void varBumpActivity(Var v, double inc, bool pol, int dlen) {
-        //if (dlen == 0) return;
-	//dlen = 0;
-	//assert(dlen==0);
-        if (dlen > 0) inc = 10*inc / dlen;
-        else if (inc > 0.0) inc = inc / sqrt((double)decisionLevel());
-        /* try new idea */
-
-        /*if (assigns[v] != extbool_Undef) {
-	  //inc = decisionLevel() - vardata[v].level;
-	} else if (isFixed(v)) {
-	  //inc = decisionLevel() - fixdata[v].level;
-	} else return;
-	*/
-	/* */
-
+	  if (dlen > 0) inc = 10*inc / dlen;
+	  else if (inc > 0.0) {
+	    if (0&&decisionLevel() == 0) {
+	      cerr << "ROOT_BUMP v=" << v
+		   << " pol=" << pol
+		   << " inc=" << inc
+		   << endl;
+	      inc = 100.0;
+	    } else {
+	      inc /= sqrt(max(1.0,(double)decisionLevel()));
+	    }
+	  }
         //if (inc > 0.0) inc = inc / dlen;
         if (pol) p_activity[v] += inc;
 	else n_activity[v] += inc;
+
         if (pol) {
 	  if (0&&p_pseudocostCnt[v]>10) {
 	    p_pseudocostCnt[v]++;
@@ -6079,8 +8464,8 @@ YPUBLIC:
 	  //cerr << "Var:" << (int)var(c[real_ix]) << "allInt:" << allCoefInteger << " cntReal:" <<  cntReals << " cont.Coef:" <<  c[real_ix].coef << " pseudo:" << isPseudoGeneral[var(c[real_ix])] << endl;
 	  if (allCoefInteger && cntReals==1 && fabs(c[real_ix].coef) > 1e-8) {
 	    int va = var(c[real_ix]);
-	    if ( (fabs(va_m*getUpperBound(va) - floor(va_m*getUpperBound(va))) < 1e-7 || fabs(va_m*getUpperBound(va) - ceil(va_m*getUpperBound(va))) < 1e-7) &&
-		 (fabs(va_m*getLowerBound(va) - floor(va_m*getLowerBound(va))) < 1e-7 || fabs(va_m*getLowerBound(va) - ceil(va_m*getLowerBound(va))) < 1e-7) &&
+	    if ( (fabs(va_m*getUpperBound(va) - floor(va_m*getUpperBound(va))) < 1e-6 || fabs(va_m*getUpperBound(va) - ceil(va_m*getUpperBound(va))) < 1e-6) &&
+		 (fabs(va_m*getLowerBound(va) - floor(va_m*getLowerBound(va))) < 1e-6 || fabs(va_m*getLowerBound(va) - ceil(va_m*getLowerBound(va))) < 1e-6) &&
 		 (i==0 || (fabs(va_m*c.header.rhs - floor(va_m*c.header.rhs)) < 1e-6 || fabs(va_m*c.header.rhs - ceil(va_m*c.header.rhs)) < 1e-6 ) ) ) {
 	      if (isPseudoGeneral[va] == 0)
 		;
@@ -7540,6 +9925,7 @@ YPUBLIC:
 			    fstStSol[iii] = solutionh0[iii].asDouble();
 			}
 		      }
+		      fstStKnownFromCandidate();
 		      UpdForecast(fstStSol);
 		      global_score = score = c.header.rhs = value;
 		      s_breadth=START_BREADTH;
@@ -7812,6 +10198,7 @@ YPUBLIC:
 			    fstStSol[iii] = solutionh0[iii].asDouble();
 			}
 		      }
+		      fstStKnownFromCandidate();
 		      UpdForecast(fstStSol);
 		      global_score = score = c.header.rhs = value;
 		      discoveredNews += 500;
@@ -8488,8 +10875,7 @@ YPUBLIC:
 	    if(getShowInfo()) cerr << "Info: new lower bound of x" << (int)var(c[ci]) << "=" << l << endl;
         }
     }
-
-
+  
  QBPSolver(/*utils::QlpStageSolver &qss*/data::Qlp &qss) : DM(block, eas), order_heap(VarOrderLt(p_activity, n_activity, block, isInObj, type, DM)), AllSolver(extSol::initExternSolver()),ExistSolver(extSol::initExternSolver()),SOL(SearchOrderLt(block)), lpSOL(lpSortLt(p_activity, n_activity, block, isInObj, type, p_pseudocost, n_pseudocost, p_pseudocostCnt, n_pseudocostCnt, p_avWeight, n_avWeight, column_pos, column_neg, LPsortmode, brokenCnt, DM, lpVariableValue, solution, p_implis, n_implis))
     {
 		//NEW FOR ALL-SYSTEM
@@ -8605,6 +10991,7 @@ YPUBLIC:
     	useScout=false;
     	useAlphabeta=true;
     	useMonotones=7;
+	useRGTT=0;
 	isSimplyRestricted=false;
 	writeOutputFile=false;
 	inputFileName="";
@@ -8634,11 +11021,13 @@ YPUBLIC:
         noMoreRestarts=false;
         tooMuchUndef = 0;
 
+	ttQlp = 0;
         //search_stack.stack.capacity(1000000);
         search_stack.stack.reserve(10000);
     }
 
     ~QBPSolver() {
+      delete[] rgTT;
       //std::cerr << "in delete QBPSolver" << std::endl;
       //std::cerr << "delete HT" << std::endl;
       delete HT;
@@ -8731,12 +11120,14 @@ YPUBLIC:
     void setUseScout(bool x) { useScout = x; }
     void setUseAlphabeta(bool x) { useAlphabeta = x; }
     void setUseMonotones(int8_t x) { useMonotones = x; }
+  void setUseRGTT(int8_t x) { useRGTT = x; }
     void setIsSimplyRestricted(bool x) { isSimplyRestricted = x; }
     void setWriteOutputFile(bool x) { writeOutputFile = x; }
     void setInputFileName(std::string x) { inputFileName=x; }
     void setOutputSupport(bool x) { suppressOutput=x; }
     void setInfoLevel(int x) { info_level = x - OUT_OFFSET; }
     void setCblock(int i, int x) { converted_block[i] = x; }
+  void setEnforceCutSeperation() { enforceCuts=true; } 
 	void setMaxBlock(int x) { maxBlock = x; }
 	void setMaxLPBlock(int x) { maxLPBlock = x; }
 	void setMaxLPStage(int x) { maxLPStage = x; }
@@ -8744,37 +11135,109 @@ YPUBLIC:
 	void setLowerBound(int i, coef_t x) { lowerBounds[i] = x; }
 	void setFeasibilityOnly(bool x) { feasibilityOnly = x; }
 	void setHasObjective(bool x) { hasObjective = x; }
-    void ySetProcessNo(int pno) { processNo = pno; }
+        void ySetProcessNo(int pno) { processNo = pno; }
 	void setTimeout(time_t t) {	timeout = t; }
 	void setGapLimit(double g) {	gapLimit = g; }
 
 	void setInitilizationTime(time_t iTim) { ini_time = iTim; }
 	void setGlobalScore(double s) { global_score = s; }
 	void setGlobalDualBound(double s) { global_dual_bound = s; }
-	void setFirstStageSolutionValue(int i, double x) {
-	  if (i > fstStSol.size()) return;
+        void setFirstStageSolutionValue(int i, double x) {
+	  if (i < 0 || i >= (int)fstStSol.size()) return;
 	  fstStSol[i] = x;
+	  fstStKnown[i] = 0;
+	  if (block[i] != 1) return;
+	  if (type[i] == BINARY)
+	    fstStKnown[i] = (x == 0.0 || x == 1.0);
+	  else
+	    fstStKnown[i] = std::isfinite(x);
 	}
-	void setFirstStageSolution(std::vector<double> &sol) {
-	  if (sol.size() > nVars()) {
-	    if(getShowWarning()) cerr << "Warning: size too large in setFirstStageSolution" << endl;
-	    return;
+
+        void fstStKnownFromCandidate() {
+	  assert(fstStKnown.size() >= (size_t)nVars());
+	  
+	  for (int i = 0; i < nVars(); ++i) {
+	    
+	    fstStKnown[i] = 0;
+	    
+	    if (block[i] != 1) continue;
+	    
+	    const double v = fstStSol[i];
+	    
+	    if (type[i] == BINARY)
+	      fstStKnown[i] = (v == 0.0 || v == 1.0);
+	    else
+	      fstStKnown[i] = std::isfinite(v);
 	  }
-	  if (sol.size() > fstStSol.size()) {
-	    if(getShowWarning()) cerr << "Warning: have to resize in setFirstStageSolution" << endl;
-	    fstStSol.resize(sol.size());
-	  }
-	  for (int iii = 0; iii < nVars(); iii++) {
-	    if (getType(iii) != BINARY) setFirstStageSolutionValue(iii, sol[iii] );
-	    else {
-	      if (!isZero(sol[iii]) && !isOne(sol[iii])) {
-		if(getShowWarning()) cerr << "Warning: setFirstStageSolution: proposed value neither 0 nor 1, but " << sol[iii] << " Replaced by 0." << endl; 
-		setFirstStageSolutionValue(iii,0.0);
-	      } else if (iii >= sol.size() || block[iii] > 1) setFirstStageSolutionValue(iii,0.0);
-	      else setFirstStageSolutionValue(iii, sol[iii] );
+	}
+        void fstStKnownFromTrail() {
+	  assert(fstStKnown.size() >= (size_t)nVars());
+	  
+	  for (int i = 0; i < nVars(); ++i) {
+	    
+	    fstStKnown[i] = 0;
+	    
+	    if (block[i] != 1) continue;
+	    
+	    if (type[i] == BINARY &&
+		assigns[i] != extbool_Undef &&
+		fstStSol[i] == (double)assigns[i]) {
+	      
+	      fstStKnown[i] = 1;
 	    }
 	  }
 	}
+
+        void setFirstStageSolution(std::vector<double> &sol) {
+	  if (sol.size() > (size_t)nVars()) {
+	    if (getShowWarning())
+	      cerr << "Warning: size too large in "
+		   << "setFirstStageSolution" << endl;
+	    return;
+	  }
+	  if (fstStSol.size() < (size_t)nVars())
+	    fstStSol.resize(nVars(), 0.0);
+	  if (fstStKnown.size() < (size_t)nVars())
+	    fstStKnown.resize(nVars(), 0);
+	  for (int i = 0; i < nVars(); ++i) {
+	    // Other stages are not part of fstStSol.
+	    if (block[i] != 1) {
+	      fstStSol[i] = 0.0;
+	      fstStKnown[i] = 0;
+	      continue;
+	    }
+	    const bool supplied = i < (int)sol.size();
+	    if (type[i] == BINARY) {
+	      const bool valid =
+		supplied &&
+		(sol[i] == 0.0 || sol[i] == 1.0);
+	      if (valid) {
+                setFirstStageSolutionValue(i, sol[i]);
+	      } else {
+                if (supplied && getShowWarning())
+		  cerr << "Warning: invalid binary value "
+		       << sol[i]
+		       << " for x" << i << endl;
+
+                // Keep numerical fallback for old code.
+                fstStSol[i] = 0.0;
+
+                // But do not treat it as a known zero.
+                fstStKnown[i] = 0;
+	      }
+	    } else {
+	      const bool valid =
+                supplied && std::isfinite(sol[i]);
+	      if (valid) {
+                setFirstStageSolutionValue(i, sol[i]);
+	      } else {
+                fstStSol[i] = 0.0;
+                fstStKnown[i] = 0;
+	      }
+	    }
+	  }
+	}
+  
 	void setPhase(bool x) { feasPhase=x; }
 	void setUseFstSTSolFirst(bool x) { useFstStSolFirst=x; }
 
@@ -8832,6 +11295,7 @@ YPUBLIC:
     bool getUseAlphabeta() { return useAlphabeta; }
     bool getUseScout() { return useScout; }
     int8_t getUseMonotones() { return useMonotones; }
+    int8_t getUseRGTT() { return useRGTT; }
     bool getIsSimplyRestricted() { return isSimplyRestricted; }
     bool getWriteOutputFile() { return writeOutputFile; }
     std::string getInputFileName() {return inputFileName; }
@@ -8896,6 +11360,12 @@ YPUBLIC:
 		if (STACK.pick < 0) return STACK.Lpick;
 		else return STACK.pick;
 	}
+        int getDecidedBranchingVariable(int l) {
+	  if (l <= 0)
+	    return -1;
+	  stack_container &STACK = search_stack.stack[l-1];	  
+	  return STACK.pick;
+	}
 	int getBranchingPolarity(int l) {
 		stack_container &STACKz = search_stack.stack[l-1];
 		//int8_t *valII = &stack_valII[(l)<<1];
@@ -8938,8 +11408,113 @@ YPUBLIC:
 	double getGlobalDualBound() { return global_dual_bound; }
 	double getGap(bool inverted) { 
 		if(inverted) return abs(100.0*(getGlobalDualBound() - getGlobalScore()) / (abs(getGlobalScore())+1e-10) ); 
-		else return abs(100.0*(-getGlobalDualBound() + getGlobalScore()) / (abs(getGlobalScore())+1e-10) ); }
-	double getPV(int i){ return PV[0][i];}
+		else return abs(100.0*(-getGlobalDualBound() + getGlobalScore()) / (abs(getGlobalScore())+1e-10) );        }
+
+
+        void getOutputFirstStage(
+				 std::vector<double>& out,
+				 std::vector<unsigned char>& known) {
+	  const int n = nVars();
+
+	  out.assign(n, -2.0);
+	  known.assign(n, 0);
+
+	  bool binariesComplete = true;
+
+	  // Binärvariablen der ersten Stufe
+	  for (int i = 0; i < n; ++i) {
+	    if (block[i] != 1 || type[i] != BINARY)
+	      continue;
+
+	    const bool ok =
+	      i < (int)fstStKnown.size() &&
+		  fstStKnown[i] &&
+		  (fstStSol[i] == 0.0 || fstStSol[i] == 1.0);
+
+	    if (ok) {
+	      out[i] = fstStSol[i];
+	      known[i] = 1;
+	    } else {
+	      binariesComplete = false;
+	    }
+	  }
+
+	  // Kontinuierliche Erststufenvariablen
+	  for (int i = 0; i < n; ++i) {
+	    if (block[i] != 1 || type[i] == BINARY)
+	      continue;
+
+	    if (binariesComplete &&
+		i < (int)fstStKnown.size() &&
+		fstStKnown[i] &&
+		std::isfinite(fstStSol[i])) {
+
+	      out[i] = fstStSol[i];
+	      known[i] = 1;
+	    }
+	  }
+	}
+        bool getOutputPV(
+			 std::vector<double>& out,
+			 std::vector<unsigned char>& known) {
+	  const int n = nVars();
+
+	  if (!getMaintainPv()) {
+	    // Ohne PV nur die erste Stufe ausgeben.
+	    getOutputFirstStage(out, known);
+
+	    bool complete = true;
+	    for (int i = 0; i < n; ++i) {
+	      if (!known[i]) {
+                complete = false;
+                break;
+	      }
+	    }
+	    return complete;
+	  }
+
+	  out.assign(n, -2.0);
+	  known.assign(n, 0);
+
+	  if (PV.empty() || PV[0].size() < (size_t)n)
+	    return false;
+
+	  bool binariesComplete = true;
+
+	  for (int i = 0; i < n; ++i) {
+	    if (type[i] != BINARY)
+	      continue;
+
+	    const double v = PV[0][i];
+
+	    if (v == 0.0 || v == 1.0) {
+	      out[i] = v;
+	      known[i] = 1;
+	    } else {
+	      binariesComplete = false;
+	    }
+	  }
+
+	  bool complete = binariesComplete;
+
+	  for (int i = 0; i < n; ++i) {
+	    if (type[i] == BINARY)
+	      continue;
+
+	    const double v = PV[0][i];
+
+	    if (binariesComplete && std::isfinite(v)) {
+	      out[i] = v;
+	      known[i] = 1;
+	    } else {
+	      complete = false;
+	    }
+	  }
+
+	  return complete;
+	}
+  
+        double getPV(int i){ return PV[0][i];}
 	double getFirstStageSolutionValue(int i) {
 	  if (0&&type[i] == CONTINUOUS && assigns[i] == 0) {
 	    assert(fabs(upperBounds[i] - lowerBounds[i]) <= 3*NUMERICAL_SAFETY_EPS);
@@ -9325,6 +11900,26 @@ YPRIVATE:
     // Returns a random integer 0 <= x < size. Seed must never be 0.
     static inline int irand(double& seed, int size) {
         return (int)(drand(seed) * size); }
+    static inline uint64_t rgMix64(uint64_t x) {
+      x += 0x9e3779b97f4a7c15ULL;
+      x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+      x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+      return x ^ (x >> 31);
+    }
+    static inline void rgAdd(uint64_t& h, uint64_t x) {
+      h ^= rgMix64(x + h);
+      h = (h << 27) | (h >> 37);
+      h = h * 5 + 0x52dce729;
+    }
+    static inline uint64_t rgDoubleBits(double x) {
+      // Claudes -0.0-Fall:
+      if (x == 0.0)
+	x = 0.0;
+      
+      uint64_t u;
+      memcpy(&u, &x, sizeof(u));
+      return u;
+    }
 
     struct reduceDB_lt {
         ConstraintAllocator& ca;
@@ -9377,6 +11972,43 @@ YPRIVATE:
           for (int zz = 0; zz <= maxLPStage; zz++) {
             QLPSTSOLVE_TIGHTEN_OBJ_FUNC_BOUND(zz,(double)-constraintallocator[constraints[0]].header.rhs);
           }
+	  if (rootLurking.size() < nVars()) {
+	    cerr << "WARNING: rootLurking not initialized or too small: size="
+		 << rootLurking.size()
+		 << " nVars=" << nVars()
+		 << endl;
+	  } else if (!UniversalConstraintsExist) {
+	    int cntLurkSuccesses=0;
+	    for (int j = 0; j < nVars(); ++j) {
+	      if (type[j] == CONTINUOUS) continue;
+	      if (eas[j] != EXIST) continue;
+	      if ((assigns[j] != extbool_Undef && vardata[j].level <= 0) || (isFixed(j) && fixdata[j].level <= 0) ) continue;
+	      double newGlobalPrimalBound = constraintallocator[constraints[0]].header.rhs;
+	      if (rootLurking[j].first < newGlobalPrimalBound) {
+		int fixVal = 1 - (rootLurking[j].second & 1);
+		int var    = rootLurking[j].second >> 1;
+		
+		assert(var == j);
+		
+		/*std::cerr << "ROOT-LURK fix x" << j
+			  << " = " << fixVal
+			  << " at incumbent=" << newGlobalPrimalBound
+			  << " threshold=" << rootLurking[j].first
+			  << std::endl;*/
+		setFixed(j,fixVal);
+		cntLurkSuccesses++;
+		if (cntLurkSuccesses > 1000) break_from_outside = true; 
+	      }
+	    }
+	    if (0&&cntLurkSuccesses > 0 && decisionLevel() > 1) {
+	      cerr << "ROOT-LURK: restart required, "
+		   << cntLurkSuccesses
+		   << " new fixings at DL="
+		   << decisionLevel() << endl;
+	      break_from_outside = true;
+	    }
+	    if(getShowInfo()) cerr << "lurk successes = " << cntLurkSuccesses << endl;
+	  }
 	  if(maxBlock == 1 && objIsInteger() && (floor(global_dual_bound+0.000001) - ceil(global_score-0.000001)) / objIsInteger() <= 2.0) {
 	    if(getShowInfo()) cerr << "Info: add small gap constraint.:" << floor(global_dual_bound+0.000001) << "," << ceil(global_score-0.000001) << "," << objIsInteger() << endl;
 	    HTCutentry *HTCe;
@@ -9445,6 +12077,12 @@ YPRIVATE:
         return mx / mn;
     }
 
+    double unknownPVValue(int x) const {
+      if (type[x] == BINARY)
+	return -2.0;
+      else
+        return -std::numeric_limits<double>::infinity();
+    }
     void InitPV(int max_stages) {
       for (int i = 0;i < PV.size();i++) {
 	PV[i].clear();
@@ -9454,7 +12092,7 @@ YPRIVATE:
 	std::vector<double> dummy;
 	PV.push_back(dummy);
 	for (int j = 0;j < nVars();j++) {
-	  PV[i].push_back(-2);
+	  PV[i].push_back(unknownPVValue(j));
 	}
       }
       stageValue.clear();

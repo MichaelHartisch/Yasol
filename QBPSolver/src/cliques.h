@@ -25,6 +25,7 @@
 #include "multiset_plus.h"
 #include <string>
 #include <algorithm>
+#include <vector>
 
 #include "Settings/Settings.hpp"
 #include "Algorithms/Algorithms.hpp"
@@ -34,7 +35,7 @@
 #include "HashTable.h"
 
 #define USE_CLICK_EXTR_OUT 0
-
+#define USE_CLIQUE_OUT 0
 
 class ValueConstraintPair {
 public:
@@ -254,6 +255,50 @@ class CliqueManager {
     // int IsContained(T v) { return _IsContained(first, v); }
     // void Clear() { _Clear(first); }
     // int IsEmpty() { if (first) return 0; else return 1; }
+      // ------------------------------------------------------------
+    // Local graph used for HiGHS-like clique separation.
+    //
+    // The original Yasol conflict graph uses literal nodes
+    //
+    //     2*i     : x_i = 1
+    //     2*i + 1 : x_i = 0
+    //
+    // Bron-Kerbosch will work only on this compact local copy,
+    // not directly on ConflictGraph.
+    // ------------------------------------------------------------
+    struct CliqueSepGraph {
+        // local node -> original CM literal
+        std::vector<int> literal;
+        // original CM literal -> local node, -1 if not present
+        std::vector<int> localOfLiteral;
+        // adjacency lists using LOCAL node numbers
+        std::vector<std::vector<int>> adj;
+        // LP weight of the literal:
+        //
+        //   x_i       for literal 2*i
+        //   1 - x_i   for literal 2*i+1
+        std::vector<double> weight;
+
+        std::vector<int> zeroLiteral;
+        std::vector<std::vector<int>> zeroAdj;
+        // original CM zero literal -> index in zeroLiteral, otherwise -1
+        std::vector<int> zeroLocalOfLiteral;
+        // adjacency among zero-weight literals, using zero-local indices
+        std::vector<std::vector<int>> zeroZeroAdj;
+      
+        void clear() {
+	  literal.clear();
+	  localOfLiteral.clear();
+	  adj.clear();
+	  weight.clear();
+
+	  zeroLiteral.clear();
+	  zeroAdj.clear();
+	  zeroLocalOfLiteral.clear();
+	  zeroZeroAdj.clear();
+        }
+    };
+    void buildCliqueSepGraph( const std::vector<double>& xlp, const int* types, CliqueSepGraph& graph, double eps = 1e-9);
 public:
 	struct VarData { CRef reason; int level; int bndMvBegL; int bndMvBegU;};
 	ca_vec<Cli_Table> cliques;
@@ -528,4 +573,23 @@ public:
     	}
     	return true;
     }
+
+    struct CliqueSepClique {
+      std::vector<int> literals;   // CM literals: 2*i or 2*i+1
+      double weight;
+      
+      CliqueSepClique()
+        : weight(0.0)
+      {}
+    };
+  
+  void separateCliquesHighsLike(
+				const std::vector<double>& xlp,
+				const int* types,
+				std::vector<CliqueSepClique>& result,
+				double minWeight = 1.05,
+				int maxCalls = 10000,
+				int maxCliques = 100
+				);
+  void bronKerboschHighsLike(const CliqueSepGraph& graph, std::vector<int>& R, std::vector<int> P, std::vector<int> X, double currentWeight, double minWeight, int maxCalls, int maxCliques, int& calls, std::vector<CliqueSepClique>& result);
 };

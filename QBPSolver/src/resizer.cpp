@@ -3062,6 +3062,7 @@ Ltry_again:;
 	}
 	assert(!hasBigX);
     }
+    qbp->setEnforceCutSeperation();
     return qlp.getVariableCount();
 }
 

@@ -522,6 +522,10 @@ int QBPSolver::dualCostFix(std::vector<data::QpNum> &solution, double a, double 
 	}
       }
     }
+    if (isRoot) {
+      rootLurking = lurking;
+    }
+
     if(0&&decisionLevel()<=1)
       lurkingBounds[0].printBounds(lurking,20);
 
@@ -1413,6 +1417,15 @@ void QBPSolver::makeAsnapshot(std::vector< std::pair<int,int> > &clist) {
   if (1||nofS == 0) {
     ((yInterface*)yIF)->findSymmetries(*QlpStSolve, maxLPStage, true, clist, type.getData(), block.getData(), assigns.getData(), eas.getData());
     if (getShowInfoInt()) cerr << "info: FIND SYMMS. # = " << clist.size() << endl;
+    if (!(UniversalConstraintsExist && !UniversalPolytope)) {
+      if (getShowInfoInt()) cerr << "enter symmetry" << endl;
+      symres = YasolOrbitalSym.run(*this);
+      generalIntTmp.resize(symres.orbits.size());
+      for (int i=0;i<symres.orbits.size();i++)
+	generalIntTmp[i] = 0;
+      if (getShowInfoInt()) cerr << "Symmetry detection success = " << symres.success << endl;
+      if (getShowInfoInt()) cerr << "Number of candidate orbits = " << symres.orbits.size() << endl;
+    }
   }
 
   nofS++;
@@ -1523,7 +1536,7 @@ void QBPSolver::QLPSTSOLVE_SOLVESTAGE(double alpha, unsigned int stage, algorith
     if (baselevel >= 1 && rembase[baselevel].variables.size()>0) {
       if (rembase[baselevel].constraints.size() < m) {
 	for (int i = rembase[baselevel].constraints.size(); i < m; i++)
-	  rembase[baselevel].constraints.push_back(extSol::QpExternSolver::NotABasicStatus);
+	  rembase[baselevel].constraints.push_back(extSol::QpExternSolver::Basic/*NotABasicStatus*/);
       }
       QlpStSolve->getExternSolver( maxLPStage ).setBase(rembase[baselevel]);
     }
@@ -2980,10 +2993,12 @@ bool QBPSolver::checkRounding(double a, int pick, std::vector<data::QpNum> &solu
   return false;
 }
 
+ static int qsatDeepTraceCount = 0;
 #ifndef FIND_BUG  //REKV
 SearchResult QBPSolver::alphabeta_loop(int t, int lsd, coef_t a, coef_t b, bool onlyone, coef_t nodeLPval, int decvar, bool decpol, bool allowQex, bool allowStrengthen, int father_ix, int sfather_ix, bool LimHorSrch, bool alwHeu) {
   double d1,d2;
   time_t aliveTimer2 = time(NULL);
+  qsatDeepTraceCount=0;
   startFromOutside = true;
   static int luby_iter = 1;
   int remMctsMode=-1;
@@ -3018,7 +3033,16 @@ SearchResult QBPSolver::alphabeta_loop(int t, int lsd, coef_t a, coef_t b, bool 
     int cntRealCompos = 0;
     int fstRealCompo = -1;
     int remTrailSize = trail.size();
-    if (useComponents) {
+    bool componentsAllowed = useComponents;
+    if (componentsAllowed) {
+      for (int i = 0; i < nVars(); ++i) {
+        if (block[i] == 1 && !firstStageValueKnown(i)) {
+	  componentsAllowed = false;
+	  break;
+        }
+      }
+    }
+    if (componentsAllowed) {
       for (int u = 0; u < ccs.size();u++) {
 	if (ccs[u].size() > 1) cerr << " " << ccs[u].size();
 	if (ccs[u].size() == 1 && type[ccs[u][0]] == BINARY) {
@@ -3036,6 +3060,8 @@ SearchResult QBPSolver::alphabeta_loop(int t, int lsd, coef_t a, coef_t b, bool 
 	    //eas[ccs[u][0]] = EXIST;
 	    assigns[ccs[u][0]] = sig;
 	    vardata[ccs[u][0]].level = -25;
+	    vardata[ccs[u][0]].reason = CRef_Undef;
+	    restGameOnAssign(ccs[u][0]);
 	  }
 	} else {
 	  cntRealCompos++;
@@ -3043,7 +3069,7 @@ SearchResult QBPSolver::alphabeta_loop(int t, int lsd, coef_t a, coef_t b, bool 
 	}
       }
     }
-    if (cntRealCompos > 0 && !feasPhase) {
+    if (componentsAllowed && cntRealCompos > 0 && !feasPhase) {
       inComponentMode = true;
       assert(fstRealCompo>-1);
       for (int u = fstRealCompo+1; u < ccs.size();u++) {
@@ -3076,7 +3102,9 @@ SearchResult QBPSolver::alphabeta_loop(int t, int lsd, coef_t a, coef_t b, bool 
 
     for (int i=0;i<nVars();i++) {
       if (type[i] != BINARY) continue;
-      if ((useMonotones & 1) && ((useMonotones & 4) || !feasPhase) ) { // monotones for EXIST-variables in preprocessing
+      if (isFixed(i) || assigns[i] != extbool_Undef) continue;
+      if ((useMonotones & 1) && ((useMonotones & 4) || !feasPhase)
+	  ) { // monotones for EXIST-variables in preprocessing
 	//&1 means: use in preprocessing
 	//&2 means: use in treesearch
 	//&4 means: use in feasPhase
@@ -3094,6 +3122,15 @@ SearchResult QBPSolver::alphabeta_loop(int t, int lsd, coef_t a, coef_t b, bool 
 	if(getShowWarning()) cerr << "Warning: PRE : Rubbish fixing detected: x" << i<< "=" << getFixed(i) << " in level " << fixdata[i].level << endl;
 	setFixed(i, extbool_Undef);
       } else {
+      }
+    }
+
+    if (!feasPhase) {
+      if (!(UniversalConstraintsExist && !UniversalPolytope)) {
+	if(getShowWarning()) cerr << "before search: " << endl;      
+	symres = YasolOrbitalSym.run(*this);
+	if(getShowWarning()) cerr << "Symmetry detection success = " << symres.success << endl;
+	if(getShowWarning()) cerr << "Number of candidate orbits = " << symres.orbits.size() << endl;
       }
     }
 
@@ -3220,6 +3257,8 @@ SearchResult QBPSolver::alphabeta_loop(int t, int lsd, coef_t a, coef_t b, bool 
 	    cfin = true;
 	    break;
 	  }
+	  if (assigns[propQ[ii].v>>1] != extbool_Undef)
+	    restGamePromoteToRoot(propQ[ii].v>>1);
 	  vardata[propQ[ii].v>>1].reason = CRef_Undef;
 	  vardata[propQ[ii].v>>1].level = 0;
 	  settime[propQ[ii].v>>1] = 0;
@@ -3372,6 +3411,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
   case AFTER_LOOP: /*assert(val_ix==val_ixII && val[0]==valII[0] && val[1]==valII[1]);*/goto LAFTER_LOOP;
   case START_W_E: /*assert(val_ix==val_ixII && val[0]==valII[0] && val[1]==valII[1]);*/goto LSTART_W_E;
   case REK_PRECO: /*assert(val_ix==val_ixII && val[0]==valII[0] && val[1]==valII[1]);*/goto LREK_PRECO;
+  case WAIT_REMOTE: goto LWAIT_REMOTE;
   defaut        : assert(0);
   }
  LREK_START:;
@@ -3412,6 +3452,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	       fstStSol[iii] = (double)assigns[iii];
 	     }
 	   }
+	   fstStKnownFromTrail();
 	   UpdForecast(fstStSol);
 	   global_score = V.value;
 	   discoveredNews += 500;
@@ -3600,11 +3641,6 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
       RESOLVE_FIXED(decisionLevel());
       return _StepResultLeaf(STACK,dont_know,p_infinity,false,"3");
     }
-    if (isInMiniBC() && perc >= 0.8 && sfather_ix > 13 && miniS_time+(time(NULL)-deltaMiniS_time) > 0.5*(time(NULL)-ini_time)) {
-      if (isOnTrack()) cerr << "lost solution xyv18 b" << endl;
-      RESOLVE_FIXED(decisionLevel());
-      return _StepResultLeaf(STACK,dont_know,p_infinity,false,"3.5");
-    }
     if (0&&isInMiniBC() && perc >= 1.0 && sfather_ix > 3 && miniS_time+(time(NULL)-deltaMiniS_time) > 0.5*(time(NULL)-ini_time)) {
       if (isOnTrack()) cerr << "lost solution xyv18 b" << endl;
       RESOLVE_FIXED(decisionLevel());
@@ -3662,7 +3698,27 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
     if (LimHorSrch==false && prev_num_learnts + /*num_orgs / 100 +*/ /*10+10*(discoveredNews / 500)*/10 < num_learnts && (discoveredNews>=(isInMiniBC()?500:2000)/*(int)(10*sqrt((double)nVars()))*/ || num_learnts > 3*(/*num_orgs+*/Sinc)) && !useRestarts && /*num_learnts > 2*(num_orgs+Sinc) &&*/ num_learnts > 1*(/*num_basic+*/Sinc) &&  stack_restart_ready[decisionLevel()] == false) {
       //	if ((discoveredNews || num_learnts > 8*(num_orgs+Sinc)) && !useRestarts && /*num_learnts > 2*(num_orgs+Sinc) &&*/ num_learnts > 1*(/*num_basic+*/Sinc) &&  stack_restart_ready[decisionLevel()] == false) {
       if (getShowExtendedOutput()) cerr << "info: initiate restart!" << endl;
+      if(0)cerr << "RG RESTART BEGIN"
+		<< " DL=" << decisionLevel()
+		<< " trail=" << trail.size()
+		<< endl;
       
+      for (int i = 0; i < trail.size(); ++i) {
+	int v = trail[i];
+	
+	if (type[v] != BINARY)
+	  continue;
+	
+	if(0) cerr << "  RGT x" << v
+	     << "=" << (int)assigns[v]
+	     << " level=" << vardata[v].level
+	     << " reason=" << vardata[v].reason
+	     << " folded=" << (int)rgFolded[v]
+	     << " decision=" << (int)rgIsDecision[v]
+	     << " pending=" << rgPendingPos[v]
+	     << endl;
+      }
+ 
       break_from_outside = true;
       prev_num_learnts = 2*num_learnts;
       discoveredNews = 0;
@@ -3718,7 +3774,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	}
 	ana_stack.clear();
       }
-      return _StepResultLeaf(STACK,n_infinity,p_infinity,false,"7");
+      return _StepResultLeaf(STACK,dont_know/*n_infinity*/,p_infinity,false,"7");
     }
 
 
@@ -3835,6 +3891,12 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
       }
     }
     assert(((yInterface*)yIF)->getIsInSOSvars(pick)==0);
+
+    if (isInMiniBC() && perc >= 0.8 && sfather_ix > 13 && miniS_time+(time(NULL)-deltaMiniS_time) > 0.5*(time(NULL)-ini_time)) {
+      if (isOnTrack()) cerr << "lost solution xyv18 b" << endl;
+      RESOLVE_FIXED(decisionLevel());
+      return _StepResultLeaf(STACK,dont_know,p_infinity,false,"3.5");
+    }
     
     if (assigns[pick] != extbool_Undef) {
       if(getShowWarning()) cerr << "Warning: next variable has unexpectedly been fixed somewhere!" << endl;
@@ -3857,7 +3919,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
     assert(((yInterface*)yIF)->getIsInSOSvars(pick)==0);
 
     if (eas[pick] == EXIST) score = n_infinity;
-    else                    score = p_infinity;
+    else                    score = (coef_t)((int64_t)1 << 60);//smaller than AllInfeasible, but larger than any objective value. -dont_know;//p_infinity;
     if (/*!feasPhase*/getMaintainPv()) {
       int cBlock = block[pick];
       int pBlock;// = getBlockOfPrevDecision();
@@ -3884,6 +3946,140 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
       }
     }
 
+    if (ttQlp != 0 && type[pick] == BINARY) {
+      if(0) countRestGameReference(block[pick]);
+      //assert(Lpick >= 0);
+      if (!isInMiniBC())
+	restGameTTProbeInsertCanonical(pick);
+    }
+    if (0)checkRestGameOracle();
+    if (0&&(rgTTLookups % 10000) == 0) {
+      cerr << "RG CANON gets=" << rgCanonicalBoundGets
+         << " useful=" << rgCanonicalUsefulBounds
+         << endl;
+
+      cerr << "RGTT lookups=" << rgTTLookups
+	   << " hits=" << rgTTHits
+	   << " inserts=" << rgTTInserts
+	   << " full=" << rgTTFullBuckets
+	   << " hitrate="
+	   << (100.0 * rgTTHits / (double)rgTTLookups)
+	   << "%"
+	   << endl;
+    }
+    coef_t rgValue;
+    coef_t rgLower, rgUpper;
+    bool rgHasLower, rgHasUpper;
+    int rgBestMove=-1;
+    //assert(Lpick>=0);
+    if (useRGTT && restGameTTGetBoundsCanonical(pick,rgLower, rgHasLower, rgUpper, rgHasUpper, rgBestMove)) {
+      //
+      if (rgHasLower && rgHasUpper &&
+	  fabs(rgLower - rgUpper) < 1e-8) {
+	
+        const coef_t rgExact =
+	  0.5 * (rgLower + rgUpper);
+	
+        if(0)cerr << "RG EXACT GET"
+             << " value=" << rgExact
+             << " a=" << a
+             << " b=" << b
+             << endl;
+
+	if (block[pick] <= 1 && (useRGTT & 2) && rgExact > a && rgExact < b) {
+	  if (useRGTT & 4) {
+	    if (rgBestMove>=0) {
+	      val[0] = val[1] = 1-(rgBestMove&1);
+	      insertVarOrder(pick);
+	      pick = (rgBestMove>>1);
+	      ac = false;
+	    }
+	  } else {
+	    if (rgBestMove>=0) {
+	      val[0] = 1-(rgBestMove&1);
+	      val[1] = 1 - val[0];
+	      insertVarOrder(pick);
+	      pick = (rgBestMove>>1);
+	      ac = false;
+	    }
+	  }
+	} else if (block[pick]>1 && (useRGTT & 1) && rgExact > a && rgExact < b) {
+	  if (useRGTT & 4) {
+	    if (rgBestMove>=0) {
+	      val[0] = val[1] = 1-(rgBestMove&1);
+	      insertVarOrder(pick);
+	      pick = (rgBestMove>>1);
+	      ac = false;
+	    }
+	  } else {
+	    if (rgBestMove>=0) {
+	      val[0] = 1-(rgBestMove&1);
+	      val[1] = 1 - val[0];
+	      insertVarOrder(pick);
+	      pick = (rgBestMove>>1);
+	      ac = false;
+	    }
+	  }
+	} else {
+	  if (getMaintainPv() && rgExact > a && rgExact < b) {
+	    const int st = block[pick];
+	    // Bisherige PV-Fortsetzung verwerfen.
+	    for (int k = 0; k < nVars(); k++)
+	      PV[st][k] = unknownPVValue(k);
+	      //PV[st][k] = -2.0;
+	    // Nur tatsächlich bekannte Binärbelegungen übernehmen.
+	    for (int k = 0; k < trail.size(); k++) {
+	      const int x = trail[k];
+	      if (type[x] == BINARY) {
+                assert(assigns[x] != extbool_Undef);
+                PV[st][x] = (double)assigns[x];
+	      }
+	    }
+	  }	  
+	  insertVarOrder(pick);
+	  RESOLVE_FIXED(decisionLevel());
+	  return _StepResultLeaf(STACK,
+				 rgExact,
+				 rgExact,
+				 false,
+				 "RG-EXACT");
+	}
+      }
+      //
+      // EXIST = MAX-Knoten:
+      // ein Lower Bound kann Beta erreichen.
+      //
+      if(0)cerr << "RESTGAME bound TT hit ";
+      if(0)if (rgHasLower) cerr << " rgLower " << rgLower << endl;
+      if(0)if (rgHasUpper) cerr << " rgUpper " << rgUpper << endl;
+      if (eas[pick] == EXIST && rgHasLower) {
+	if (rgLower > score) score = rgLower;
+	if (score >= b) {
+	  //cerr << "RG PRUNE LB" << " score=" << score << " beta=" << b << endl;
+	  insertVarOrder(pick);
+	  RESOLVE_FIXED(decisionLevel());
+	  return _StepResultLeaf(STACK, score, p_infinity, false, "RG-LB");
+	}
+      }
+      //
+      // UNIV = MIN-Knoten:
+      // ein Upper Bound kann Alpha erreichen.
+      //
+      if (eas[pick] == UNIV && rgHasUpper) {
+	if (rgUpper < score) score = rgUpper;
+	if (score <= a) {
+	  //cerr << "RG PRUNE UB" << " score=" << score << " alpha=" << a << endl;
+	  insertVarOrder(pick);
+	  RESOLVE_FIXED(decisionLevel());
+	  return _StepResultLeaf(STACK, score, a, false, "RG-UB");
+	}
+      }
+    }
+
+
+
+
+    
     if (HT->getEntry(&hte, trail.size()) && hte->bound != CONSTRAINT && type[pick] == BINARY) {
       if (assigns[hte->getVar()] == extbool_Undef &&
 	  VarsInConstraints[hte->getVar()].size() > 0 &&
@@ -3899,9 +4095,11 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	insertVarOrder(pick);
 	if (isOnTrack()) cerr << "lost solution 1" << endl;
 	RESOLVE_FIXED(decisionLevel());
+	//debugRestGameCurrentBlock("AT ORGHASH1");
 	return _StepResultLeaf(STACK,n_infinity,n_infinity,true,"13");
       }
       if (objective_iterations <= hte->objective_iterations && hte->value > dont_know && (hte->bound == FIT || hte->bound == LB)) {
+		cerr << "ORGHASH2" <<endl;
 	if (hte->bound == FIT) {
 	  insertVarOrder(pick);
 	  //if (hte->value >= b) return b;
@@ -3971,7 +4169,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
       //TODO: probe muss auch confl und confl_partner liefern, fuer analysis. if (!probe_output) return -1;
       if (probe_pick != -1 && !((yInterface*)yIF)->getIsInSOSvars(probe_pick)) {
 	insertVarOrder(pick);
-	if (favour_pol == 1 && ac) { /*valII[0] =*/ val[0] = 1; /*valII[1] =*/ val[1]=0; }
+	if (/*favour_pol == 1 &&*/ ac) { /*valII[0] =*/ val[0] = favour_pol; /*valII[1] =*/ val[1]=1-favour_pol; }
 	pick = probe_pick;
       }
       if (probe_pick != -1) varBumpActivity(pick, val[0],0);
@@ -4366,7 +4564,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 			fstStSol[iii] = solution[iii].asDouble();
 		      }
 		    }
-
+		    fstStKnownFromCandidate();
 		    UpdForecast(fstStSol);
 		    global_score = -lb.asDouble();
 		    discoveredNews += 500;
@@ -4835,6 +5033,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 		if (decisionLevel() <= 1) {
 		  for (int uuu=STACK.savedTrailSize; uuu < trail.size();uuu++) {
 		    if (eas[trail[uuu]]==UNIV) continue;
+		    restGamePromoteToRoot(trail[uuu]);
 		    vardata[trail[uuu]].level = 0;
 		    vardata[trail[uuu]].reason = CRef_Undef;
 		    settime[trail[uuu]] = 0;
@@ -4905,7 +5104,12 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 
 		{
 		  int savedDecisionLevel = decisionLevel();
+		  double remGS=global_score;
 		  int heuRes = heuristic_II(STACK, score, lastMBCwasSuccess, neverTriedStartSolutionSearch, pick2, savedDecisionLevel); // search start solution, here: Feasibility Pump
+		  if (global_score > remGS) {
+		    //cerr << "set it to true!" << endl;
+		    neverTriedStartSolutionSearch = true;
+		  }
 		  if (heuRes == FINISHED) return FINISHED;
 		  assert(heuRes<0);
 		  if (heuRes == gotoLSTARTcode) goto Lstart;
@@ -5112,6 +5316,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 			    } else */fstStSol[iii] = solution[iii].asDouble();
 			}
 		      }
+		      fstStKnownFromCandidate();
 		      UpdForecast(fstStSol);
 		      global_score = rem_val;
 		      discoveredNews += 500;
@@ -5667,6 +5872,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 				    fstStSol[iii] = IPSol[iii];
 				}
 			      }
+			      fstStKnownFromCandidate();
 			      UpdForecast(fstStSol);
 			      global_score = score = c.header.rhs = value;
 			      //discoveredNews += 500;                                                                                                                         
@@ -5696,7 +5902,8 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 		    //assert(val_ix==val_ixII && val[0]==valII[0] && val[1]==valII[1]);
       }
       //}             
-		//assert(val_ix==val_ixII && val[0]==valII[0] && val[1]==valII[1]);                
+		//assert(val_ix==val_ixII && val[0]==valII[0] && val[1]==valII[1]);
+#ifdef OLDUDAC
 	if (useDeep && ac) {
 	  if (irand(random_seed,p_activity[pick] + n_activity[pick]) > n_activity[pick]) {
 	    //cout << "links" << endl;
@@ -5705,25 +5912,69 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	    val[0] /*= valII[0]*/ = 1; val[1] /*= valII[1]*/ = 0;
 	    //cout << "rechts " << endl;
 	  }
-	  //if (!feasPhase)
+#endif
+	  if (useDeep && ac) {
+
+	    if (feasPhase && num_learnts < 10 &&//block[pick] == 1 &&
+		(p_implis[pick]>5 || n_implis[pick]>5)&&
+		p_implis[pick] != n_implis[pick]) {
+	      
+	      val[0] = (p_implis[pick] > n_implis[pick]) ? 1 : 0;
+	      val[1] = 1 - val[0];
+	      
+	    } //else
+	      {
+	      /*
+	      // Bisherige Heuristik als Fallback
+	      if (irand(random_seed,
+			p_activity[pick] + n_activity[pick])
+		  > n_activity[pick]) {
+		val[0] = 0;
+		val[1] = 1;
+	      } else {
+		val[0] = 1;
+		val[1] = 0;
+	      }
+	      */
+	      if (useDeep && ac) {
+		
+		double p = p_activity[pick];
+		double n = n_activity[pick];
+		
+		double sum = p + n;
+		
+		double imbalance = 0.0;
+		if (sum > 1e-15)
+		  imbalance = fabs(p - n) / sum;
+		
+		// Flip-Wahrscheinlichkeit zwischen 1% und 5%
+		double flipProb = 0.01 + 0.04 * imbalance;
+		
+		if (val[0] != val[1] &&
+		    drand(random_seed) < flipProb) {
+		  std::swap(val[0], val[1]);
+		}	
+	      }
+	    }
+	 
+
+ 	  //if (!feasPhase)
 	  if (/*eas[pick] == UNIV &&*/ killer[pick] >= 0) {
 	    assert(killer[pick] == 0 || killer[pick] == 1);
 	    val[0] /*= valII[0]*/ = killer[pick];
 	    val[1] /*= valII[1]*/ = 1-killer[pick];
 	  }
 	}
-
 	if ( getUseFstSTSolFirst() && sfather_ix == 0 && val[0]!=val[1]) {
-	  if (block[pick] == 1) {
-	    if (isZero(fstStSol[pick]) || isOne(fstStSol[pick])) {
-	      //cerr << "f" << fstStSol[pick];
-	      val[0] /*= valII[0]*/ = (fstStSol[pick] > 0.5 ? 1 : 0);
-	      val[1] /*= valII[1]*/ = 1-val[0];
-	    } //else cerr << "F" << fstStSol[pick];
+	  if (pick >= 0 &&
+	      block[pick] == 1 &&
+	      firstStageValueKnown(pick)) {
+	    val[0] = (fstStSol[pick] > 0.5 ? 1 : 0);
+	    val[1] = 1-val[0];
 	  }
 	} 
 	if (ac2 && val[0] != val[1] && !feasPhase && getForecastReliability() > 3) {
-	  if (pick >= 0 && block[pick] == 1 && assigns[pick] == extbool_Undef && !isFixed(pick) && fstStSol[pick] >= 0.0 && fstStSol[pick] <= 1.0) {
+	  if (pick >= 0 && block[pick] == 1 && assigns[pick] == extbool_Undef && !isFixed(pick) && fstStSol[pick] >= 0.0 && fstStSol[pick] <= 1.0 && hasUsableForecast(pick)) {
 	    if (forecast(pick) < 0.01 /*fstStSol[pick] < 0.5*/) {
 	      val[0] /*= valII[0]*/ = 0;
 	      val[1] /*= valII[1]*/ = 1;
@@ -6002,6 +6253,31 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	}
       }
 
+      { // is forced by symmetriy
+	//std::pair<int,int> oi = getOrbitChainConflictInfo(pick, symres, assigns.getData());
+	YasolSymmetryResult stabSymres = YasolOrbitalSym.getStabilizerOrbits(assigns.getData(), VIsFixed.getData(), nVars(), -1);
+	std::pair<int,int> oi = getOrbitChainConflictInfo(pick, stabSymres, assigns.getData());
+	if (oi.first != -1) {
+	  int v = oi.first / 2;
+	  int s = oi.first % 2;
+
+	  if (getShowInfo()) std::cerr << "left orbit variable " << v << " is fixed to " << s << "\n";
+	  val[0] = val[1] = 0;
+	  // Weil v links von pick liegt und v=0 gilt,
+	  // folgt für die Kette: pick = 0.
+	}
+
+	if (oi.second != -1) {
+	  int v = oi.second / 2;
+	  int s = oi.second % 2;
+
+	  if (getShowInfo()) std::cerr << "right orbit variable " << v << " is fixed to " << s << "\n";
+	  val[0] = val[1] = 1;
+	  // Weil v rechts von pick liegt und v=1 gilt,
+	  // folgt für die Kette: pick = 1.
+	}
+      }
+
       if (pick == -1) stack_pick[decisionLevel()];//pick = Lpick;
       if (pick == -1) pick = Lpick;
 
@@ -6111,11 +6387,47 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
       }
 
       best_val = -1;
+
       //assert(val_ix==val_ixII && val[0]==valII[0] && val[1]==valII[1]);
       for (restart==false ? /*val_ixII =*/ val_ix = 0 : restart=false ; val_ix <= ((only_one&&getEA(pick)==EXIST)?0:1);val_ix++/*, val_ixII++*/) {
+	LWAIT_REMOTE:;
 	//assert(val_ix==val_ixII && val[0]==valII[0] && val[1]==valII[1]);
+	// Fixierungen können tasächlich auch während der Suche in der Tiefe entstehen:
+	// Eine Fixierung kann während der rekursiven Suche
+	// nachtraeglich entstanden sein (z.B. Root Lurking).
+	if (eas[pick] == EXIST && isFixed(pick)) {
+	  const int fv = getFixed(pick);
+	  if (val_ix == 0) {
+	    // Noch keine Richtung untersucht:
+	    // ausschliesslich den fixierten Wert verwenden.
+	    val[0] = val[1] = fv;
+	  }
+	  else if (val[val_ix] != fv) {
+	    // Diese Richtung ist inzwischen ausgeschlossen.
+	    continue;
+	  }
+	}
 	if (val_ix == 1 && val[0]==val[1]) continue;
 	if (val[val_ix] == -1) continue;
+	// Der zweite Ast wurde an einen Worker abgegeben.
+	if (val_ix == 1) {
+	  if (STACK.remote_code[1] > 0 &&
+	      !break_from_outside &&
+	      !level_finished[t+1]) {
+	    search_stack.setStatus(WAIT_REMOTE);
+	    return WAIT_REMOTE;
+	  }
+	  // Worker hat seinen Ast erfolgreich abgeschlossen.
+	  if (STACK.remote_code[1] == -1) {
+	    continue;
+	  }
+	  // remote_code[1] == 0:
+	  //   Keine Arbeitsabgabe, normal weitersuchen.
+	  //
+	  // remote_code[1] == -2:
+	  //   Worker hat abgebrochen, Ast lokal bearbeiten.
+	}
+
 	sonID = -1;
 	if ((useMcts || COND_USE_MEMNODES)  && nodeID >= 0) {
 	  double l,u;
@@ -6194,7 +6506,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	if(oob==ASSIGN_UNIV_FAIL){
 	  if(val_ix==0) /*valII[1] =*/ val[1] = 1-val[0];
 	  else if((val_ix==1 ||(val_ix==0 && val[0]==val[1]) ) && score == AllInfeasible){
-	     if(getShowInfo()) std::cerr << "score is AllInfeasible: "<<score << " " << AllInfeasible<< endl;
+	     if(getShowInfo()) std::cerr << "score="<<score << " " << AllInfeasible<< endl;
 	     //In this case no legal universal variable assignment remains
 	     //It has to be checked, whether the existential constraint system is still feasible
 	     if(ExistIPStillFeasible())
@@ -6611,14 +6923,14 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 		  setFixed( pick, 1-val[val_ix], -1, CRef_Undef);
 		  if(getShowInfo()) cerr << "Info: fixed x" << pick << " to " << 1-(int)val[val_ix] << endl;
 		} else {
-		  if(getShowWarning()){ 
-                    cerr << "Warning: could not dissolve missed implication." << endl;
+		  if(getShowWarning()){
+		    cerr << "Warning: could not dissolve missed implication." << endl;
 		    for (int i = 0; i < c.size();i++) {
 		      cerr << (sign(c[i]) ? "-" : "") << c[i].coef << "x" << (int)var(c[i]) << " + ";
 		    }
 		    cerr << " 0 >= " << c.header.rhs << endl;
 		    cerr << "wanted to set x" << pick << " to " << (int)val[val_ix]<< endl;
-                  }
+		  }
 		}
 	      }
 	    }
@@ -6686,13 +6998,14 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 		if(c.size() == 1) {
 		  setFixed( pick, 1-val[val_ix], -1, CRef_Undef);
 		} else {
-		  if(getShowWarning()){ cerr << "Warning: could not dissolve missed implication." << endl;
+		  if(getShowWarning()){
+		    cerr << "Warning: could not dissolve missed implication." << endl;
 		    for (int i = 0; i < c.size();i++) {
 		      cerr << (sign(c[i]) ? "-" : "") << c[i].coef << "x" << (int)var(c[i]) << " + ";
 		    }
 		    cerr << " 0 >= " << c.header.rhs << endl;
 		    cerr << "wanted to set x" << pick << " to " << (int)val[val_ix]<< endl;
-                  }
+		  }
 		}
 	      }
 	    }
@@ -7217,6 +7530,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 			  //cerr << fstStSol[iii] << ", ";
 			} else fstStSol[iii] = block[iii]+10;
 		      }
+		      fstStKnownFromTrail();
 		      UpdForecast(fstStSol);
 
 		      if (LimHorSrch == false && gap < SOLGAP) break_from_outside = true;
@@ -7323,9 +7637,9 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 		    moveDown(decisionLevel(), pick, val[val_ix], val_ix);
 		    newNtype = computeNewNtype(STACK.Ntype, val_ix, eas[pick]);
 		    if (scoutLoop == 2)
-		      search_stack.down(n_infinity,lUseLP,t + 1,lsd-1,a,fmin(score,b),only_one,fatherval, pick, val[val_ix], STACK.relaxationVal, qex, alwstren, val_ix, sfather_ix+val_ix, LimHorSrch, /*alwHeu*/true,newNtype, sonID, solution.size() >= nVars() && pick >= 0 ? solution[pick].asDouble() : dont_know);
+		      search_stack.down(n_infinity,lUseLP,t + 1,lsd-1,a,fmin(score,b),only_one,fatherval, pick, val[val_ix], STACK.relaxationVal, qex, alwstren, val_ix, sfather_ix/*+val_ix*/, LimHorSrch, /*alwHeu*/true,newNtype, sonID, solution.size() >= nVars() && pick >= 0 ? solution[pick].asDouble() : dont_know);
 		    else
-		      search_stack.down(n_infinity,lUseLP,t + 1,lsd-1,fmin(score,b)-S_DELTA,fmin(score,b),only_one,fatherval, pick, val[val_ix], STACK.relaxationVal, qex, alwstren, val_ix, sfather_ix+val_ix, LimHorSrch, /*alwHeu*/true,newNtype, sonID, solution.size() >= nVars() && pick >= 0 ? solution[pick].asDouble() : dont_know);
+		      search_stack.down(n_infinity,lUseLP,t + 1,lsd-1,fmin(score,b)-S_DELTA,fmin(score,b),only_one,fatherval, pick, val[val_ix], STACK.relaxationVal, qex, alwstren, val_ix, sfather_ix/*+val_ix*/, LimHorSrch, /*alwHeu*/true,newNtype, sonID, solution.size() >= nVars() && pick >= 0 ? solution[pick].asDouble() : dont_know);
 		    return REK_UNIV;
 		  LREK_UNIV:;
 		    V = result;
@@ -7429,7 +7743,55 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 		    // TODO if (!forbidHashing) HT->setEntry(/*score*/n_infinity, val[val_ix], pick , nVars()+10, /*eas[pick]*/EXIST, FIT,trail.size(), max_objective_iterations, dont_know, break_from_outside);
 		    return _StepResultLeaf(STACK,/*n_infinity,n_infinity);*//*dont_know*/score,score,false/*true*/,"79");
 		  } else {
-		    if (!forbidHashing) HT->setEntry(n_infinity, val[val_ix], pick , nVars()+10, /*eas[pick]*/EXIST, FIT,trail.size(), max_objective_iterations, dont_know, break_from_outside);
+		    if(0)cerr << "ORG PERM STORE 80 rg="
+			 << std::hex << rgHash1 << " " << rgHash2
+			 << std::dec << endl;
+		    if(0)cerr << "ORG PERM STORE 80"
+			 << " h? currentOI=" << objective_iterations
+			 << " DL=" << decisionLevel()
+			 << " pick=" << pick
+			 << endl;
+		    RestGameKey canon = restGameKeyReference(block[pick]);
+		    
+		    if(0)cerr << " CANON 80"
+			 << " pick=" << pick
+			 << " block=" << block[pick]
+			 << " key=" << std::hex
+			 << canon.h1 << " " << canon.h2
+			 << std::dec << endl;
+		    
+		    //restGameTTStoreBoundCanonical(pick, n_infinity, false);
+		    if (!forbidHashing) {
+
+		      const uint64_t oldHash = HT->getHash();
+		      const int oldTrailSize = trail.size();
+		      //debugRestGameCurrentBlock("BEFORE ORG STORE 80");
+		      bool stored =
+			HT->setEntry(n_infinity,
+				     val[val_ix],
+				     pick,
+				     nVars()+10,
+				     EXIST,
+				     FIT,
+				     oldTrailSize,
+				     max_objective_iterations,
+				     dont_know,
+				     break_from_outside);
+
+		      if (stored) {
+			if(0)cerr << "ORG PERM STORE 80"
+			     << " old=" << std::hex << oldHash
+			     << " rg=" << rgHash1 << " " << rgHash2
+			     << std::dec
+			     << " trail=" << oldTrailSize
+			     << " DL=" << decisionLevel()
+			     << " targetDL=" << out_target_dec_level
+			     << " pick=" << pick
+			     << " impVar=" << (out_vcp.v >> 1)
+			     << " impEA=" << (int)eas[out_vcp.v >> 1]
+			     << endl;
+		      }
+		    }
 		    return _StepResultLeaf(STACK,n_infinity,n_infinity,true,"80");
 		  }
 		} else {
@@ -7466,7 +7828,54 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 		    // TODO if (!forbidHashing) HT->setEntry(n_infinity /*score*/, val[val_ix], pick , nVars()+10, /*eas[pick]*/UNIV, FIT,trail.size(), max_objective_iterations, dont_know, break_from_outside);
 		    return _StepResultLeaf(STACK,/*n_infinity,n_infinity);*//*dont_know*/score,score,false/*true*/,"81");
 		  } else {
-		    if (!forbidHashing) HT->setEntry(n_infinity, val[val_ix], pick , nVars()+10, /*eas[pick]*/UNIV, FIT,trail.size(), max_objective_iterations, dont_know, break_from_outside);
+		    if(0)cerr << "ORG PERM STORE 82 rg="
+			 << std::hex << rgHash1 << " " << rgHash2
+			 << std::dec << endl;
+		    if(0)cerr << "ORG PERM STORE 82"
+			 << " h? currentOI=" << objective_iterations
+			 << " DL=" << decisionLevel()
+			 << " pick=" << pick
+			 << endl;
+		    RestGameKey canon = restGameKeyReference(block[pick]);
+
+		    if(0)cerr << " CANON 82"
+			 << " pick=" << pick
+			 << " block=" << block[pick]
+			 << " key=" << std::hex
+			 << canon.h1 << " " << canon.h2
+			 << std::dec << endl;
+		    //restGameTTStoreBoundCanonical(pick, n_infinity, false);
+		    if (!forbidHashing) {
+
+		      const uint64_t oldHash = HT->getHash();
+		      const int oldTrailSize = trail.size();
+		      //debugRestGameCurrentBlock("BEFORE ORG STORE 82");
+		      bool stored =
+			HT->setEntry(n_infinity,
+				     val[val_ix],
+				     pick,
+				     nVars()+10,
+				     EXIST,
+				     FIT,
+				     oldTrailSize,
+				     max_objective_iterations,
+				     dont_know,
+				     break_from_outside);
+
+		      if (stored) {
+			if(0)cerr << "ORG PERM STORE 82"
+			     << " old=" << std::hex << oldHash
+			     << " rg=" << rgHash1 << " " << rgHash2
+			     << std::dec
+			     << " trail=" << oldTrailSize
+			     << " DL=" << decisionLevel()
+			     << " targetDL=" << out_target_dec_level
+			     << " pick=" << pick
+			     << " impVar=" << (out_vcp.v >> 1)
+			     << " impEA=" << (int)eas[out_vcp.v >> 1]
+			     << endl;
+		      }
+		    }
 		    return _StepResultLeaf(STACK,n_infinity,n_infinity,true,"82");
 		    //return _StepResultLeaf(STACK,n_infinity,n_infinity);
 		  }
@@ -7531,10 +7940,18 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	    best_val = val[val_ix];
 	    if (val_ix == 0) num_firstStrong++;
 	    else             num_secondStrong++;
+	  } else if (best_val < 0 && v >= score - LP_EPS) {
+	    best_val = val[val_ix];
 	  }
 	  if (score >= b && useAlphabeta) {
 	    if (!feasPhase && USE_TRACKER) cerr << "T";
 	    if (!forbidHashing) HT->setEntry(score, val[val_ix], pick , v>=p_infinity ? nVars()+10 : lsd, getEA(pick), v >= b ? LB : /*FIT*/LB, trail.size(), v>=p_infinity? max_objective_iterations : objective_iterations, dont_know, break_from_outside);
+	    assert(Lpick>=0);
+	    if (useRGTT && !break_from_outside && !level_finished[t+1]) {
+	      restGameTTStoreBoundCanonical(
+					    Lpick, score, true,
+					    restGameTTEncodeMove(Lpick, pick, best_val));
+	    }
 	    varBumpActivity(pick, val[val_ix],0);
 	    insertVarOrder(pick);
 	    if (isOnTrack()) cerr << "lost solution 26 cut off s=" << score << " b=" << b << endl;
@@ -7560,10 +7977,19 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	    //if (score < -dont_know) cerr << "II:new score in stage " << block[Lpick] << " =" << score << " in DL:" << decisionLevel() << endl; 
 	    score = v;
 	    best_val = val[val_ix];
+	  } else if (best_val < 0 && v <= score + LP_EPS) {
+	    best_val = val[val_ix];
 	  }
 	  if (score <= a && useAlphabeta) {
 	    killer[pick] = val[val_ix];
 	    if (!forbidHashing) HT->setEntry(score, val[val_ix], pick , v<=n_infinity ? nVars()+10 : lsd, getEA(pick), v <= a ? UB : /*FIT*/UB, trail.size(), v>=p_infinity? max_objective_iterations : objective_iterations, dont_know, break_from_outside);
+	    assert(Lpick>=0);
+	    if (useRGTT && score > dont_know && !isInMiniBC() && !break_from_outside && !level_finished[t+1]) {
+
+	      restGameTTStoreBoundCanonical(
+					    Lpick, a /*not score*/, false,
+					    restGameTTEncodeMove(Lpick, pick, best_val));
+	    }	    
 	    varBumpActivity(pick, val[val_ix],0);
 	    insertVarOrder(pick);
 	    //increaseDecisionLevel();
@@ -7880,7 +8306,42 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
       }
     } 
     insertVarOrder(pick);
-    if (!forbidHashing && (a < score && score < b)) HT->setEntry(score, best_val, pick , lsd, getEA(pick), FIT, trail.size(), objective_iterations, dont_know, break_from_outside);
+
+    // alte HT:
+    if (!forbidHashing && a < score && score < b) {
+      HT->setEntry(score, best_val, pick, lsd, getEA(pick), FIT,
+		   trail.size(), objective_iterations,
+		   dont_know, break_from_outside);
+    }
+    // neue RestGame-TT: NICHT von forbidHashing abhängig
+    if (useRGTT && !break_from_outside && !level_finished[t+1]) {
+      if (feasPhase) {
+        if (score == n_infinity) {
+	  //assert(Lpick>=0);
+	  if (!isInMiniBC() && !break_from_outside && !level_finished[t+1]) {
+	    restGameTTStoreBoundCanonical(pick, n_infinity, false);
+	  }
+        } else if (score >= b) {
+	  //assert(Lpick>=0);
+	  if (!isInMiniBC() && !break_from_outside && !level_finished[t+1]) {
+	    restGameTTStoreBoundCanonical(pick, b, true);
+	  }
+	}
+      }
+      else if (a < score && score < b) {
+	//assert(Lpick=0);
+	if (a < score && score < b &&
+	    !break_from_outside &&
+	    !level_finished[t+1]) {
+	  if (!isInMiniBC())
+	    restGameTTStoreExactCanonical(
+					  pick, score,
+					  restGameTTEncodeMove(pick, pick, best_val));
+	  else
+	    restGameTTStoreBoundCanonical(pick, score, true);
+	}
+      }
+    }
     if (getEA(pick) == UNIV && val[1]>=0) {
       assert(STACK.BackJumpInfo/*[decisionLevel()]*/.bj_level[val[1]] == BackJumpInfoII[decisionLevel()].bj_level[val[1]]);
     }
@@ -8016,6 +8477,11 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	    else
 	      oob = real_assign(recvBuf[i].var, recvBuf[i].value, trail.size(),CRef_Undef);
 	    assert(oob == ASSIGN_OK);
+	    if (type[recvBuf[i].var] == BINARY) {
+	      restGamePromoteToRoot(recvBuf[i].var);
+	      vardata[recvBuf[i].var].level = 0;
+	      vardata[recvBuf[i].var].reason = CRef_Undef;
+	    }
 	  }
 	}
 	//C.mefprint(processNo,"\n");
@@ -8093,6 +8559,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 		  global_dual_bound = n_infinity;
 		}
 		cnt_cpQ++;
+		restGamePromoteToRoot(cpropQ[uuu].first);
 		vardata[cpropQ[uuu].first].level = 0;
 		vardata[cpropQ[uuu].first].reason = CRef_Undef;
 		settime[cpropQ[uuu].first] = 0;
@@ -8339,7 +8806,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 
   bool QBPSolver::isNearlyAlways0(int x, std::vector<data::QpNum> &solution, double perc) {
     bool res;
-    if (perc < 1.0 && irand(random_seed,getForecastReliability()) > perc * 30 && getForecastReliability() > 0) {
+    if (hasUsableForecast(x) && perc < 1.0 && irand(random_seed,getForecastReliability()) > perc * 30 && getForecastReliability() > 0) {
       //cerr << "getForecastReliability=" << getForecastReliability() << " and forecast=forecast(x)" << endl;
       if(forecast(x) < 1e-9 && solution[x].asDouble() <= LP_EPS) res = true;
       else res = false;
@@ -8357,8 +8824,8 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	//cerr << "type=" << type[zz] << endl;
 	//cerr << "solution[zz].asDouble()=" << solution[zz].asDouble() << endl;
 
-	if ((isZero(solution[zz].asDouble()) && getForecastReliability()>0 && forecast(zz)<1e-9 ) 
-	    || (isOne(solution[zz].asDouble()) && getForecastReliability()>0 && forecast(zz)>1.0-1e-9) )
+	if ((isZero(solution[zz].asDouble()) && /*getForecastReliability()>0*/hasUsableForecast(zz) && forecast(zz)<1e-9 ) 
+	    || (isOne(solution[zz].asDouble()) && /*getForecastReliability()>0*/hasUsableForecast(zz) && forecast(zz)>1.0-1e-9) )
 	  continue;
 	res = false;
 	break;
@@ -8368,7 +8835,7 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
   }
   bool QBPSolver::isNearlyAlways1(int x,std::vector<data::QpNum> &solution, double perc) {
     bool res;
-    if (perc < 1.0 && irand(random_seed,getForecastReliability()) > perc * 30 && getForecastReliability() > 0) {
+    if (hasUsableForecast(x) && perc < 1.0 && irand(random_seed,getForecastReliability()) > perc * 30 && getForecastReliability() > 0) {
       //if (irand(random_seed,getForecastReliability()) > 15) {
       //cerr << "getForecastReliability=" << getForecastReliability() << " and forecast=forecast(x)" <<endl;
       if (forecast(x) > 1.0-1e-9 && solution[x].asDouble() >= 1.0-LP_EPS) res = true;
@@ -8387,8 +8854,8 @@ int QBPSolver::alphabeta_step(QBPSolver &qmip, Sstack &search_stack, int jump_st
 	//cerr << "type=" << type[zz] << endl;
 	//cerr << "solution[zz].asDouble()=" << solution[zz].asDouble() << endl;
 
-	if ((isZero(solution[zz].asDouble()) && getForecastReliability()>0 && forecast(zz)<1e-9 ) 
-	    || (isOne(solution[zz].asDouble()) && getForecastReliability()>0 && forecast(zz)>1.0-1e-9) )
+	if ((isZero(solution[zz].asDouble()) && hasUsableForecast(zz)/*getForecastReliability()>0*/ && forecast(zz)<1e-9 ) 
+	    || (isOne(solution[zz].asDouble()) && hasUsableForecast(zz)/*getForecastReliability()>0*/ && forecast(zz)>1.0-1e-9) )
 	  continue;
 	res = false;
 	break;
@@ -8449,7 +8916,7 @@ bool QBPSolver::makeAssumption(int dL, std::vector< int > &savedVars, int mode,s
 		  //if (1||isinMbc>0) cerr << "*";
 		  if ((drand(random_seed) > (dL<=1?1.9*perc:/*0*/1.9) /*0.9*//*perc*/ || isinMbc > 0) && !/*ext*/isNearlyAlways0(i,solution,isinMbc>0?0.0:perc) && !/*ext*/isNearlyAlways1(i,solution,isinMbc>0?0.0:perc)) {
 		    //if (1||isinMbc>0) cerr << "/";
-		    if (i < fstStSol.size() && i < solution.size() ) {
+		    if (i < fstStSol.size() && i < solution.size() && firstStageValueKnown(i)) {
 		      //if (1||isinMbc>0) cerr << "+";
 		      if (isZero(solution[i].asDouble(),1e-9) || isOne(solution[i].asDouble(),1e-9)) {
 			if (isZero(solution[i].asDouble(),1e-9) && isZero(fstStSol[i],1e-9)) {
@@ -8480,7 +8947,7 @@ bool QBPSolver::makeAssumption(int dL, std::vector< int > &savedVars, int mode,s
 		  double X = (isinMbc==0?10*dL - 40:isinMbc*10);
 		  if (X <= 1.0) X = 1.0;
 		  //if (isinMbc>0) cerr << "z"<< num_decs << "," << remDecN << ","<< X <<"," << (num_decs > remDecN + X) << "," << solution.size() << "," << fstStSol.size() << "," << i << "Z";
-		  if (i < fstStSol.size() && i < solution.size() && num_decs > remDecN + X /*500 / (isinMbc+1)*/ /*&& (dL < sqrt(fabs(binVars()-trail.size())) || isInMiniBC() )*/ ) {
+		  if (i < fstStSol.size() && firstStageValueKnown(i) && i < solution.size() && num_decs > remDecN + X /*500 / (isinMbc+1)*/ /*&& (dL < sqrt(fabs(binVars()-trail.size())) || isInMiniBC() )*/ ) {
 		    //if (1||isinMbc>0) cerr << "*";
 		    if (isZero(solution[i].asDouble(),1e-9) || isOne(solution[i].asDouble(),1e-9)) {
 		      if (isZero(solution[i].asDouble(),1e-9) && isZero(fstStSol[i],1e-9)) {

@@ -1241,6 +1241,25 @@ void NbdMaster::removeAllConstraints() {
 }
 
 void NbdMaster::removeUserCutsFromCut(unsigned int ucid) {
+    auto first = userCutIdToStageMap.find(ucid);
+    if (first == userCutIdToStageMap.end()) {
+        std::cerr << "NbdMaster::removeUserCutsFromCut: unknown ucid="
+                  << ucid << std::endl;
+	throw utils::AlgorithmException("NbdMaster::removeUserCutsFromCut: unknown ucid.");
+        return;
+    }
+    const unsigned int stage = first->second;
+    masters[stage]->removeStageCutsFromCut(ucid);
+    const size_t oldSize = userCutIdToStageMap.size();
+    userCutIdToStageMap.erase(first, userCutIdToStageMap.end());
+    const size_t numberRemoved =
+        oldSize - userCutIdToStageMap.size();
+    if (userCuts < numberRemoved) {
+      throw utils::AlgorithmException("NbdMaster::removeUserCutsFromCut: userCuts < numberRemoved.");
+    }
+    userCuts -= numberRemoved;
+
+    /* ALT
 	unsigned int stage = this->userCutIdToStageMap.find(ucid)->second;
 	this->masters[stage]->removeStageCutsFromCut(ucid);
 	std::map<unsigned int, unsigned int>::iterator it, end;
@@ -1253,6 +1272,7 @@ void NbdMaster::removeUserCutsFromCut(unsigned int ucid) {
 	}
 	this->userCutIdToStageMap.erase(it, end);
 	userCuts -= size;
+    */
 }
 
 void NbdMaster::changeUserCutRhs(unsigned int ucid, const data::QpNum& newRhs) {
@@ -1294,7 +1314,7 @@ void NbdMaster::setVariableUB(unsigned int i, const data::QpNum& ub) {
 		return;
 		throw utils::AlgorithmException("NbdMaster::setVariableLB(unsigned int i, const data::QpNum& lb) --> NOT existential variable");
 	}
-	v.setLowerBound(ub);
+	v.setUpperBound(ub); //v.setLowerBound(ub); is a bug, right?
 	this->masters[getExistVariableStage(i)]->setVariableUB(getExistVariableStageIndex(i), ub);
 }
 

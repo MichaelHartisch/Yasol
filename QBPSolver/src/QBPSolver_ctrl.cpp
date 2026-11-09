@@ -127,9 +127,11 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     num_conflicts_per_level.push(0);
     num_leaves.push(0);
     fstStSol.push_back(0.0);
+    fstStKnown.push_back(0);
     progA.push_back(0.0);
     progB.push_back(0.0);
     progY.push_back(0.0);
+    progSamples.push_back(0);
     for (int i = 0; i < 20;i++)
       Ntype[i] = (int64_t)0;
     UpperBoundVar.push_back(-1);
@@ -151,6 +153,7 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
     rootLPsol.capacity(nVars()+10);
     rootLPsolEx = false;
     lurkingBounds[0].iniLurkingBounds(lurking, nVars());
+    rootLurking = lurking;
  
     GlSc2 = n_infinity;
 
@@ -386,6 +389,7 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
 	      return n_infinity;
 	    }
 	    cnt_cpQ++;
+	    restGamePromoteToRoot(cpropQ[uuu].first);
 	    vardata[cpropQ[uuu].first].level = 0;
 	    vardata[cpropQ[uuu].first].reason = CRef_Undef;
 	    settime[cpropQ[uuu].first] = 0;
@@ -435,6 +439,7 @@ coef_t QBPSolver::searchInitialization(int t, void *ifc) {
 	//if(type[iii]==BINARY && eas[iii]==EXIST)
 	//	killer[iii] =(IntegerSolution[iii].asDouble() < 0.5 ? 0 : 1);
       }
+      fstStKnownFromCandidate();
       //UpdForecast(fstStSol);
       coef_t gap;
       aliveTimer = time(NULL);
@@ -730,7 +735,8 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
     Constraint &objective = constraintallocator[constraints[0]];
     bool comp_finished = false;
     bool usedDeep=false;
-    bool isFi = false;
+    bool didProbeRootBoost = false;
+    int isFi = 0;
     //HT->delLPtable();
 
     int lp_divider = 1;
@@ -994,6 +1000,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 			PurgeTrail(trail.size()-1,decisionLevel()-1);
 			return n_infinity;
 		      }
+		      restGamePromoteToRoot(cpropQ[uuu].first);
 		      vardata[cpropQ[uuu].first].level = 0;
 		      vardata[cpropQ[uuu].first].reason = CRef_Undef;
 		      settime[cpropQ[uuu].first] = 0;
@@ -1065,6 +1072,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		    comp_finished = true;
 		    break;
 		  } else if(1){
+		    restGamePromoteToRoot(i);
 		    vardata[i].level = 0;
 		    vardata[i].reason = CRef_Undef;
 		    settime[i] = 0;
@@ -1101,6 +1109,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		      if (oob != ASSIGN_OK /*|| eas[uuu] == UNIV*/) {
 			if (info_level >= 2) cerr << "Error: cannot be fixed to that value." << endl;
 		      } else {
+			restGamePromoteToRoot(i);
 			vardata[i].level = 0;
 			vardata[i].reason = CRef_Undef;
 			settime[i] = 0;
@@ -1186,7 +1195,47 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 
 	    if (getShowExtendedOutput())
 	      cerr << "Start with maximum depth " << lmax_sd << " use Restarts: " << useRestarts << " Alpha=" << start_a << " Beta=" << start_b << endl;
-
+	    if (useDeep && feasPhase && !didProbeRootBoost) {
+	      didProbeRootBoost = true;
+	      
+	      int best = -1;
+	      double bestScore = 0.0;
+	      double bestAct = -1.0;
+	      double maxAct = 0.0;
+	      
+	      for (int v = 0; v < nVars(); ++v) {
+		if (block[v] != 1 || type[v] != BINARY) continue;
+		if (assigns[v] != extbool_Undef || isFixed(v)) continue;
+		
+		double act = p_activity[v] + n_activity[v];
+		double score = (double)n_implis[v] * p_implis[v];
+		
+		maxAct = std::max(maxAct, act);
+		
+		if (score > bestScore ||
+		    (score == bestScore && act > bestAct)) {
+		  best = v;
+		  bestScore = score;
+		  bestAct = act;
+		}
+	      }
+	      
+	      if (best >= 0) {
+		double delta = std::max(0.0, maxAct - bestAct + 1.0);
+		
+		// Nur die Variablenpriorität ändern.
+		p_activity[best] += 0.5 * delta;
+		n_activity[best] += 0.5 * delta;
+		
+		if (order_heap.inHeap(best))
+		  order_heap.update(best);
+		
+		if(0)cerr << "PROBE_ROOT_BOOST x" << best
+			  << " score=" << bestScore
+			  << " delta=" << delta
+			  << endl;
+	      }
+	    }
 	    V = alphabeta_loop(t,lmax_sd ,start_a, start_b,false,p_infinity,-1,0, true, true,0,0,false, true);
 	    if (1||!break_from_outside) {
 	      if (fabs(global_score - gs_old) < LP_EPS) {
@@ -1314,10 +1363,10 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	  buf_propQ.push(propQ[propQ.size()-1]);
 	  EmptyPropQ(true,false,true);
 	}
-	isFi = false;
+	isFi = 0;
 	if (useWarmRestart) {
 	  if (info_level >= 2) cerr << "isFi == true, weil Restart" << endl;
-	  isFi = true;
+	  isFi |= 1;
 	}
         for (int i=0; i < constraints.size();i++) {
           Constraint &c = constraintallocator[constraints[i]];
@@ -1349,6 +1398,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		if (feasPhase) score = v = n_infinity;
 		comp_finished = true;
 	      }
+	      restGamePromoteToRoot(uuu);
 	      vardata[uuu].level = 0;
 	      vardata[uuu].reason = CRef_Undef;
 	      settime[uuu] = 0;
@@ -1359,7 +1409,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	      }
 	    }
 	    //impl0=true;
-	    isFi = true;
+	    isFi |= 2;
 	  }
 	}
 	propQ.clear();
@@ -1371,6 +1421,8 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	  impl0 = true;
 	  for (int ii = 0; ii < propQ.size();ii++) {
 	    propQ[ii].cr = CRef_Undef;
+	    if (assigns[propQ[ii].v >> 1] != extbool_Undef)
+	      restGamePromoteToRoot(propQ[ii].v >> 1);
 	    vardata[propQ[ii].v>>1].reason = CRef_Undef;
 	    vardata[propQ[ii].v>>1].level = 0;
 	    settime[propQ[ii].v>>1] = 0;
@@ -1720,7 +1772,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 	  if (cc.header.btch1.best < constraintallocator[constraints[0]].header.rhs) break;
 	  //cc.print(cc,assigns,false);
 	  if (info_level >= 5)  cerr << "fP=" << feasPhase << " bfo=" << break_from_outside << " impl0" << impl0 << " isFi=" << isFi << " uD=" << usedDeep << " uWR=" << useWarmRestart << endl;
-	  if ((!feasPhase && !break_from_outside && /*!impl0 &&*/ usedDeep && !useWarmRestart /*&& !isFi*/) || global_dual_bound <= global_score) {
+	  if ((!feasPhase && !break_from_outside && /*!impl0 &&*/ usedDeep && !useWarmRestart && !(isFi & 2)) || global_dual_bound <= global_score) {
 	    if(getShowInfo()) cerr << "termination because fP=" << feasPhase << " bfo=" << break_from_outside << " impl0" << impl0 << " isFi=" << isFi << " uD=" << usedDeep << " uWR=" << useWarmRestart << endl;
 	    //char a;
 	    //cin >> a;
@@ -1814,6 +1866,7 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
 		      return best_objective;
 		    //return n_infinity;
 		  }
+		  restGamePromoteToRoot(cpropQ[uuu].first);
 		  vardata[cpropQ[uuu].first].level = 0;
 		  vardata[cpropQ[uuu].first].reason = CRef_Undef;
 		  settime[cpropQ[uuu].first] = 0;
@@ -1869,54 +1922,90 @@ coef_t QBPSolver::searchPrimal(int t, void *ifc, coef_t alpha, coef_t beta) {
       //MPI_Send(recvBuf, 1, MPI_CHAR, processNo+1,FINISH,MPI_COMM_WORLD);
       C.mefprint(processNo,"sent Message with TAG %d\n",FINISH);
     }
-    double PVval=0.0;
-    for (int i = 0, j=0; i < nVars();i++,j++) {
-      int leader = ((yInterface*)yIF)->integers[i].pt2leader;
-      int leader_index = ((yInterface*)yIF)->integers[leader].index;
-      std::string &name = ((yInterface*)yIF)->integers[i].name;
-      bool justRet=false;
-      if (i == 0) C.mefprint(processNo,"%s\n",(eas[0] == UNIV ? "UNIV" : "EXIST")); 
+
+    std::vector<double> displayPV;
+    std::vector<unsigned char> knownPV;
+    const bool pvComplete = getOutputPV(displayPV, knownPV);
+    for (int i = 0, j = 0; i < nVars(); ++i, ++j) {
+      const std::string &name = ((yInterface*)yIF)->integers[i].name;
+      if (i == 0)
+        C.mefprint(processNo, "%s\n", eas[0]==UNIV ? "UNIV" : "EXIST");
       else if (block[i] > block[i-1]) {
-	C.mefprint(processNo,"\n%s\n",(eas[i] == UNIV ? "UNIV" : "EXIST")); 
-	j=0;
+	C.mefprint(processNo, "\n%s\n", eas[i]==UNIV ? "UNIV" : "EXIST");
+        j = 0;
       }
+      const std::string val = !knownPV[i] ? "unknown" : std::to_string(displayPV[i]);
       if (block[i] == 1) {
-	C.mefprint(processNo," [ \"%s\"=%.0f | %.0f | %.2f ] ** ",name.c_str(),PV[1][i],fstStSol[i], forecast(i));
+	const bool fsKnown = firstStageValueKnown(i);	
+	const std::string fs =
+	  fsKnown ? std::to_string(fstStSol[i]) : "unknown";
+        C.mefprint(processNo, " [ \"%s\"=%s | %s | %.2f ] ** ",
+                   name.c_str(), val.c_str(), fs.c_str(), forecast(i));
       } else {
-	C.mefprint(processNo," [ \"%s\"=%.0f | -%d- ] ** ",name.c_str(),PV[1][i],block[i]);
+	C.mefprint(processNo, " [ \"%s\"=%s | -%d- ] ** ", name.c_str(), val.c_str(), block[i]);
       }
       if (j % 5 == 4 && !(i+1 >= nVars()) && !(block[i+1] > block[i])) C.mefprint(processNo,"\n");
+      if (j%5 == 4 && i+1<nVars() && block[i+1] == block[i]) C.mefprint(processNo, "\n");
     }
     C.mefprint(processNo,"\n");
+
     Constraint &c = constraintallocator[constraints[0]];
-    for (int i = 0; i < c.size();i++) {
-      if (sign(c[i]))
-	PVval = PVval - PV[0][var(c[i])] * c[i].coef;
-      else
-	PVval = PVval + PV[0][var(c[i])] * c[i].coef;
-     }
+    bool objKnown = true;
+    double PVval = 0.0;
+    for (int i = 0; i < c.size(); ++i) {
+      const int x = var(c[i]);
+      if (!knownPV[x]) { objKnown = false; break; }
+      PVval += (sign(c[i]) ? -1.0 : 1.0) * displayPV[x] * c[i].coef;
+    }
+    
     if (!objInverted) global_score = -global_score;
-    if (!objInverted) PVval = -PVval;
-    C.mefprint(processNo,"FINAL PV VALUE IS %lf. Global score = %lf Objective=%lf\n",PVval,global_score,best_objective);
-    if (fabs(global_score) < fabs(dont_know)) {
-      if (fabs(global_score-PVval) < 1e-9){ if(getShowInfo()) cerr << "PV value and objective are the same." << endl;}
-      else if(getShowError()) cerr << "ERROR: PV value and objective DIFFER. PVval=" << PVval << " objective=" << global_score << endl;
+    if (!objInverted && objKnown) PVval = -PVval;
+
+    if (getMaintainPv() && pvComplete && objKnown) {
+
+      C.mefprint(processNo,
+		 "FINAL COMPLETE PV VALUE IS %lf. Global score = %lf Objective=%lf\n",
+		 PVval, global_score, best_objective);
+
+      if (fabs(global_score) < fabs(dont_know)) {
+
+        if (fabs(global_score - PVval) < 1e-9) {
+	  if (getShowInfo())
+	    cerr << "PV CHECK OK: PV value equals minimax value."
+		 << endl;
+        } else {
+	  cerr << "ERROR: COMPLETE PV DOES NOT MATCH MINIMAX VALUE!"
+	       << " PVval=" << PVval
+	       << " minimax=" << global_score
+	       << endl;
+        }
+      }
+
+    } else if (objKnown) {
+
+      C.mefprint(processNo,
+		 "PARTIAL PV: Objective expression = %lf, "
+		 "minimax = %lf. Full PV check skipped.\n",
+		 PVval, global_score);
+
+    } else {
+
+      C.mefprint(processNo,
+		 "PV OBJECTIVE UNKNOWN. Global score=%lf. "
+		 "PV check skipped.\n",
+		 global_score);
     }
-#ifdef OLD_OUT_PV
-    C.mefprint(processNo,"char pvsol[] = \"");
-    for (int i = 0, j=0; i < nVars();i++,j++) {
-      C.mefprint(processNo,"%.0f",PV[1][i]);
-    }
-    C.mefprint(processNo,"\"\n");
-#else
-    C.mefprint(processNo,"double pvsol[] = {");
-    for (int i = 0, j=0; i < nVars()-1;i++,j++) {
-      C.mefprint(processNo,"%lf,",PV[1][i]);
-    }
-    C.mefprint(processNo,"%lf",PV[1][nVars()-1]);
-    C.mefprint(processNo,"};\n");
-    C.mefprint(processNo,"int pvSolCnt=%d\n",nVars());
-#endif    
+
+    if (!pvComplete)
+      C.mefprint(processNo, "PV INCOMPLETE: some variable values are unknown.\n");
+    // Numeric export deliberately preserves -2 as the sentinel.
+    C.mefprint(processNo, "double pvsol[] = {");
+    for (int i = 0; i < nVars(); ++i)
+      if (i+1 < nVars())
+	C.mefprint(processNo, (char*)"%lf,", displayPV[i]);
+      else
+	C.mefprint(processNo, (char*)"%lf", displayPV[i]);
+    C.mefprint(processNo, "};\nint pvSolCnt=%d\n", nVars());
     /*
     if(getWriteOutputFile()){
 	double gap = abs(100.0*(-global_dual_bound - best_objective) / (abs(best_objective)+1e-10) );

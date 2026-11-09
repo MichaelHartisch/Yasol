@@ -124,7 +124,7 @@ int QBPSolver::getMax_i2(ca_vec<CoeVar>& out_learnt, const int max_i, bool& Same
 bool QBPSolver::analyze(CRef conf, int conf_var, CRef conf_partner, ca_vec<CoeVar>& out_learnt, int& out_target_dec_level, ValueConstraintPair& out_vcp, bool learnClause) {
     
     if (conf == CRef_Undef || conf_partner == CRef_Undef) {
-        if(getShowWarning()) cerr << "Warning: In analyze(..): undefined conflict";
+      if(getShowWarning()) cerr << "Warning: In analyze(..): undefined conflict" << endl;
         return false;
     }
     // Generate conflict constraint:
@@ -132,6 +132,9 @@ bool QBPSolver::analyze(CRef conf, int conf_var, CRef conf_partner, ca_vec<CoeVa
     int fmut;
     int crit_block = block[conf_var];
  ANA_START:;
+    int negcs = 0, poscs = 0;    
+    out_learnt.clear();
+    
     ana_stack.clear();
     out_target_dec_level = decisionLevel()+1;
     
@@ -141,8 +144,85 @@ bool QBPSolver::analyze(CRef conf, int conf_var, CRef conf_partner, ca_vec<CoeVa
         ana_seen_stack.pop();
     }
     
-    ana_stack.push( ASE(conf, conf_var) );
-    ana_stack.push( ASE(conf_partner, conf_var) );
+    if (conf >= CRef_Undef-nVars()-10 || conf_partner >= CRef_Undef -nVars() -10) {
+      bool both = true;
+        if(getShowWarning()) cerr << "Warning: In analyze(..): undefined conflict with variable";
+	if(getShowWarning()) cerr << "conf with conflict-var x:" << conf_var << " with assignment:" << (int)assigns[conf_var] << ": ";
+	if (conf < CRef_Undef / 2) {
+	  Constraint &c=constraintallocator[conf];
+	  if(getShowWarning()) { 
+	    for (int u=0;u<c.size();u++) {
+	      cerr << (sign(c[u])?"-":"") << c[u].coef << "x" << var(c[u]) << " + ";
+	    }
+	    cerr << endl;
+	  }
+	  both = false;
+	} else {
+	  int y = (CRef_Undef - conf -10);
+	  if(getShowWarning()) cerr << "y=" << (CRef_Undef - conf -10) << " with assignment a(y)=" << (int)assigns[y] << endl;
+	}
+	if(getShowWarning()) cerr << "conf_partner with conflict-var x:" << conf_var << " with assignment:" << (int)assigns[conf_var] << ": ";
+	if (conf_partner < CRef_Undef / 2) {
+	  if(getShowWarning())  {
+	    Constraint &c=constraintallocator[conf_partner];
+	    for (int u=0;u<c.size();u++) {
+	      cerr << (sign(c[u])?"-":"") << c[u].coef << "x" << var(c[u]) << " + ";
+	    }
+	    cerr << endl;
+	  }
+	  both = false;
+	} else {
+	  int y = (CRef_Undef - conf_partner -10);
+	  if(getShowWarning()) cerr << "y=" << (CRef_Undef - conf_partner -10) << " with assignment a(y)=" << (int)assigns[y] << endl;
+	}
+        if (both) return false;
+    }
+    if (conf < CRef_Undef-nVars()-10) ana_stack.push( ASE(conf, conf_var) );
+    else {
+      int y = (CRef_Undef - conf -10);
+      assert(assigns[y] != extbool_Undef);
+      CRef r = vardata[y].reason;
+      if (r==CRef_Undef) {
+	CoeVar q;
+	q.x = y+y;
+	if (assigns[y]==1) q.x++;
+	q.coef = 1.0;
+	varBumpActivity(y, 1-sign(q),0);
+	if (sign(q) && (seen[y] & 4) == 0) {
+	  out_learnt.push(q);
+	} else if (!sign(q) && (seen[y] & 8) == 0) {
+	  out_learnt.push(q);
+	}
+	if (sign(q)) seen[y] |= (1+4);
+	else seen[y] |= (2+8);
+	ana_seen_stack.push(y);
+      } else 
+	ana_stack.push( ASE(r,y));
+      conf = conf_partner;
+    }
+    if (conf_partner < CRef_Undef-nVars()-10) ana_stack.push( ASE(conf_partner, conf_var) );
+    else {
+      int y = (CRef_Undef - conf_partner -10);
+      assert(assigns[y] != extbool_Undef);
+      CRef r = vardata[y].reason;
+      if (r==CRef_Undef) {
+	CoeVar q;
+	q.x = y+y;
+	if (assigns[y]==1) q.x++;
+	q.coef = 1.0;
+	varBumpActivity(y, 1-sign(q),0);
+	if (sign(q) && (seen[y] & 4) == 0) {
+	  out_learnt.push(q);
+	} else if (!sign(q) && (seen[y] & 8) == 0) {
+	  out_learnt.push(q);
+	}
+	if (sign(q)) seen[y] |= (1+4);
+	else seen[y] |= (2+8);
+	ana_seen_stack.push(y);
+      } else 
+	ana_stack.push( ASE(r,y));
+      conf_partner = conf;
+    }
     
     Constraint& c1 = constraintallocator[conf];
     Constraint& c2 = constraintallocator[conf_partner];
@@ -152,36 +232,10 @@ bool QBPSolver::analyze(CRef conf, int conf_var, CRef conf_partner, ca_vec<CoeVa
         }
         return false;
     }
-    int negcs = 0, poscs = 0;
-    
-    out_learnt.clear();
     //#define RESOLUTION
     //#ifdef RESOLUTION
     if (0&&isFixed(conf_var) && assigns[conf_var] == extbool_Undef && fixdata[conf_var].reason != CRef_Undef && constraintallocator[fixdata[conf_var].reason].header.isSat) {
-        assert(conf != CRef_Undef);
-        assert(conf_partner != CRef_Undef);
-        if (USE_TRACKER & 2) cerr << "J24U";
-        
-        for (int i = 0; i < c1.size();i++) {
-            if (assigns[var(c1[i])] != extbool_Undef && assigns[var(c1[i])] == 1-sign(c1[i])) {
-                out_learnt.clear();
-                return false;
-            }
-            if (var(c1[i]) != conf_var) out_learnt.push(c1[i]);
-        }
-        for (int i = 0; i < c2.size();i++) {
-            if (assigns[var(c2[i])] != extbool_Undef && assigns[var(c2[i])] == 1-sign(c2[i])) {
-                out_learnt.clear();
-                return false;
-            }
-            if (var(c2[i]) != conf_var) out_learnt.push(c2[i]);
-        }
-        
-        if (USE_TRACKER & 2) cerr << "u";
-        AdaptConstraint( out_learnt,false,false);
-	if (simplify1(out_learnt, true)) {
-            if (info_level > 0) cout << "simplify leads to tautology" << endl;
-        }
+
     } else {
         //#else
         while (ana_stack.size() > 0) {
@@ -260,7 +314,24 @@ bool QBPSolver::analyze(CRef conf, int conf_var, CRef conf_partner, ca_vec<CoeVa
                             (!sign(cc[i]) && (seen[var(cc[i])] & 2) == 0)
                             ) { //TODO: ueberlege, ob die Unterscheidung nach pos und neg gesehen einen Unterschied mache kann.
                             varBumpActivity(var(cc[i]), 1-sign(cc[i]),0);
-                            ana_stack.push( ASE(reason(var(cc[i])),var(cc[i])) );
+			    if (reason(var(cc[i]))!=CRef_Undef && reason(var(cc[i])) > CRef_Undef - nVars() - 10) {
+			      int x = CRef_Undef-reason(var(cc[i]))-10;
+			      int s = sign(cc[i]);
+			      CoeVar q;
+			      q.x = x+x;
+			      if (assigns[x] == 1) q.x++;
+			      q.coef = 1.0;
+			      varBumpActivity(var(q), 1-sign(q),0);
+			      if (sign(q) && (seen[var(q)] & 4) == 0) {
+				out_learnt.push(q);
+			      } else if (!sign(q) && (seen[var(q)] & 8) == 0) {
+				out_learnt.push(q);
+			      }
+			      if (sign(q)) seen[var(q)] |= (1+4);
+			      else seen[var(q)] |= (2+8);
+			      ana_seen_stack.push(var(q));
+			    } else
+			      ana_stack.push( ASE(reason(var(cc[i])),var(cc[i])) );
                             if (sign(cc[i])) seen[var(cc[i])] |= 1;
                             else seen[var(cc[i])] |= 2;
                             ana_seen_stack.push(var(cc[i]));
@@ -667,7 +738,10 @@ bool QBPSolver::analyze4All(CRef conf, int conf_var, ca_vec<CoeVar>& out_learnt,
         cerr << "UNDEFA;";
         return false;
     }
-    
+    if (conf > CRef_Undef-nVars()-10) {
+        if(1||getShowWarning()) cerr << "Warning: In analyze4all(..): undefined conflict with variable";
+        return false;
+    }
     int crit_block = block[conf_var];
  ANA4ALL_START:;
     out_target_dec_level = decisionLevel()+1;
@@ -903,7 +977,24 @@ bool QBPSolver::analyze4All(CRef conf, int conf_var, ca_vec<CoeVar>& out_learnt,
                         //cerr << "7(" << reason(var(cc[i])) << "," << var(cc[i]) <<")";
                         massert( seen[var(cc[i])] <= 2);
                         varBumpActivity(var(cc[i]), 1-sign(cc[i]), 0);
-                        ana_stack.push( ASE(reason(var(cc[i])),var(cc[i])) );
+			    if (reason(var(cc[i]))!=CRef_Undef && reason(var(cc[i])) > CRef_Undef - nVars() - 10) {
+			      int x = CRef_Undef-reason(var(cc[i]))-10;
+			      int s = sign(cc[i]);
+			      CoeVar q;
+			      q.x = x+x;
+			      if (assigns[x] == 1) q.x++;
+			      q.coef = 1.0;
+			      varBumpActivity(var(q), 1-sign(q),0);
+			      if (sign(q) && (seen[var(q)] & 4) == 0) {
+				out_learnt.push(q);
+			      } else if (!sign(q) && (seen[var(q)] & 8) == 0) {
+				out_learnt.push(q);
+			      }
+			      if (sign(q)) seen[var(q)] |= (1+4);
+			      else seen[var(q)] |= (2+8);
+			      ana_seen_stack.push(var(q));
+			    } else
+			      ana_stack.push( ASE(reason(var(cc[i])),var(cc[i])) );
                         if (sign(cc[i])) seen[var(cc[i])] |= 1;
                         else seen[var(cc[i])] |= 2;
                         ana_seen_stack.push(var(cc[i]));
@@ -1607,10 +1698,28 @@ bool QBPSolver::deriveCombBC(ca_vec<CoeVar>& in_learnt, int conf_var, ca_vec<Coe
                      << fixdata[var(in_learnt[i])].reason << endl;
                      cerr << " isfixed=" << getFixed(var(in_learnt[i])) << endl;
                      }*/
-                    if (assigns[var(in_learnt[i])] != extbool_Undef) ana_stack.push( ASE(reason(var(in_learnt[i])),var(in_learnt[i])) );
-                    else if (isFixed(var(in_learnt[i])) ) ana_stack.push( ASE(fixdata[var(in_learnt[i])].reason,var(in_learnt[i])) );
-                    //else assert(0);
-                    if (sign(in_learnt[i])) seen[var(in_learnt[i])] |= 1;
+			    if (reason(var(in_learnt[i]))!=CRef_Undef && reason(var(in_learnt[i])) > CRef_Undef - nVars() - 10) {
+			      int x = CRef_Undef-reason(var(in_learnt[i]))-10;
+			      int s = sign(in_learnt[i]);
+			      CoeVar q;
+			      q.x = x+x;
+			      if (assigns[x] == 1) q.x++;
+			      q.coef = 1.0;
+			      varBumpActivity(var(q), 1-sign(q),0);
+			      if (sign(q) && (seen[var(q)] & 4) == 0) {
+				out_learnt.push(q);
+			      } else if (!sign(q) && (seen[var(q)] & 8) == 0) {
+				out_learnt.push(q);
+			      }
+			      if (sign(q)) seen[var(q)] |= (1+4);
+			      else seen[var(q)] |= (2+8);
+			      ana_seen_stack.push(var(q));
+			    } else {
+			      if (assigns[var(in_learnt[i])] != extbool_Undef) ana_stack.push( ASE(reason(var(in_learnt[i])),var(in_learnt[i])) );
+			      else if (isFixed(var(in_learnt[i])) ) ana_stack.push( ASE(fixdata[var(in_learnt[i])].reason,var(in_learnt[i])) );
+			    }
+			      //else assert(0);
+		    if (sign(in_learnt[i])) seen[var(in_learnt[i])] |= 1;
                     else seen[var(in_learnt[i])] |= 2;
                     ana_seen_stack.push(var(in_learnt[i]));
                 }
@@ -1722,15 +1831,34 @@ bool QBPSolver::deriveCombBC(ca_vec<CoeVar>& in_learnt, int conf_var, ca_vec<Coe
                         ) { //TODO: ueberlege, ob die Untescheidung nach pos und neg gesehen einen Unterschied machen kann.
                         massert( seen[var(cc[i])] <= 2);
                         varBumpActivity(var(cc[i]), 1-sign(cc[i]),0);
-                        if((USE_TRACKER & 2) && reason(var(cc[i]))==CRef_Undef) {
+			if (reason(var(cc[i]))!=CRef_Undef && reason(var(cc[i])) > CRef_Undef - nVars() - 10) {
+			  int x = CRef_Undef-reason(var(cc[i]))-10;
+			  int s = sign(cc[i]);
+			  CoeVar q;
+			  q.x = x+x;
+			  if (assigns[x] == 1) q.x++;
+			  q.coef = 1.0;
+			  varBumpActivity(var(q), 1-sign(q),0);
+			  if (sign(q) && (seen[var(q)] & 4) == 0) {
+			    out_learnt.push(q);
+			  } else if (!sign(q) && (seen[var(q)] & 8) == 0) {
+			    out_learnt.push(q);
+			  }
+			  if (sign(q)) seen[var(q)] |= (1+4);
+			  else seen[var(q)] |= (2+8);
+			  ana_seen_stack.push(var(q));
+			} else {
+			
+			  if((USE_TRACKER & 2) && reason(var(cc[i]))==CRef_Undef) {
                             cerr << "x" << var(cc[i]) << " B:" << (int)assigns[var(cc[i])]
-                            << " datalevel="
-                            << vardata[var(cc[i])].level << " lokal_dl=" << lokal_dl
-                            << " datareason=" << vardata[var(cc[i])].reason
-                            << " fixlevel=" <<   fixdata[var(cc[i])].level << " fixreason="
-                            << fixdata[var(cc[i])].reason << endl;
-                        }
-                        ana_stack.push( ASE(reason(var(cc[i])),var(cc[i])) );
+				 << " datalevel="
+				 << vardata[var(cc[i])].level << " lokal_dl=" << lokal_dl
+				 << " datareason=" << vardata[var(cc[i])].reason
+				 << " fixlevel=" <<   fixdata[var(cc[i])].level << " fixreason="
+				 << fixdata[var(cc[i])].reason << endl;
+			  }
+			  ana_stack.push( ASE(reason(var(cc[i])),var(cc[i])) );
+			}
                         if (sign(cc[i])) seen[var(cc[i])] |= 1;
                         else seen[var(cc[i])] |= 2;
                         ana_seen_stack.push(var(cc[i]));
@@ -2765,9 +2893,27 @@ bool QBPSolver::fastBendersAnalysis(coef_t value, coef_t rhs, ca_vec<CoeVar>& in
                      << fixdata[var(in_learnt[i])].reason << endl;
                      cerr << " isfixed=" << getFixed(var(in_learnt[i])) << endl;
                      }*/
-                    if (assigns[var(in_learnt[i])] != extbool_Undef) ana_stack.push( ASE(reason(var(in_learnt[i])),var(in_learnt[i])) );
-                    else if (isFixed(var(in_learnt[i])) ) ana_stack.push( ASE(fixdata[var(in_learnt[i])].reason,var(in_learnt[i])) );
-                    else assert(0);
+			    if (reason(var(in_learnt[i]))!=CRef_Undef && reason(var(in_learnt[i])) > CRef_Undef - nVars() - 10) {
+			      int x = CRef_Undef-reason(var(in_learnt[i]))-10;
+			      int s = sign(in_learnt[i]);
+			      CoeVar q;
+			      q.x = x+x;
+			      if (assigns[x] == 1) q.x++;
+			      q.coef = 1.0;
+			      varBumpActivity(var(q), 1-sign(q),0);
+			      if (sign(q) && (seen[var(q)] & 4) == 0) {
+				out_learnt.push(q);
+			      } else if (!sign(q) && (seen[var(q)] & 8) == 0) {
+				out_learnt.push(q);
+			      }
+			      if (sign(q)) seen[var(q)] |= (1+4);
+			      else seen[var(q)] |= (2+8);
+			      ana_seen_stack.push(var(q));
+			    } else {
+			      if (assigns[var(in_learnt[i])] != extbool_Undef) ana_stack.push( ASE(reason(var(in_learnt[i])),var(in_learnt[i])) );
+			      else if (isFixed(var(in_learnt[i])) ) ana_stack.push( ASE(fixdata[var(in_learnt[i])].reason,var(in_learnt[i])) );
+			      else assert(0);
+			    }
                     if (sign(in_learnt[i])) seen[var(in_learnt[i])] |= 1;
                     else seen[var(in_learnt[i])] |= 2;
                     ana_seen_stack.push(var(in_learnt[i]));
@@ -2984,17 +3130,35 @@ bool QBPSolver::fastBendersAnalysis(coef_t value, coef_t rhs, ca_vec<CoeVar>& in
                         ) { //TODO: ueberlege, ob die Untescheidung nach pos und neg gesehen einen Unterschied machen kann.
                         massert( seen[var(q)] <= 2);
                         varBumpActivity(var(q), 1-sign(q),0);
-                        if ((USE_TRACKER & 2) && reason(var(q))==CRef_Undef) {
-                            cerr << "x" << var(q) << " B:" << (int)assigns[var(q)]
-                            << " datalevel="
-                            << vardata[var(q)].level << " lokal_dl=" << lokal_dl
-                            << " datareason=" << vardata[var(q)].reason
-                            << " fixlevel=" <<   fixdata[var(q)].level << " fixreason="
-                            << fixdata[var(q)].reason << endl;
-                        }
-                        if (assigns[var(q)] != extbool_Undef) ana_stack.push( ASE(reason(var(q)),var(q)) );
-                        else if (isFixed(var(q)) ) ana_stack.push( ASE(fixdata[var(q)].reason,var(q)) );
-                        else assert(0);
+			if (reason(var(cc[i]))!=CRef_Undef && reason(var(cc[i])) > CRef_Undef - nVars() - 10) {
+			  int x = CRef_Undef-reason(var(cc[i]))-10;
+			  int s = sign(cc[i]);
+			  CoeVar q;
+			  q.x = x+x;
+			  if (assigns[x] == 1) q.x++;
+			  q.coef = 1.0;
+			  varBumpActivity(var(q), 1-sign(q),0);
+			  if (sign(q) && (seen[var(q)] & 4) == 0) {
+			    out_learnt.push(q);
+			  } else if (!sign(q) && (seen[var(q)] & 8) == 0) {
+			    out_learnt.push(q);
+			  }
+			  if (sign(q)) seen[var(q)] |= (1+4);
+			  else seen[var(q)] |= (2+8);
+			  ana_seen_stack.push(var(q));
+			} else {
+			  if ((USE_TRACKER & 2) && reason(var(q))==CRef_Undef) {
+			    cerr << "x" << var(q) << " B:" << (int)assigns[var(q)]
+				 << " datalevel="
+				 << vardata[var(q)].level << " lokal_dl=" << lokal_dl
+				 << " datareason=" << vardata[var(q)].reason
+				 << " fixlevel=" <<   fixdata[var(q)].level << " fixreason="
+				 << fixdata[var(q)].reason << endl;
+			  }
+			  if (assigns[var(q)] != extbool_Undef) ana_stack.push( ASE(reason(var(q)),var(q)) );
+			  else if (isFixed(var(q)) ) ana_stack.push( ASE(fixdata[var(q)].reason,var(q)) );
+			  else assert(0);
+			}
                         if (sign(q)) seen[var(q)] |= 1;
                         else seen[var(q)] |= 2;
                         ana_seen_stack.push(var(q));
@@ -4419,6 +4583,7 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
                 cnt0++;
                 //if (info_level > 0) cout << "folgere x" << (int)(sv>>1) << " = " << (int)(1-(sv&1)) << "(" << cnt0 << ")" << endl;
                 if (oob == ASSIGN_OK) {
+		    restGamePromoteToRoot(sv>>1);
                     vardata[sv>>1].level = 0;
                     vardata[sv>>1].reason = CRef_Undef;
                     settime[sv>>1] = 0;
@@ -4509,75 +4674,6 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
                 //if (fixdata[pick].level <= 0) cerr << "W";
                 //if (isFixed(pick)) cerr << decisionLevel()-fixdata[pick].level << "|" << fixdata[pick].reason << "," << oob << ",";
                 Constraint &c = constraintallocator[cr];
-#ifdef FIND_BUG
-                if (1) {
-                    cbc.clear();
-                    in_learnt.clear();
-                    for (int i = 0; i < c.size();i++) {
-                        in_learnt.push(mkCoeVar(var(c[i]),c[i].coef,sign(c[i])));
-                        //cerr << (sign(c[i]) ? "-" : "") << c[i].coef << "x" << var(c[i]) << "=" << (int)assigns[var(c[i])]<< "(" << (int)vardata[var(c[i])].level<< ")" << " + ";
-                    }
-                    //cerr << endl;
-                    bool dCBC = deriveCombBC(in_learnt, v, cbc);
-                    //cerr << "B" << dCBC;
-                    if (dCBC) {
-                        int high_1 = -1;
-                        int high_2 = -1;
-                        int pickpos = -1;
-                        PurgeTrail(trail.size()-1,decisionLevel());
-                        //cerr << "Sq4-" << decisionLevel();
-                        for (int i = 0; i < cbc.size();i++) {
-                            if (var(cbc[i]) == v) {
-                                pickpos = i;
-                                assert(assigns[v]==extbool_Undef);
-                            }
-                            int real_level = vardata[var(cbc[i])].level;
-                            if (vardata[var(cbc[i])].reason != CRef_Undef) real_level--;
-                            if (high_1 == -1) {
-                                high_1 = real_level;
-                            } else {
-                                if (real_level > high_1) {
-                                    high_2 = high_1;
-                                    high_1 = real_level;
-                                } else {
-                                    if (high_2 == -1 || real_level > high_2) {
-                                        high_2 = real_level;
-                                    }
-                                }
-                            }
-                            //cerr << (sign(cbc[i]) ? "-" : "") << cbc[i].coef << "x" << var(cbc[i]) << "=" << (int)assigns[var(cbc[i])]<< "(" << (int)vardata[var(cbc[i])].level<< ")" << " + ";
-                        }
-                        returnUntil(fmax(high_1+1,fixdata[v].level));
-                        PurgeTrail(trail.size()-1,decisionLevel());
-                    }
-                }
-                
-#endif
-                
-                if (0)if (fixdata[v].level <= 0) {
-                    //cerr << "KONFLIKT MIT FIXDATA" << endl;
-                    //break_from_outside = true;
-                    static int old_cr;
-                    static int old_v = -1;
-                    static int old_nl;
-                    static int old_s;
-                    if (v == old_v && old_cr == cr && old_nl == num_learnts) {
-                        old_v = -1;
-                        break_from_outside = true;
-                        cerr << "Loop Avoider 1";
-                    } else {
-                        discoveredNews += 20;
-                        old_v = v;
-                        old_s = s;
-                        old_nl = num_learnts;
-                        old_cr = cr;
-                        if (discoveredNews > 2000) {
-                            cerr << "Loop Avoider 2";
-                            break_from_outside = true;
-                        }
-                    }
-                } //else cerr << "Lois";
-                //assign(sv>>1, 1-(sv&1),trail.size(),cr, conflict, ix1, ix2, false);
             } else if (assigns[v] != extbool_Undef && vardata[v].level > 0 &&  assigns[v] != 1-s) {  // TODO dies ist neu. Stimmt das so???
                 //assert(assigns[v] != extbool_Undef);
                 // f�hrte in u.a. mitre.qip (BP) zu Fehler. Warum???
@@ -4609,25 +4705,41 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
     int ASSI = 1;
  LloopSim:;
     
-    if (rem_trailSize < trail.size()+ASSI/*feasPhase == false*/ && decisionLevel() < sqrt(binVars())/*&& !probemode*/) {
+    if (max_props > 10 && rem_trailSize < trail.size()+ASSI/*feasPhase == false*/ /*&& decisionLevel() < sqrt(binVars())*//*&& !probemode*/) {
       ASSI = 0;
         ca_vec<CoeVar> preQ;
+	std::vector<std::pair<int,int>> orbitFixs;
 	propQ.clear();
         //cerr << "t" << propQ.size();
-        if (1||decisionLevel() < 10 /*(int)sqrt((double)nVars())*/)
-	  for (int z = rem_trailSize>0?rem_trailSize-1:0;z < trail.size();z++) {
-	    if (vardata[trail[z]].reason == CRef_Undef) continue;
-	    CM.extractImplis(preQ, trail[z], assigns[trail[z]], nVars(),assigns, true);
-                //cerr << "f" << preQ.size() << " inDL=" << decisionLevel() << " ";
-                for (int zz=0;zz < preQ.size();zz++) {
-                    if (type[preQ[zz].x>>1] != BINARY) continue;
-                    if (assigns[preQ[zz].x>>1] == extbool_Undef && !isFixed(preQ[zz].x>>1) && block[preQ[zz].x>>1] >= block[trail[z] ] /*&& block[preQ[zz].x>>1]==1*/) {
+        if (1||decisionLevel() < 4 /*(int)sqrt((double)nVars())*/)
+	    for (int z = rem_trailSize>0?rem_trailSize-1:0;z < trail.size();z++) {
+	        //if (vardata[trail[z]].reason == CRef_Undef) continue;
+	        //getOrbitChainFixings(trail[z], assigns[trail[z]], symres, assigns.getData(), nVars(), orbitFixs);
+	        // //YasolSymmetryResult stabSymres = YasolOrbitalSym.getStabilizerOrbits(assigns.getData(), VIsFixed.getData(), nVars(), trail[z]);
+	        // //getOrbitChainFixings(trail[z], assigns[trail[z]], stabSymres, assigns.getData(), nVars(), orbitFixs);
+	        orbitFixs.clear();
+	        if (symres.hasOrbit(trail[z])) {
+	          YasolSymmetryResult stabSymres = YasolOrbitalSym.getStabilizerOrbits(assigns.getData(), VIsFixed.getData(), nVars(), trail[z]);
+	          getOrbitChainFixings(trail[z], assigns[trail[z]], stabSymres, assigns.getData(), nVars(), orbitFixs);
+	        }
+
+	        for (int zz=0;zz < /*preQ.size()*/orbitFixs.size();zz++) {
+                    if (type[orbitFixs[zz].first] != BINARY) continue;
+		    if (eas[orbitFixs[zz].first] != EXIST) continue;
+                    if (assigns[orbitFixs[zz].first] == extbool_Undef && !isFixed(orbitFixs[zz].first)
+			&& block[orbitFixs[zz].first] >= block[trail[z] ] /*&& block[preQ[zz].x>>1]==1*/) {
                         // TODO TODO nicht klar ist, ob es reicht, zu fordern, dass die gefolgerte Variable im gleichen Block liegt.
 		      ValueConstraintPair out_vcp;
-		      out_vcp.v = preQ[zz].x;
+		      out_vcp.v = orbitFixs[zz].first + orbitFixs[zz].first;//preQ[zz].x;
+		      if (orbitFixs[zz].second == 1) ;
+		      else if (orbitFixs[zz].second == 0) out_vcp.v++;
+		      else continue;
 		      out_vcp.cr = vardata[trail[z]].reason;
-		      sv = preQ[zz].x;
-		      cr = CRef_Undef;
+		      //sv = out_vcp.v;
+		      //cr = CRef_Undef;
+		      //out_vcp.pos = trail[z];
+		      // //if (out_vcp.cr == CRef_Undef)
+		      // //out_vcp.cr = CRef_Undef - 10 - trail[z];
 		      if (propQlimiter[out_vcp.v] <= 0) {
 			propQ.push(out_vcp);
 			propQlimiter[out_vcp.v] = propQ.size();
@@ -4636,72 +4748,31 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
 		      //-- PROPQ_PUSH(out_vcp);
 			
 		      continue;
-		      
+		    }
+		}
+	        preQ.clear();
+	        CM.extractImplis(preQ, trail[z], assigns[trail[z]], nVars(),assigns, true);
+                //cerr << "f" << preQ.size() << " inDL=" << decisionLevel() << " ";
+                for (int zz=0;zz < preQ.size();zz++) {
+                    if (type[preQ[zz].x>>1] != BINARY) continue;
+                    if (assigns[preQ[zz].x>>1] == extbool_Undef && !isFixed(preQ[zz].x>>1) && block[preQ[zz].x>>1] >= block[trail[z] ] /*&& block[preQ[zz].x>>1]==1*/) {
+                        // TODO TODO nicht klar ist, ob es reicht, zu fordern, dass die gefolgerte Variable im gleichen Block liegt.
+		      ValueConstraintPair out_vcp;
+		      out_vcp.v = preQ[zz].x;
+		      out_vcp.cr = vardata[trail[z]].reason;
+		      if (out_vcp.cr == CRef_Undef)
+			out_vcp.cr = CRef_Undef - 10 - trail[z];
+		      //out_vcp.pos = trail[z];
+		      //sv = preQ[zz].x;
+		      //cr = CRef_Undef;
+		      if (propQlimiter[out_vcp.v] <= 0) {
+			propQ.push(out_vcp);
+			propQlimiter[out_vcp.v] = propQ.size();
+		      } else propQ[propQlimiter[out_vcp.v]-1] = out_vcp;
 
+		      //-- PROPQ_PUSH(out_vcp);
 			
-			
-                        if (decisionLevel() >= 3 /*sqrt(binVars())*/) {
-                            if (assigns[propQ[z].v>>1] != extbool_Undef && vardata[propQ[z].v>>1].reason != CRef_Undef) {
-                                setFixed(sv >> 1, 1-(sv&1), vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,vardata[propQ[z].v>>1].reason);
-                                addFixed(vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
-                                cerr << "C1";
-                            } else if (isFixed(propQ[z].v>>1) && fixdata[propQ[z].v>>1].reason != CRef_Undef){
-                                setFixed(sv >> 1, 1-(sv&1), fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/, fixdata[propQ[z].v>>1].reason);
-                                addFixed(fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
-                                cerr << "C2";
-                            }
-                        } else if (decisionLevel() < sqrt(binVars())) {
-                            int ix1, ix2;
-                            sv = preQ[zz].x;
-                            cr = CRef_Undef;
-                            oob = assign(sv>>1, 1-(sv&1),trail.size(),CRef_Undef, conflict, ix1, ix2, false);
-                            //PROPQ_PUSH(ValueConstraintPair(CRef_Undef,preQ[zz].x,-1));
-                            //assert(0);
-                            if (oob == ASSIGN_OK) {
-                                if (decisionLevel() <= 1) {
-				  cerr << "set in DL 1: x" << sv/2 << " to " << 1-(sv&1) << endl;
-                                    vardata[sv>>1].level = 0;
-                                    vardata[sv>>1].reason = CRef_Undef;
-                                    settime[sv>>1] = 0;
-                                } else {
-                                    if (assigns[propQ[z].v>>1] != extbool_Undef && vardata[propQ[z].v>>1].reason != CRef_Undef) {
-                                        setFixed(sv >> 1, 1-(sv&1), vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,vardata[propQ[z].v>>1].reason);
-                                        addFixed(vardata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
-                                        cerr << "C3";
-                                    } else if (isFixed(propQ[z].v>>1)  && fixdata[propQ[z].v>>1].reason != CRef_Undef){
-                                        setFixed(sv >> 1, 1-(sv&1), fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/,fixdata[propQ[z].v>>1].reason);
-                                        addFixed(fixdata[propQ[z].v>>1].level /*decisionLevel()-2*/,sv>>1);
-                                        cerr << "C4";
-                                    }
-                                }
-                            } else if(0){
-                                EmptyPropQ();
-                                confl = cr;
-                                confl_var = (sv>>1);
-                                confl_partner = oob;
-                                if (!probemode) num_conflicts++;
-                                if (useRestarts && useDeep &&num_conflicts > next_check) {
-                                    if (num_learnts > 0) {
-                                        break_from_outside = true;
-                                        for (int l=1;l<decisionLevel();l++) {
-					  stack_container &STACKz = search_stack.stack[l-1];
-					  //int8_t *valII = &stack_valII[(l)<<1];
-					  //int8_t &val_ixII = stack_val_ixII[l];
-					  int8_t *val = STACKz.val;
-					  int8_t &val_ix = STACKz.val_ix;
-					  //assert(stack_val_ixII[l] == STACKz.val_ix);
-					  //assert(val[0]==valII[0]);
-					  //assert(val[1]==valII[1]);      
-					  stack_restart_ready[l] = true;
-					  stack_save_val_ix[l] = val_ix;
-                                        }
-                                    }
-                                    next_check = next_check + next_level_inc;
-                                }
-                                
-                                //return false;
-                            }
-                        }
+		      continue;
                     }
                 }
             }
@@ -4723,20 +4794,6 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
                 continue;
             }
             //cr = constraints[r];
-        }
-        if(0)for (int l=1; l < 5 && l < propQ.size();l++) {
-            int sv_activity, last_activity;
-            if ((sv&1) == 1) sv_activity = n_activity[sv>>1];
-            else sv_activity = p_activity[sv>>1];
-            if ((propQ[propQ.size()-1].v&1) == 1) last_activity = n_activity[propQ[propQ.size()-1].v>>1];
-            else last_activity = p_activity[propQ[propQ.size()-1].v>>1];
-            if (sv_activity > last_activity) {
-                ValueConstraintPair cvp = propQ[propQ.size()-1];
-                propQ[propQ.size()-1] = propQ[propQ.size()-1-l];
-                propQ[propQ.size()-1-l] = cvp;
-                sv = propQ[propQ.size()-1].v;
-                cr = propQ[propQ.size()-1].cr;
-            }
         }
         if (type[sv>>1] != BINARY) {
             cerr << "Error:" << (int)(sv>>1) << " T:" << (int)type[sv>>1] << endl;
@@ -4856,6 +4913,7 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
                 cnt0++;
                 //if (info_level > 0) cout << "folgere x" << (int)(sv>>1) << " = " << (int)(1-(sv&1)) << "(" << cnt0 << ")" << endl;
                 if (oob == ASSIGN_OK) {
+		    restGamePromoteToRoot(sv>>1);
                     vardata[sv>>1].level = 0;
                     vardata[sv>>1].reason = CRef_Undef;
                     settime[sv>>1] = 0;
@@ -4946,75 +5004,7 @@ bool QBPSolver::propagate(CRef& confl, int& confl_var, CRef &confl_partner, bool
                 //if (fixdata[pick].level <= 0) cerr << "W";
                 //if (isFixed(pick)) cerr << decisionLevel()-fixdata[pick].level << "|" << fixdata[pick].reason << "," << oob << ",";
                 Constraint &c = constraintallocator[cr];
-#ifdef FIND_BUG
-                if (1) {
-                    cbc.clear();
-                    in_learnt.clear();
-                    for (int i = 0; i < c.size();i++) {
-                        in_learnt.push(mkCoeVar(var(c[i]),c[i].coef,sign(c[i])));
-                        //cerr << (sign(c[i]) ? "-" : "") << c[i].coef << "x" << var(c[i]) << "=" << (int)assigns[var(c[i])]<< "(" << (int)vardata[var(c[i])].level<< ")" << " + ";
-                    }
-                    //cerr << endl;
-                    bool dCBC = deriveCombBC(in_learnt, v, cbc);
-                    //cerr << "B" << dCBC;
-                    if (dCBC) {
-                        int high_1 = -1;
-                        int high_2 = -1;
-                        int pickpos = -1;
-                        PurgeTrail(trail.size()-1,decisionLevel());
-                        //cerr << "Sq4-" << decisionLevel();
-                        for (int i = 0; i < cbc.size();i++) {
-                            if (var(cbc[i]) == v) {
-                                pickpos = i;
-                                assert(assigns[v]==extbool_Undef);
-                            }
-                            int real_level = vardata[var(cbc[i])].level;
-                            if (vardata[var(cbc[i])].reason != CRef_Undef) real_level--;
-                            if (high_1 == -1) {
-                                high_1 = real_level;
-                            } else {
-                                if (real_level > high_1) {
-                                    high_2 = high_1;
-                                    high_1 = real_level;
-                                } else {
-                                    if (high_2 == -1 || real_level > high_2) {
-                                        high_2 = real_level;
-                                    }
-                                }
-                            }
-                            //cerr << (sign(cbc[i]) ? "-" : "") << cbc[i].coef << "x" << var(cbc[i]) << "=" << (int)assigns[var(cbc[i])]<< "(" << (int)vardata[var(cbc[i])].level<< ")" << " + ";
-                        }
-                        returnUntil(fmax(high_1+1,fixdata[v].level));
-                        PurgeTrail(trail.size()-1,decisionLevel());
-                    }
-                }
                 
-#endif
-                
-                if (0)if (fixdata[v].level <= 0) {
-                    //cerr << "KONFLIKT MIT FIXDATA" << endl;
-                    //break_from_outside = true;
-                    static int old_cr;
-                    static int old_v = -1;
-                    static int old_nl;
-                    static int old_s;
-                    if (v == old_v && old_cr == cr && old_nl == num_learnts) {
-                        old_v = -1;
-                        break_from_outside = true;
-                        cerr << "Loop Avoider 1";
-                    } else {
-                        discoveredNews += 20;
-                        old_v = v;
-                        old_s = s;
-                        old_nl = num_learnts;
-                        old_cr = cr;
-                        if (discoveredNews > 2000) {
-                            cerr << "Loop Avoider 2";
-                            break_from_outside = true;
-                        }
-                    }
-                } //else cerr << "Lois";
-                //assign(sv>>1, 1-(sv&1),trail.size(),cr, conflict, ix1, ix2, false);
             } else if (assigns[v] != extbool_Undef && vardata[v].level > 0 &&  assigns[v] != 1-s) {  // TODO dies ist neu. Stimmt das so???
                 //assert(assigns[v] != extbool_Undef);
                 // f�hrte in u.a. mitre.qip (BP) zu Fehler. Warum???
@@ -5147,11 +5137,14 @@ bool QBPSolver::hs_propagate(float alpha, CRef& confl, int& confl_var, CRef &con
 
 bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastProbe, bool oneVar, int theVar, std::vector<int>* implisOn0, std::vector<int> * implisOn1)
 {
-  if (UniversalConstraintsExist) {
-    max_progress_var = -1;
-    return false;
-  }
+    //max_progress_var = -1;
+    //return false;
     //fastProbe = false;
+    if (UniversalConstraintsExist) {
+      max_progress_var = -1;
+      return false;
+    }
+
     static int procn=0;
     max_progress_var = -1;
     
@@ -5298,6 +5291,9 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                 //if (block[i]>minblock) continue;
                 jjjjj++;
                 bool tot0=false, tot1=false;
+		int props20=0;
+                int props21=0;
+
                 for (int j = 0; j <= 1;j++) {
                     if(abs(getUpperBound(i)-getLowerBound(i))<0.5 && abs(getUpperBound(i)-j) >0.5){
                       if(getShowWarning()) std::cerr << "WARNING: OMITTED FIXED VARIABLE IN PROBING"<<std::endl;
@@ -5355,8 +5351,20 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                         }
                         int zz0=trail.size();
                         if (propagate(/*alpha,*/ confl, confl_var, confl_partner, true, block[i]>minblock/*, 1000*/)) {
-                            if (num_props-nodes > 0) varBumpActivity(i, 1/(double)(num_props-nodes)/*(double)(num_props-nodes)/(double)nVars()*/, j,0);
-                            if (max_progress < num_props-nodes && block[i] == minblock) {
+			  if (j==0) props20 = trail.size() - zz0;
+			  if (j==1) props21 = trail.size() - zz0;
+			  
+			  //if (num_props-nodes > 0) varBumpActivity(i, 0.1/(double)(num_props-nodes)/*(double)(num_props-nodes)/(double)nVars()*/, j,0);
+			  //if (trail.size()-zz0 > 0) varBumpActivity(i, (double)(trail.size()-zz0)/(double)nVars(), j,0);
+			  if (trail.size()-zz0 > 0) {
+			    varBumpActivity(i, (double)(trail.size()-zz0)/(double)nVars(), j,0);
+			    for (int ll=zz0;ll<trail.size();ll++) {
+			      int v = trail[ll];
+			      assert(assigns[v] != extbool_Undef);
+			      varBumpActivity(v, (double)(trail.size()-zz0)/(double)nVars(), assigns[v],0);
+			    }
+			  }
+                            if (0&&max_progress < num_props-nodes && block[i] == minblock) {
                                 max_progress = num_props-nodes;
                                 max_progress_var = i;
                                 max_progress_pol = j;
@@ -5669,6 +5677,14 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
 		      rem_implics_sparse.pop_back();
 		    }
                 } //j = 0 to 1
+		if (max_progress < props20*props21 && block[i] == minblock) {
+		  max_progress = props20*props21;
+		  max_progress_var = i;
+		  if (props20 > props21)
+		    max_progress_pol = 0;
+		  else
+		    max_progress_pol = 1;
+		}
 		
                 massert(assigns[i] == extbool_Undef);
                 
@@ -5766,10 +5782,11 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                         ObjProbeMode = false;
                         return false; // i, 0;
                     } else {
+		      restGamePromoteToRoot(vcp.v>>1);
 		      vardata[vcp.v>>1].level = -4;
 		      vardata[vcp.v>>1].reason = CRef_Undef;
 		      //cerr << "forever set: " << (vcp.v>>1) << " " << (oob==ASSIGN_OK) << " AOK:" << ASSIGN_OK << " oob:" << oob << endl;
-		      if (!UniversalConstraintsExist|| block[vcp.v>>1]==minblock) setFixed(vcp.v>>1,1-(vcp.v&1));
+		      setFixed(vcp.v>>1,1-(vcp.v&1));
 		    }
                     //propQ.clear();
                     while (propQ.size() > 0) {
@@ -5778,10 +5795,11 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
 			  oob = assign(/*alpha,*/ propQ.last().v>>1, 1-(propQ.last().v&1),trail.size(),CRef_Undef, false);
 			  if (oob==ASSIGN_OK) {
 			    assert(oob == ASSIGN_OK);
+			    restGamePromoteToRoot(propQ.last().v>>1);
 			    vardata[propQ.last().v>>1].level = -4;
 			    vardata[propQ.last().v>>1].reason = CRef_Undef;
 			    //if ((vcp.v>>1)==979) cerr << "forever set: " << (vcp.v>>1) << endl;
-			    if (!UniversalConstraintsExist|| block[propQ.last().v>>1]==minblock) setFixed(propQ.last().v>>1,1-(propQ.last().v&1));
+			    setFixed(propQ.last().v>>1,1-(propQ.last().v&1));
 			  } else {
                             cerr << "SOFORT INFEASIBLE, assign" << endl;
                             if (1||block[vcp.v>>1] <= minblock) {
@@ -5800,7 +5818,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
                             return false; // i, 0;
 			  }
 			  //if ((vcp.v>>1)==979) cerr << "forever set: " << (vcp.v>>1) << endl;
-			  if (!UniversalConstraintsExist|| block[propQ.last().v>>1]==minblock) setFixed(propQ.last().v>>1,1-(propQ.last().v&1));
+			  setFixed(propQ.last().v>>1,1-(propQ.last().v&1));
                         } else if (assigns[propQ.last().v>>1] != extbool_Undef && assigns[propQ.last().v>>1] == (propQ.last().v&1)) {
                             cerr << "SOFORT INFEASIBLE, probe" << endl;
                             if (1||block[vcp.v>>1] <= minblock) {
@@ -5846,6 +5864,7 @@ bool QBPSolver::probe(int &max_progress_var, int &max_progress_pol, bool fastPro
         }
         if (decisionLevel() <= 1) {
             for (int ii = 0; ii < trail.size();ii++) {
+	        restGamePromoteToRoot(trail[ii]);
                 vardata[trail[ii]].level = 0;
                 vardata[trail[ii]].reason = CRef_Undef;
             }
@@ -6475,6 +6494,7 @@ bool QBPSolver::reduceDB(bool delAll)
 		    }
 		  }
 		  if (assigns[var(c[0])]!=extbool_Undef) {
+		    restGamePromoteToRoot(var(c[0]));
 		    vardata[var(c[0])].level = 0;
 		    vardata[var(c[0])].reason = CRef_Undef;
 		    settime[var(c[0])] = 0;
