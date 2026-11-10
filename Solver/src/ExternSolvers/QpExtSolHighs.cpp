@@ -731,7 +731,7 @@ void QpExtSolHighs::flushBoundChanges() {
       highs.setOptionValue("solver", kSimplexString);
       highs.setOptionValue("simplex_strategy", kSimplexStrategyDual);
       //std::cerr << "Info: LP mode = dual" << std::endl;
-      return_status = highs.run();highs.optimizeModel();//highs.run();
+      return_status = highs.run();//highs.optimizeModel();//highs.run();
       if (/*highs.getModelStatus()==HighsModelStatus::kUnknown*/this->getSolutionStatus() == extSol::QpExternSolver::UNSOLVED) {
 #ifdef SHOW_EXTERN_SOLVER_WARNINGS
 	std::cerr << "Warning: Highs status unknown in strb" << std::endl;

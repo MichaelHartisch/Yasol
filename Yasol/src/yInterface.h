@@ -1804,6 +1804,7 @@ public:
 
   
   void findSymmetries(utils::QlpStageSolver& QlpStSolve, int maxLPstage, bool useObj, std::vector< std::pair<int,int> > &clist, int *types, int *block, int8_t * assigns, int *eas) {
+    this->QlpStSolve = &QlpStSolve;
 #ifndef FIND_BUG
     clist.clear();
     //return;
