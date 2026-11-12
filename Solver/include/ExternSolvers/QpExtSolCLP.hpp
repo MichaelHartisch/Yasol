@@ -217,7 +217,7 @@ private:
         std::vector<double> pendingColLB;
         std::vector<double> pendingColUB;
 
-        std::vector<HighsInt> dirtyBoundCols;
+        std::vector<int> dirtyBoundCols;
         std::vector<unsigned char> dirtyBoundFlag;
 
         void resetBoundBuffer();
