@@ -28,15 +28,6 @@
 #include "Utilities/QlpStageSolver.hpp" 
 
 
-#ifdef USE_NBD_CPLEX_C
-#include "ExternSolvers/QpExtSolCplexC.hpp"
-#include "cmath"
-#endif
-#ifdef USE_NBD_HIGHS
-#include "ExternSolvers/QpExtSolHighs.hpp"
-#include "cmath"
-#endif
-
 static	vector<double> PrevIPSol;
 
 

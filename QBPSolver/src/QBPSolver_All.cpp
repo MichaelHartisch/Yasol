@@ -525,12 +525,12 @@ return;
 		    for (int j=0;j<VarsInAllConstraints[var(ps[i])].size();j++){
 			CRef cr = VarsInAllConstraints[var(ps[i])][j].cr;
 			if(ALLconstraintallocator[cr].header.mark==0){
-			    if(Debug)cerr << "Untersuche diese Constraint " << endl;
-			    ALLconstraintallocator[cr].header.mark=1;
-			    AllConstraintsSeen.push(cr);
         		    Constraint &c = ALLconstraintallocator[cr];
 		            int sig = sign(c[VarsInAllConstraints[var(ps[i])][j].pos]);
 			    if(sig!=assigns[var(ps[i])] && assigns[var(ps[i])]!=extbool_Undef) continue; //LOOKHERE
+                            if(Debug)cerr << "Untersuche diese Constraint " << endl;
+                            ALLconstraintallocator[cr].header.mark=1;
+                            AllConstraintsSeen.push(cr);
 		//	    if(assigns[var(ps[i])]==extbool_Undef) continue;                             //LOOKHERE
 			    // Add information of the universal constraint into the learntConstraint
 			    for (int k=0;k<c.size();k++){
