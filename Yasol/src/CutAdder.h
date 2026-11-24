@@ -1995,10 +1995,9 @@ public:
     unsigned int m = extSolver.getRowCount();
     unsigned int n = extSolver.getVariableCount();
     
-    extSolver.prepareMatrixRowForm();
     std::vector<data::QpRhs> rhsVec( m );
     std::vector< std::vector< data::IndexedElement >  > allrows;
-    bool success = getAllRows(extSolver,allrows);
+    bool success = extSolver.getAllRows(allrows);
     extSolver.getRhs( rhsVec );
     for (int i=0; i < allrows.size();i++) {
       if (rhsVec[i].getRatioSign() == data::QpRhs::greaterThanOrEqual ) {
@@ -2021,10 +2020,9 @@ public:
     unsigned int m = extSolver.getRowCount();
     unsigned int n = extSolver.getVariableCount();
     
-    extSolver.prepareMatrixRowForm();
     std::vector<data::QpRhs> rhsVec( m );
     std::vector< std::vector< data::IndexedElement >  > allrows;
-    bool success = getAllRows(extSolver,allrows);
+    bool success = extSolver.getAllRows(allrows);
     extSolver.getRhs( rhsVec );
     for (int i=0; i < allrows.size();i++) {
         if (rhsVec[i].getRatioSign() == data::QpRhs::greaterThanOrEqual ) {
@@ -2651,7 +2649,6 @@ static std::vector<std::pair< std::vector<std::pair<unsigned int, double>>, doub
   
   static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* getSingleCoverCut( extSol::QpExternSolver &extSolver, std::vector< std::vector< data::IndexedElement >  > &, std::vector<data::QpRhs> &,int *types, int8_t *assigns, int decLev, unsigned int, int *, int *, int*, int*, int );
   static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* getCoverCuts( extSol::QpExternSolver &extSolver, int *types, int8_t *assigns, int decLev, unsigned int, int *, int *, int*, int*, int );
-	static std::vector< std::pair< std::vector< std::pair<unsigned int, double> >, double > >* getLPCuts(extSol::QpExternSolver &extSolver, std::vector<unsigned int> candidateVariables, int *types, int8_t *assigns, int decLev, unsigned int initime, std::vector<int> &listOfCutsVars);
 
 	static void setOrgM(int m) { orgM = m; }
 	static int getOrgM() { return orgM; }
@@ -2664,7 +2661,6 @@ private:
 	static inline bool isZero(double x, double epsZero = 1e-20) {
 		return (fabs(x) <= epsZero);
 	}
-        static bool getAllRows(extSol::QpExternSolver &extSolver, std::vector< std::vector< data::IndexedElement >  > &allrows2);
 
 	static bool createCover( std::vector<double>& xlpopt, const std::vector<std::pair<double, unsigned int> >& rowsparse, double rhs, const double eps, std::vector<std::pair<unsigned int, double> >& reslhs, double& resrhs, int *types,  int8_t *assigns, int decLev, data::QpNum*, data::QpNum*, int *solu, int*fixs, int *blcks, int orgN );
 };

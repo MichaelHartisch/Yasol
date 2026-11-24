@@ -254,6 +254,18 @@ public:
             throw utils::ExternSolverException("lazy rows 3( ... ) --> NOT YET IMPLEMENTED");
         }
 
+		bool getAllRows(std::vector<std::vector<data::IndexedElement>>& allrows) {
+			throw utils::ExternSolverException("retrieveSnapshot( ... ) --> NOT YET IMPLEMENTED");
+		}
+
+		bool getBasicVariables(std::vector<int>& basicVariables) {
+			throw utils::ExternSolverException("retrieveSnapshot( ... ) --> NOT YET IMPLEMENTED");
+		}
+		
+		bool getTableauRow(unsigned int basisRow,std::vector<double>& tableauRow) {
+			throw utils::ExternSolverException("retrieveSnapshot( ... ) --> NOT YET IMPLEMENTED");
+		}
+
         int getStatus(int i) { throw utils::ExternSolverException("get status ( ... ) --> NOT YET IMPLEMENTED"); } 
   void setStatus(int i, int j) {throw utils::ExternSolverException("set status( ... ) --> NOT YET IMPLEMENTED");}
   int computeStatus(const std::vector<data::IndexedElement> &lhs, const data::QpRhs &rhs) {throw utils::ExternSolverException("compute status( ... ) --> NOT YET IMPLEMENTED");}

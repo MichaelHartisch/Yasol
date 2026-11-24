@@ -174,6 +174,11 @@ public:
 	bool getBendersCut(unsigned int stage, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool org, void *vpt);
 	void getBendersCutNew(unsigned int stage, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool check, std::vector<double>& mRhs, std::vector<double>& lbs, std::vector<double>& ubs);
 
+	//New from CutAdder
+	bool getAllRows(std::vector<std::vector<data::IndexedElement>>& allrows);
+	bool getBasicVariables(std::vector<int>& basicVariables);
+	bool getTableauRow(unsigned int basisRow,std::vector<double>& tableauRow);
+
 protected:
 
 	void verify(std::string);

@@ -507,6 +507,10 @@ extSol::QpExternSolver::QpExtSolSolutionStatus QpExtSolCLP::getSolutionStatus() 
 	return extSol::QpExternSolver::UNSOLVED;
 }
 
+#ifndef YASOL_CLP_REOPT_DUAL_OPTIONS
+#define YASOL_CLP_REOPT_DUAL_OPTIONS 7
+#endif
+
     extSol::QpExternSolver::QpExtSolSolutionStatus QpExtSolCLP::solve(unsigned int itLimit, unsigned int timeLimit) {
 
 	inStrongB = false;
@@ -745,7 +749,6 @@ extSol::QpExternSolver::QpExtSolSolutionStatus QpExtSolCLP::getSolutionStatus() 
 	}
 
         static int yy=0;
-        static CoinWarmStartBasis startbase;
         //std::cerr << "." ;
         for (int h = 0; h < 2;h++) {
             //if (SolveParameters.decLevel <= 1) model.setSpecialOptions(model.specialOptions()|1024);
@@ -756,9 +759,7 @@ extSol::QpExternSolver::QpExtSolSolutionStatus QpExtSolCLP::getSolutionStatus() 
 	    model.setSpecialOptions(/*64 |*/ 128 | 256 | 512 | 1024 /*| 4096 | 32768*/ | 0x02000000);
 	  
             model.setMoreSpecialOptions(8192 | model.moreSpecialOptions());
-            if ( /*startbase.getNumArtificial()!=model.numberRows()||
-                  startbase.getNumStructural()!=model.numberColumns() ||*/
-		(h==1||SolveParameters.decLevel >= 0) && 
+            if ( (h==1||SolveParameters.decLevel >= 0) && 
                 (SolveParameters.decLevel <= 2 || !model.statusExists() || yy==0 || (noDual == true && noPrimal == true))) {
                 if (yy == 1) {
                     if (cnt >= 3 && h==0)
@@ -839,74 +840,24 @@ extSol::QpExternSolver::QpExtSolSolutionStatus QpExtSolCLP::getSolutionStatus() 
                         }
                     }
                     
-                    if (startbase.getNumArtificial()!=model.numberRows()||
-                        startbase.getNumStructural()!=model.numberColumns())
-                        startbase = *model.getBasis();
                     //if (yy==0)
                     ////adaptToSolverMode(DUAL/*DEFAULT*/);
                     noDF = false;
                     yy=1;
                     //if (h==1) std::cerr << "Re-solve done." << std::endl;
                 } else {
-                    
-                    {
-                        {
-                            // transform basis to status arrays
-                            int iRow,iColumn;
-                            int numberRows = model.numberRows();
-                            int numberColumns = model.numberColumns();
-                            if (!model.statusExists()) {
-                                /*
-                                 get status arrays
-                                 ClpBasis would seem to have overheads and we will need
-                                 extra bits anyway.
-                                 */
-                                model.createStatus();
-                            }
-                            if (startbase.getNumArtificial()!=numberRows||
-                                startbase.getNumStructural()!=numberColumns) {
-                                //continue;
-                                CoinWarmStartBasis basis2 = startbase;
-                                // resize
-                                basis2.resize(numberRows,numberColumns);
-                                // move status
-                                model.createStatus();
-                                // For rows lower and upper are flipped
-                                for (iRow=0;iRow<numberRows;iRow++) {
-                                    int stat = basis2.getArtifStatus(iRow);
-                                    if (stat>1)
-                                        stat = 5 - stat; // so 2->3 and 3->2
-                                    model.setRowStatus(iRow, static_cast<ClpSimplex::Status> (stat));
-                                }
-                                for (iColumn=0;iColumn<numberColumns;iColumn++) {
-                                    model.setColumnStatus(iColumn,
-                                                          static_cast<ClpSimplex::Status> (basis2.getStructStatus(iColumn)));
-                                }
-                            } else if (1){
-			        if (cnt >= 3 && h == 0)
-				  model.setMaximumSeconds(300+ 10.0 * (double)sum_tim / (double)cnt);
-				else
-				  model.setMaximumSeconds(1800000 /*+ 10.0 * (double)sum_tim / (double)cnt*/);
-                                //model.setMaximumSeconds(2+ 3.0 * (double)sum_tim / (double)cnt);
-				// move status
-				model.createStatus();
-                                // For rows lower and upper are flipped
-                                for (iRow=0;iRow<numberRows;iRow++) {
-                                    int stat = startbase.getArtifStatus(iRow);
-                                    if (stat>1)
-                                        stat = 5 - stat; // so 2->3 and 3->2
-                                    model.setRowStatus(iRow, static_cast<ClpSimplex::Status> (stat));
-                                }
-                                for (iColumn=0;iColumn<numberColumns;iColumn++) {
-                                    model.setColumnStatus(iColumn,
-                                                          static_cast<ClpSimplex::Status> (startbase.getStructStatus(iColumn)));
-                                }
-                            }
-                        }
-                    }
+                    // Preserve the existing time-limit policy for reoptimization.
+                    if (cnt >= 3 && h == 0)
+                        model.setMaximumSeconds(300 + 10.0 * (double)sum_tim / (double)cnt);
+                    else
+                        model.setMaximumSeconds(1800000);
+
+                    if (!model.statusExists())
+                        model.createStatus();
+
                     try {
 		      time_t z= time(NULL);
-                        model.dual(0,7);
+                        model.dual(0,YASOL_CLP_REOPT_DUAL_OPTIONS);
 #ifdef SHOW_EXTERN_SOLVER_WARNINGS
                         if (h==1) std::cerr << "normal " << time(NULL)-z<< ", h" << h << " dl=" << SolveParameters.decLevel << " yy=" << yy << std::endl;
 #endif
@@ -999,9 +950,6 @@ extSol::QpExternSolver::QpExtSolSolutionStatus QpExtSolCLP::getSolutionStatus() 
                           }
                       }
                     }
-                    if (startbase.getNumArtificial()!=model.numberRows()||
-                        startbase.getNumStructural()!=model.numberColumns())
-                        startbase = *model.getBasis();
                     
                     
                     /*try {
@@ -1222,6 +1170,7 @@ extSol::QpExternSolver::QpExtSolSolutionStatus QpExtSolCLP::getSolutionStatus() 
         
         return this->getSolutionStatus();
     }
+
 
 data::QpNum QpExtSolCLP::getObjValue() {
 	if (model.isProvenOptimal()) {
@@ -2663,6 +2612,88 @@ void QpExtSolCLP::getBendersCutNew(unsigned int stage, std::vector<data::Indexed
 		std::cout << data::indexedElementVecToString(lhs) << data::QpRhs::ratioSignString(sign) << rhs.toString() << std::endl;
 	}
 }
+
+//New from CutAdder
+bool QpExtSolCLP::getAllRows(std::vector<std::vector<data::IndexedElement>>& allrows){
+    prepareMatrixRowForm();
+
+    unsigned int m = getRowCount();
+    allrows.clear();
+    allrows.resize(m);
+
+    for (unsigned int i = 0; i < m; ++i)
+        getRowLhs(i, allrows[i]);
+
+    return true;
+}
+
+
+bool QpExtSolCLP::getBasicVariables(std::vector<int>& basicVariables){
+	const unsigned int m = getRowCount();
+    const unsigned int n = getVariableCount();
+	if (m == 0)
+        return true;
+    basicVariables.clear();
+
+    // Check whether a usable simplex state is available
+    if (model.problemStatus() != 0 || model.pivotVariable() == nullptr) {
+        return false;
+    }
+
+    // CLP already uses our indexing convention
+    basicVariables.resize(m);
+    model.getBasics(basicVariables.data());
+
+    // Verify that all returned indices are valid
+    for (int i = 0; i < m; ++i) {
+        if (basicVariables[i] < 0 ||
+            basicVariables[i] >= n + m) {
+            basicVariables.clear();
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool QpExtSolCLP::getTableauRow(unsigned int basisRow,std::vector<double>& tableauRow){
+    const unsigned int n = getVariableCount();
+    const unsigned int m = getRowCount();
+
+    if (basisRow >= m) {
+        tableauRow.clear();
+        return false;
+    }
+
+    tableauRow.resize(n + m);
+
+    // Structural columns: B^-1 A
+    // Slack columns:      B^-1
+    model.getBInvARow(static_cast<int>(basisRow),tableauRow.data(),tableauRow.data() + n);
+
+    return true;
+
+/* Previous Code: getBInvRow() not needed as getBInvARow() can be used to catch that in the third argument
+//get complete simplex row (A_B^{-1}(A   I))= (A_B^{-1}A    A_B^{-1}) including slack columns
+
+M->getBInvARow(Binv[ind], &(SimplexRow.data()[0]), &(SimplexRow.data()[n]));
+M->getBInvRow(Binv[ind], &(BInvRow.data()[0]));
+
+//Needed later...
+//extSolver.prepareMatrixRowForm();
+
+gmicoeff2.resize(n);
+
+for (unsigned int i = 0; i < m; ++i){
+	if (Ninv[n + i] != -1)
+		SimplexRow[n + i] = BInvRow[i];
+}
+
+for (unsigned int i = 0; i < n; ++i)
+	gmicoeff2[i] = SimplexRow[N[i]];
+*/
+}
+
 
 }
 #endif

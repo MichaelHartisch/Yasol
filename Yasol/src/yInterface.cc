@@ -154,10 +154,6 @@ void yInterface::yReadIniFile() {
 			  if (tokens[1].compare("1") == 0) qbp->setReduceStrongBranching(1);
 			  else if (tokens[1].compare("0") == 0) qbp->setReduceStrongBranching(0);
 			  else qbp->setReduceStrongBranching(2);
-		  } else if (tokens[0].compare("useLiftAndProjectCuts") == 0) {
-			  if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
-			  if (tokens[1].compare("1") == 0) qbp->setUseLaP(true);
-			  else qbp->setUseLaP(false);
 		  } else if (tokens[0].compare("useFarJumping") == 0) {
 			  if (info_level >= 10) cerr << "Str1=" << tokens[0] << " und Str2=" << tokens[1] << endl;
 			  if (tokens[1].compare("1") == 0) qbp->setUseBendersBackJump(true);
@@ -268,8 +264,6 @@ void yInterface::yReadIniFile() {
 	    qbp->setUseGMI(yip.useGMI);
 	  if (yip.useCover >= 0)
 	    qbp->setUseCover(yip.useCover);
-	  if (yip.useLiftAndProjectCuts >= 0)
-	    qbp->setUseLaP(yip.useLiftAndProjectCuts);
 	  if (yip.useLazyLP >= 0)
 	    qbp->setUseLazyLP(yip.useLazyLP);
 	  if (yip.useShadow >= 0)
@@ -708,14 +702,12 @@ int yInterface::GenerateCutAndBranchCuts( extSol::QpExternSolver& externSolver, 
 	      cerr << " >= " << cuts[i].second <<endl;
 	    }
 	}
-	} else if (cuttype & LaP) {
-		cuts_pt = CutAdder::getLPCuts( externSolver, candidates, types, assigns, treedepth, initime, listOfCutsVars );
 	} else if (cuttype & MirSmart) {
 	  cuts_pt = CutAdder::getMIRsmartEQ( externSolver, types, assigns, treedepth, initime, solu, fixs, blcks, eass, orgN );
-        } else if (cuttype & Cover) {
+    } else if (cuttype & Cover) {
 	  cuts_pt = CutAdder::getCoverCuts( externSolver, types, assigns, treedepth, initime, solu, fixs, blcks, eass, orgN );
-        } else if (cuttype & ModK) {
-          cuts_pt = CutAdder::getMODKcuts( externSolver, candidates, types, assigns, treedepth, initime, listOfCutsVars, solu , fixs, blcks, eass, orgN);	  
+    } else if (cuttype & ModK) {
+	  cuts_pt = CutAdder::getMODKcuts( externSolver, candidates, types, assigns, treedepth, initime, listOfCutsVars, solu , fixs, blcks, eass, orgN);	  
 	} else if (cuttype & UserCut) {
 	  //cuts_pt = CutAdder::getAggCmirCuts( externSolver, types, assigns, treedepth, initime, solu, fixs, blcks,eass, orgN );
 	}

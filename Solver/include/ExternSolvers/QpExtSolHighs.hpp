@@ -260,7 +260,12 @@ public:
 
 	bool changeObjFuncCoeff(unsigned int index, const data::QpNum& coeff);
         bool changeObjFuncCoeffVec(unsigned int from, unsigned int to, const data::QpNum* coeff_pt);
-  
+
+	//New from CutAdder
+	bool getAllRows(std::vector<std::vector<data::IndexedElement>>& allrows);
+	bool getBasicVariables(std::vector<int>& basicVariables);
+	bool getTableauRow(unsigned int basisRow,std::vector<double>& tableauRow);
+	
 protected:
 	QpExtSolHighs(const QpExtSolHighs&);
 	QpExtSolHighs& operator=(const QpExtSolHighs&);

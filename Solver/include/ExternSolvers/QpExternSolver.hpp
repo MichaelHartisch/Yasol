@@ -234,6 +234,11 @@ public:
 	virtual bool getBendersCut(unsigned int stage, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool org, void *vpt)=0;
 	virtual void getBendersCutNew(unsigned int stage, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool check, std::vector<double>& mRows, std::vector<double>& lbs, std::vector<double>& ubs)=0;
 
+	//New from CutAdder
+	virtual bool getAllRows(std::vector<std::vector<data::IndexedElement>>& allrows)=0;
+	virtual bool getBasicVariables(std::vector<int>& basicVariables) = 0;
+	virtual bool getTableauRow(unsigned int basisRow,std::vector<double>& tableauRow) = 0;
+
 protected:
 	QpExtSolSolverType sType;
 	QpExtSolSolverMode sMode;

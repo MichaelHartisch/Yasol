@@ -5158,17 +5158,19 @@ cerr << " r-avail rows:" << realAvail<<endl;*/
 
 YPUBLIC:
     void initRestGameTT(const data::Qlp* q) {
-      cerr << "ENTER INIT RESTGAME TT" << endl;
+      if(getShowInfo()) cerr << "ENTER INIT RESTGAME TT" << endl;
       ttQlp = q;
 
       if (ttQlp == 0)
 	return;
 
       assert((int)ttQlp->getVariableCount() == nVars());
-      cerr << "RGTT Entry  = "
+      if(getShowInfo()){
+		cerr << "RGTT Entry  = "
 	   << sizeof(RestGameTTEntry) << endl;
       cerr << "RGTT Bucket = "
 	   << sizeof(RestGameTTBucket) << endl;
+	  }
       int expectedOrgRows = 0;
       long long nnz = 0;
 
@@ -5319,13 +5321,15 @@ YPUBLIC:
       // Jetzt mit dem NEU berechneten Zustand vergleichen.
       RestGameKey afterRootXorKey = restGameKeyXorSlow();
 
-      cerr << "RG INIT root folds=" << rgRootFolds << endl;
+      if(getShowInfo()) cerr << "RG INIT root folds=" << rgRootFolds << endl;
 
       assert(rgHash1 == afterRootXorKey.h1);
       assert(rgHash2 == afterRootXorKey.h2);
 
+	  if(getShowInfo()){
       cerr << "RESTGAME XOR HASH initialized: "
 	   << rgHash1 << " " << rgHash2 << endl;
+	  }
       RestGameKey oldKey = restGameKeyFast();
       RestGameKey refKey = restGameKeyReference(restGameViewBlock(1));
       assert(oldKey.h1 == refKey.h1);
@@ -7813,12 +7817,12 @@ YPUBLIC:
 
 	 ++numAdded;
        }
-
+	   if (getShowInfo()){
        cerr << "CLIQUE-CUT: added "
 	    << numAdded
 	    << " cuts"
 	    << endl;
-
+	   }
        return listOfCutsRhs.size();
      }
   

@@ -2312,6 +2312,152 @@ void QpExtSolCplexC::getBendersCutNew(unsigned int stage, std::vector<data::Inde
 	}
 }
 
+//New from CutAdder
+bool QpExtSolCplexC::getAllRows(std::vector<std::vector<data::IndexedElement>>& allrows){
+	allrows.clear();
+  	unsigned int m = getRowCount();
+
+	/*
+  	unsigned int vars = getVariableCount();
+
+	if (m == 0)
+    	return true;
+
+    std::vector<double> rowtmp(vars);
+    std::vector<CPXDIM> rowindtmp(vars);
+    std::vector<CPXNNZ> rowstarts(m);
+    CPXNNZ size = 0, surplus = 0;
+    int missing = CPXXgetrows(iloEnvCl, iloLpCl, &size, rowstarts.data(), rowindtmp.data(),rowtmp.data(), 0, &surplus, 0, m-1);
+    assert(surplus < 0);
+    missing = -surplus;
+    rowtmp.resize(missing);
+    rowindtmp.resize(missing);
+
+    if ((missing=CPXXgetrows(iloEnvCl, iloLpCl, &size, rowstarts.data(), rowindtmp.data(), rowtmp.data(), rowtmp.size(), &surplus, 0, m-1))) {
+      std::cerr << "Error: Extern Solver denies row."<< "all " << surplus << " " << missing << std::endl;
+      allrows.clear();
+      return false;
+    }
+	
+    int crow=0;
+    int i =0;
+    while (i < size) {
+      std::vector< data::IndexedElement > T;
+      allrows.push_back(T);
+      do {
+	data::IndexedElement e;
+	e.index = rowindtmp[i];
+	e.value = rowtmp[i];
+	allrows[crow].push_back(e);
+	i++;
+      } while ((crow < rowstarts.size()-1) ? i < rowstarts[crow+1] : i < size);
+      crow++;
+    }
+	*/
+
+	CPXNNZ nnz = CPXXgetnumnz(iloEnvCl, iloLpCl);
+
+	std::vector<double> rowtmp(nnz);
+	std::vector<CPXDIM> rowindtmp(nnz);
+	std::vector<CPXNNZ> rowstarts(m);
+
+	CPXNNZ size = 0, surplus = 0;
+
+	int status = CPXXgetrows(
+		iloEnvCl, iloLpCl,
+		&size,
+		rowstarts.data(),
+		nnz ? rowindtmp.data() : nullptr,
+		nnz ? rowtmp.data() : nullptr,
+		nnz,
+		&surplus,
+		0, m - 1
+	);
+
+	if (status != 0) {
+#ifdef SHOW_EXTERN_SOLVER_WARNINGS
+		std::cerr << "Error retrieving CPLEX matrix: "<< status << std::endl;
+#endif
+		return false;
+	}
+
+	allrows.resize(m);
+
+	for (unsigned int r = 0; r < m; ++r) {
+		CPXNNZ begin = rowstarts[r];
+		CPXNNZ end = (r + 1 < m) ? rowstarts[r + 1] : size;
+
+		auto& row = allrows[r];
+		row.reserve(end - begin);
+
+		for (CPXNNZ j = begin; j < end; ++j) {
+			row.emplace_back(rowindtmp[j], rowtmp[j]);
+		}
+	}
+
+	return true;
+}
+
+bool QpExtSolCplexC::getBasicVariables(std::vector<int>& basicVariables){
+	const unsigned int m = getRowCount();
+    const unsigned int n = getVariableCount();
+	if (m == 0)
+        return true;
+    basicVariables.clear();
+
+	// GET THE ORDER OF THE BASIC VARIABLES
+	std::vector<CPXDIM> head(m);
+
+	/*
+	* An array. The array contains the indices of the variables in the resident basis,
+	* where basic slacks are specified by the negative of the corresponding row index minus 1 (one);
+	* that is, -rowindex - 1.
+	* The array must be of length at least equal to the number of rows in the LP problem object.
+	*/
+	if (CPXXgetbhead(iloEnvCl, iloLpCl, head.data(), NULL)){
+		throw utils::ExternSolverException("Unable to obtain basis.");
+	}
+
+    basicVariables.resize(m);
+
+	for (unsigned int i = 0; i < m; ++i){
+		if (head.at(i) >= 0){
+			basicVariables[i] = head.at(i);
+		}
+		else {
+			basicVariables[i] = n - (head.at(i) + 1);    
+		}
+	}
+	return true;
+}
+
+bool QpExtSolCplexC::getTableauRow(unsigned int basisRow,std::vector<double>& tableauRow){
+
+    const unsigned int n = getVariableCount();
+    const unsigned int m = getRowCount();
+
+    if (basisRow >= m) {
+        tableauRow.clear();
+        return false;
+    }
+
+    tableauRow.resize(n + m);CPXXbinvarow(iloEnvCl, iloLpCl,basisRow, tableauRow.data());
+
+	if (CPXXbinvarow(iloEnvCl, iloLpCl, basisRow, tableauRow.data())) {
+        tableauRow.clear();
+        return false;
+	}
+
+	// Slack columns: B^-1
+	// Different compared to before, where a second vector was used and then merged into tableauRow
+    if(CPXXbinvrow(iloEnvCl, iloLpCl, basisRow, tableauRow.data() + n)){
+        tableauRow.clear();
+        return false;
+    }
+	
+    return true;
+
+}
 
 }
 

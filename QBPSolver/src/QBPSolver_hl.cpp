@@ -509,7 +509,7 @@ void QBPSolver::CreateCutsInALoop(extSol::QpExternSolver& externSolver, std::vec
 	if (hugeImpact) loop_cnt--;//-=5;
 	//loop_cnt = fmax(loop_cnt,-10);
       } while( (!equalObj  ) && ((loop_cnt < 20) || (hugeImpact && loop_cnt < 30)));
-      cerr << "startDL=" << startDL << " curDL=" << decisionLevel() << endl;
+      if (getShowInfo()) cerr << "startDL=" << startDL << " curDL=" << decisionLevel() << endl;
       if (output) {
 	std::cerr <<std::endl <<std::endl;
 	std::cerr << "----------------------------------------------------------" 
@@ -533,9 +533,9 @@ void QBPSolver::CreateCutsInALoop(extSol::QpExternSolver& externSolver, std::vec
       
       while (startDL < decisionLevel())
 	decreaseDecisionLevel();
-      cerr << "last DL=" << decisionLevel() << endl;
+      if (getShowInfo()) cerr << "last DL=" << decisionLevel() << endl;
       QLPSTSOLVE_SOLVESTAGE(fmax((double)constraintallocator[constraints[0]].header.rhs,a),maxLPStage, status, lb, ub, solution,algorithm::Algorithm::WORST_CASE,decisionLevel(), -1,-1 /*simplex iterationen*/,false, false);
-      cerr << "start Lpval=" << Before << " last LPval=" << -lb.asDouble() << endl;
+      if (getShowInfo())  cerr << "start Lpval=" << Before << " last LPval=" << -lb.asDouble() << endl;
       //trail_lim.pop();
       
       //while(externSolver.getRowCount() > numberRowsAtBegin)
@@ -591,7 +591,7 @@ void QBPSolver::CreateCutsInALoop(extSol::QpExternSolver& externSolver, std::vec
 
 #endif
       
-      cerr << "start Lpval=" << Before << " lastlast LPval=" << -lb.asDouble() << endl;
+      if (getShowInfo()) cerr << "start Lpval=" << Before << " lastlast LPval=" << -lb.asDouble() << endl;
       oldListOfCutsRhs = targetListOfCutsRhs;
       oldListOfCutsLhs = targetListOfCutsLhs;
 
@@ -2194,7 +2194,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	prevLPval2 = prevLPval1;
 	prevLPval1 = prevLPval0;
 	prevLPval0 = -lb.asDouble();
-	cerr << "LPb0=" << prevLPval0 << " LPb1=" << prevLPval1 << " LPb2=" << prevLPval2 << " LPb3=" << prevLPval3 << endl;
+	if (getShowInfo()) cerr << "LPb0=" << prevLPval0 << " LPb1=" << prevLPval1 << " LPb2=" << prevLPval2 << " LPb3=" << prevLPval3 << endl;
 	if (kkkk>2 && fabs(prevLPval3-prevLPval0)<0.001*fabs(prevLPval3+prevLPval0)+0.001) {
 	  kkk = GMI_ROUNDSvar+GMI_round_bonus-1;
 	  kkkk = KKKK_limit-1;

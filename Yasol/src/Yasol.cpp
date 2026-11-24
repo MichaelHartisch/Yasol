@@ -59,7 +59,6 @@ void printUsage(const std::string& programName) {
               << " --showWarning=b            - binary to turn off/on warning from solution process (default 0)\n"
               << " --showError=b              - binary to turn off/on errors from solution process (default 0)\n"
               << " --maintainPv=b             - binary to turn off/on tracking of the value defining path (default 1)\n"
-              << " --useLPCuts=b              - binary to turn off/on lift-and-project-cuts (default 0)\n"
               << " --useLazyLP=b              - binary to turn off/on lazy handling of lp constraints (default 1)\n"
               << " --useShadow=b              - binary to turn off/on exploitation of scenarios in  (default 1)\n"
               << " --useLimitedLP=b           - binary to turn off/on reduced LP calls at inner nodes (default 1)\n"
@@ -128,9 +127,6 @@ int main(int argc, char** argv) {
     }
     else if (strncmp(buf,"useCover=",9)==0) {
       yasol.yip.useCover = buf[9] - '0';                              
-    }
-    else if (strncmp(buf,"useLPCuts=",10)==0) {
-      yasol.yip.useLiftAndProjectCuts = buf[22] - '0';
     }
     else if (strncmp(buf,"useLazyLP=",10)==0) {
       yasol.yip.useLazyLP = buf[10] - '0';

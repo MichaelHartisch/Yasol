@@ -99,7 +99,6 @@ public:
   int8_t learnDualCuts=-1;
   int8_t useGMI=-1;
   int8_t useCover=-1;
-  int8_t useLiftAndProjectCuts=-1;
   int8_t useLazyLP=-1;
   int8_t useShadow=-1;
   int8_t useLimitedLP=-1;

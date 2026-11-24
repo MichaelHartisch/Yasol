@@ -210,8 +210,12 @@ public:
 	void getBendersCutNew(unsigned int stage, std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool check, std::vector<double>& mRhs, std::vector<double>& lbs, std::vector<double>& ubs);
 
 	bool changeObjFuncCoeff(unsigned int index, const data::QpNum& coeff);
-        bool changeObjFuncCoeffVec(unsigned int from, unsigned int to, const data::QpNum* coeff_pt);
+    bool changeObjFuncCoeffVec(unsigned int from, unsigned int to, const data::QpNum* coeff_pt);
   
+	//New from CutAdder
+	bool getAllRows(std::vector<std::vector<data::IndexedElement>>& allrows);
+	bool getBasicVariables(std::vector<int>& basicVariables);
+	bool getTableauRow(unsigned int basisRow,std::vector<double>& tableauRow);
 protected:
 	QpExtSolCplexC(const QpExtSolCplexC&);
 	QpExtSolCplexC& operator=(const QpExtSolCplexC&);

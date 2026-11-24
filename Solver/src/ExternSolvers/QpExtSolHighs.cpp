@@ -2887,7 +2887,103 @@ void QpExtSolHighs::getBendersCutNew(unsigned int stage, std::vector<data::Index
   }
 }
 
+//New from CutAdder
+bool QpExtSolHighs::getAllRows(std::vector<std::vector<data::IndexedElement>>& allrows){
+  prepareMatrixRowForm();
 
+  unsigned int m = getRowCount();
+  allrows.clear();
+  allrows.resize(m);
+
+  for (unsigned int i = 0; i < m; ++i)
+      getRowLhs(i, allrows[i]);
+
+  return true;
+}
+
+bool QpExtSolHighs::getBasicVariables(std::vector<int>& basicVariables){
+  const unsigned int m = getRowCount();
+  const unsigned int n = getVariableCount();
+	if (m == 0)
+        return true;
+  basicVariables.clear();
+
+  // Check whether a valid simplex basis is available
+  if (!highs.getBasis().valid) {
+      std::cerr << "Error: No valid HiGHS basis available."<< std::endl;
+      return false;
+  }
+
+  std::vector<HighsInt> head(m);
+
+  HighsStatus status = highs.getBasicVariables(head.data());
+
+  if (status != HighsStatus::kOk) {
+      std::cerr << "Error retrieving HiGHS basic variables."
+                << std::endl;
+      return false;
+  }
+
+  basicVariables.resize(m);
+
+  for (unsigned int i = 0; i < m; ++i) {
+      if (head[i] >= 0)
+          basicVariables[i] = head[i];
+      else
+          basicVariables[i] = n - (head[i] + 1);
+  }
+
+  return true;
+}
+
+
+bool QpExtSolHighs::getTableauRow(unsigned int basisRow,std::vector<double>& tableauRow){
+
+    const unsigned int n = getVariableCount();
+    const unsigned int m = getRowCount();
+
+    if (basisRow >= m) {
+        tableauRow.clear();
+        return false;
+    }
+
+    tableauRow.assign(n + m, 0.0);
+
+    // Retrieve B^-1 directly into the slack part.
+    double* binvRow = tableauRow.data() + n;
+
+    if (highs.getBasisInverseRow(static_cast<HighsInt>(basisRow),binvRow) != HighsStatus::kOk) {
+        tableauRow.clear();
+        return false;
+    }
+
+    // Retrieve B^-1 A into the structural part.
+    // Reuse the inverse row already computed above.
+    if (highs.getReducedRow( static_cast<HighsInt>(basisRow),tableauRow.data(), nullptr, nullptr,binvRow) != HighsStatus::kOk) {
+        tableauRow.clear();
+        return false;
+    }
+    return true;
+
+    /* Code from before refactoring; we now reuse the already retrieved row B^-1
+    #ifdef USE_NBD_HIGHS
+      HighsInt row_num_nz=0;
+      highs.getBasisInverseRow(Binv[ind], BInvRow.data(), &row_num_nz,NULL);
+      extSolver.getBinvArow(Binv[ind], SimplexRow);
+
+      for (unsigned int i = 0; i < m; ++i){
+        if (Ninv[n + i] != -1)
+          SimplexRow[n + i] = BInvRow[i];
+      }
+
+    // Get the coefficients of the non-basic-variables of the row of interest
+      for (unsigned int i = 0; i < n; ++i){
+        gmicoeff2[i] = SimplexRow[N[i]].asDouble();
+      }
+    #endif
+*/
+
+}
 }
 
 #endif
