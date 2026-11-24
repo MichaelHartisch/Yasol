@@ -1356,7 +1356,7 @@ int QBPSolver::evaluateNode(stack_container &STACK, bool &statusOK, double &scor
 	}
 
       if (!be && solution.size() > 0) {
-	double result = 0.0;
+/*	double result = 0.0;
 	Constraint &c = constraintallocator[constraints[0]];
 	if (-lb.asDouble() > c.header.rhs && -lb.asDouble() > a) {
 	  for (int i = 0; i < c.size();i++) {
@@ -1390,9 +1390,12 @@ int QBPSolver::evaluateNode(stack_container &STACK, bool &statusOK, double &scor
 	} else {
 	  result = -lb.asDouble();
 	}
-	lb = -result;
+        lb = -result;
+        if (local_ub > result) local_ub = result;
+  */     
+	 if (local_ub > -lb.asDouble())
+           local_ub = -lb.asDouble();
 	//if (abs(result+lb.asDouble()) > 1.0) cerr << "!+" << result << "," << -lb.asDouble() << "!!" << endl;
-	if (local_ub > result) local_ub = result;
 	if (decisionLevel() <= 2 && info_level >= 2) cerr << "ganzzahlig in level" << decisionLevel() << endl;
 	break;
       }
@@ -5423,7 +5426,8 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
  	  //if(0&&!feasPhase&& cBlock==2 && block[DecVara] ==1 && QlpStageTmp!=NULL && SmallRelaxation){
  	  SmallRelaxation=!SmallRelaxation;//false;
 	  assert(!SmallRelaxation);
-	  resolveFixed(decisionLevel(),true,true);
+	  //MH: HERE
+//	  resolveFixed(decisionLevel(),true,true);
 	  //cerr <<"Now SmallRelaxation=" << SmallRelaxation << endl;
 	  //cerr <<"Back " << cBlock << " " << block[VarOfCurBlock] << " " << block[DecVara]  << endl;
 	  //cerr <<"Go Back to Block 1 " <<decisionLevel() << endl;
@@ -5432,6 +5436,8 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	  QlpStSolve = QlpStSolveDeep;
 	  //delete (QlpStageTmp);
 	  QlpStSolveDeep= QlpStTemporary;
+          resolveFixed(decisionLevel(),true,true);
+
 	  for (int hh = 0; hh < nVars();hh++) {
          if (type[hh] != BINARY) continue;
       //if (eas[hh] == EXIST) continue;

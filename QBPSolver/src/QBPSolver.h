@@ -140,7 +140,7 @@ static void checkDuplicateCuts(
 #define RESTRICTION_MODE 1
 #define RELAXATION_MODE  2
 
-#define fabs(x) ((x) >= 0 ? (x) : -(x))
+//#define fabs(x) ((x) >= 0 ? (x) : -(x))
 #define SOLGAP 0.04 // 1e-9 //(time(NULL)-ini_time < 100 ? 0.04 : 0.1)
 #define OUT_OFFSET 9  //-6 bislang kleinste Nummer ---> um Stufe -6 zu bekommen also 100-6 as parameter for Yasol
 #define INT_GAP 1e-5
@@ -4181,28 +4181,28 @@ YPUBLIC:
 			return p1.index < p2.index; 
 		      });
 	    for (int i=1; i < out_lhs.size();i++) {
-	      if (out_lhs[i].index > out_lhs[i-1].index)
+	      if (out_lhs[i].index != out_lhs[i-1].index)
 		continue;
 	      if (0&&out_lhs[i].index < out_lhs[i-1].index)
-		cerr << "assertion follows: at i: " << out_lhs[i].index << " < i-1: " << out_lhs[i-1].index << endl;
+		        cerr << "assertion follows: at i: " << out_lhs[i].index << " < i-1: " << out_lhs[i-1].index << endl;
 	      assert(out_lhs[i].index == out_lhs[i-1].index || out_lhs[i-1].index == nVars()+1000);
-	      int negs=0, poss=0;
-	      for (int j=i;j<out_lhs.size() && out_lhs[j].index == out_lhs[j-1].index;j++) {
-		if (out_lhs[j-1].value.asDouble() < 0) negs++;
-		else poss++;
-	      }
-	      int delIx=out_lhs[i].index;
-              if (poss>0 && negs>0) {
-		assert(eas[out_lhs[i].index] == UNIV) ;
-		i--;
-	      }
-	      //i++;
-	      while (i < out_lhs.size() && out_lhs[i].index==delIx) {
-		out_lhs[i].value =0.0;
-		out_lhs[i++].index = nVars()+1000;
-	      }
-	      i--;
-	    }
+        const int delIx = out_lhs[i].index;
+        // i is the first encountered *doubled* entry; i-1 is the overall first entry of this variable
+        for (int j=i-1;j<out_lhs.size() && out_lhs[j].index == delIx;j++) {
+            if (out_lhs[j].value.asDouble() < 0) negs++;
+            else poss++;
+        }
+        if (poss>0 && negs>0) {
+            assert(eas[out_lhs[i].index] == UNIV) ;
+            i--;
+        }
+        //i++;
+        while (i < out_lhs.size() && out_lhs[i].index==delIx) {
+            out_lhs[i].value =0.0;
+            out_lhs[i++].index = nVars()+1000;
+        }
+        i--;
+      }
 	    int finSize=out_lhs.size();
 	    for (int i=0; i < out_lhs.size();i++) {
 	      if (out_lhs[i].index == nVars()+1000) {
