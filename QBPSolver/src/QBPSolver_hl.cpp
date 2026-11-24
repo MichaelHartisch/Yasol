@@ -5427,7 +5427,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
  	  SmallRelaxation=!SmallRelaxation;//false;
 	  assert(!SmallRelaxation);
 	  //MH: HERE
-//	  resolveFixed(decisionLevel(),true,true);
+	  resolveFixed(decisionLevel(),true,true);
 	  //cerr <<"Now SmallRelaxation=" << SmallRelaxation << endl;
 	  //cerr <<"Back " << cBlock << " " << block[VarOfCurBlock] << " " << block[DecVara]  << endl;
 	  //cerr <<"Go Back to Block 1 " <<decisionLevel() << endl;
@@ -5436,7 +5436,7 @@ int QBPSolver::generateStandardCuts(int info_level, bool &lastMBCwasSuccess, boo
 	  QlpStSolve = QlpStSolveDeep;
 	  //delete (QlpStageTmp);
 	  QlpStSolveDeep= QlpStTemporary;
-          resolveFixed(decisionLevel(),true,true);
+    // resolveFixed(decisionLevel(),true,true);
 
 	  for (int hh = 0; hh < nVars();hh++) {
          if (type[hh] != BINARY) continue;
