@@ -4186,6 +4186,7 @@ YPUBLIC:
 	      if (0&&out_lhs[i].index < out_lhs[i-1].index)
 		        cerr << "assertion follows: at i: " << out_lhs[i].index << " < i-1: " << out_lhs[i-1].index << endl;
 	      assert(out_lhs[i].index == out_lhs[i-1].index || out_lhs[i-1].index == nVars()+1000);
+        int negs=0, poss=0;
         const int delIx = out_lhs[i].index;
         // i is the first encountered *doubled* entry; i-1 is the overall first entry of this variable
         for (int j=i-1;j<out_lhs.size() && out_lhs[j].index == delIx;j++) {
