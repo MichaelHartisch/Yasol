@@ -52,7 +52,7 @@ public:
 
 };
 
-#define fabs(x) ((x) >= 0 ? (x) : -(x))
+//#define fabs(x) ((x) >= 0 ? (x) : -(x))
 class CutAdder {
 public:
   static std::vector<std::pair<int, double>> globalConditionalLowerBounds;

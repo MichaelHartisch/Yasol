@@ -5,7 +5,7 @@ set -u
 
 usage () {
 cat <<EOF
-usage: configure [-h|--help][-c|--cplex][-g|--highs][-o|--coin][-d|--debug][-d3|--debug3][-l|--cgl][-s|--sani]
+usage: configure [-h|--help][-c|--cplex][-g|--highs][-o|--coin][-u|--gurobi][-d|--debug][-d3|--debug3][-l|--cgl][-s|--sani]
 
 -h | --help  print this command line option summary
 
@@ -13,6 +13,7 @@ usage: configure [-h|--help][-c|--cplex][-g|--highs][-o|--coin][-d|--debug][-d3|
 -c  | --cplex  compile with cplex
 -g  | --highs  compile with highs
 -o  | --coin   compile with coinOR tools
+-u  | --gurobi compile with Gurobi (version 12 or newer)
 
 ==============For Developers==============
 -d  | --debug  compile with '-O1 -g'
@@ -45,6 +46,7 @@ echo $YASOL_DIR
 cplex=no
 highs=no
 coin=no
+gurobi=no
 debug=no
 debug3=no
 cgl=no
@@ -59,6 +61,7 @@ do
     -c|--cplex) cplex=yes;;
     -g|--highs) highs=yes;;
     -o|--coin) coin=yes;;
+    -u|--gurobi) gurobi=yes;;
     -d|--debug) debug=yes;;
     -d3|--debug3) debug3=yes;;
     -l|--cgl) cgl=yes;;
@@ -89,6 +92,24 @@ then
   fi
   CMKFLAGS="$CMKFLAGS -DCPLEX_ROOT_DIR=$EXTERN_SOLVER_DIR"
   msg "cplex setup done"
+fi
+
+if [ "$gurobi" = yes ]
+then
+  CMKFLAGS="$CMKFLAGS -DUSE_GUROBI=ON"
+  msg "using Gurobi as LP solver"
+  msg "Specify the root of your installed Gurobi distribution (e.g. /opt/gurobi1200/linux64)."
+  msg "Press Enter to let CMake use GUROBI_HOME or search common installation paths."
+  read -r -e -p ":" USER_INPUT
+  if [ -n "$USER_INPUT" ]; then
+    if [ -d "$USER_INPUT" ]; then
+      EXTERN_SOLVER_DIR="$USER_INPUT"
+    else
+      die "'$USER_INPUT' is not a valid directory."
+    fi
+    CMKFLAGS="$CMKFLAGS -DGUROBI_ROOT_DIR=$EXTERN_SOLVER_DIR"
+  fi
+  msg "Gurobi setup done"
 fi
 
 if [ $highs = yes ]

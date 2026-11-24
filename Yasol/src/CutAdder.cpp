@@ -783,25 +783,7 @@ vector< pair< vector< pair<unsigned int, double> >, double > >* CutAdder::getCov
 
 				/*static*/ vector<data::QpRhs> rhsVec( m_r );
 				if (rhsVec.size() < m_r) rhsVec.resize(m_r);
-#ifdef DEPRICATED_SLACKS
-				///*static*/ vector<double> slacks(m_r);
-				//if (slacks.size() < m_r) slacks.resize(m_r);
-#ifdef USE_NBD_CPLEX_C
-				int status = CPXXgetslack(
-						*(CPXENVptr*)extSolver.getSolverEnv(),
-						*(CPXLPptr*)extSolver.getSolverModel(),
-						                slacks.data(), 0, m_r-1);
-#elif USE_NBD_CLP
-				//slacks.resize(this->getRowCount());
-				const double *ra = ((ClpSimplex*)(extSolver.getSolverModel()))->getRowActivity();
-				const double *lb = ((ClpSimplex*)(extSolver.getSolverModel()))->getRowLower();
-				const double *ub = ((ClpSimplex*)(extSolver.getSolverModel()))->getRowUpper();
-				for (int i = 0; i < m_r; ++i) {
-				    slacks[i] = (lb[i] != -COIN_DBL_MAX ? lb[i] : ub[i])  - ra[i];
-				}
-#elif USE_NBD_IGHS
-#endif
-#endif
+
 				extSolver.getRhs( rhsVec );
 				extSolver.prepareMatrixRowForm();
 				int cnt_succ=0;
@@ -9438,21 +9420,6 @@ vector< pair< vector< pair<unsigned int, double> >, double > >* CutAdder::getGMI
 		//if (basestat.capacity() < m + n) { basestat.reserve(m + n); basestat.resize(m + n); }
 
 
-/*
-#ifdef USE_NBD_CLP
-		ClpSimplex *M;
-		M = (ClpSimplex*)extSolver.getSolverModel();
-		M->dual(0,7);
-#endif
-#ifdef USE_NBD_HIGHS_X
-		Highs *M;
-		M = (Highs*)extSolver.getSolverEnv();
-		M->setOptionValue("solver", kSimplexString);
-		M->setOptionValue("simplex_strategy", kSimplexStrategyDual);
-		M->run();
-#endif*/
-
-
 /*static*/ extSol::QpExternSolver::QpExtSolBase base;
 		extSolver.getBase(base);
 		if (base.variables.size() < n) {
@@ -9589,11 +9556,15 @@ else {
 #ifndef NDEBUG
 	//Each entry of basics should be zero, unless it is the candidate variable Just for checking
 	for (unsigned int i = 0; i < m; ++i){
-		if (B[i] != ind)
-			assert(SimplexRow[B[i]] == 0);
+		if (B[i] != ind){
+//         cerr << "0 SimplexRow[B[i]]="<<SimplexRow[B[i]]<<endl;
+			assert(abs(SimplexRow[B[i]])<eps);
+}
+		if (B[i] ==ind){
+  //       cerr << "1 SimplexRow[B[i]]="<<SimplexRow[B[i]]<<endl;
+			assert(abs(SimplexRow[B[i]]-1)<eps);
 
-		if (B[i] ==ind)
-			assert(SimplexRow[B[i]]==1);
+}
 	}
 #endif
 

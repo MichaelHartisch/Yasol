@@ -29,134 +29,185 @@
 
 #ifdef COMPILE_WITH_GUROBI_C
 
-extern "C"{
 #include "gurobi_c.h"
-}
 
 namespace extSol {
 
-class QpExtSolGrbC: public QpExternSolver {
-
+class QpExtSolGrbC : public QpExternSolver {
 public:
+    QpExtSolGrbC();
+    QpExtSolGrbC(const data::Qlp& qlp);
+    QpExtSolGrbC(const data::QpObjFunc& obj,
+                 const std::vector<data::QpVar>& vars,
+                 const data::QpSparseMatrix& mat,
+                 const std::vector<data::QpRhs>& rhs);
+    QpExtSolGrbC(const std::string& lpfile);
+    ~QpExtSolGrbC() override;
 
-	QpExtSolGrbC();
+    // Model lifetime and access
+    void clear() override;
+    QpExtSolSolutionStatus getSolutionStatus() override;
+    void* getSolverEnv() override;
+    void* getSolverModel() override;
 
-	QpExtSolGrbC(const data::Qlp& qlp);	QpExtSolGrbC(const data::QpObjFunc& obj, const std::vector<data::QpVar>& vars, const data::QpSparseMatrix& mat, const std::vector<data::QpRhs>& rhs);
+    void init(const data::Qlp& qlp) override;
+    void init(const data::Qlp& qlp,
+              data::QpRhs::Responsibility resp) override;
+    void init(const data::QpObjFunc& obj,
+              const std::vector<data::QpVar>& vars,
+              const data::QpSparseMatrix& mat,
+              const std::vector<data::QpRhs>& rhs) override;
+    void init(const std::string& lpfile) override;
 
-	QpExtSolGrbC(const std::string& lpfile);
+    unsigned int getVariableCount() const override;
+    unsigned int getRowCount() const override;
+    unsigned int getCutCount() const override;
+    unsigned int getNonZeros() const override;
+    void readFromFile(const std::string& path) override;
+    void writeToFile(const std::string& path,
+                     const std::string& name) override;
 
-	~QpExtSolGrbC();
+    // Solver configuration and model changes
+    void adaptToSolverMode(QpExtSolSolverMode mode) override;
+    void setParameters(const ExtSolverParameters& parameters) override;
+    bool changeObjFuncCoeff(unsigned int index,
+                            const data::QpNum& coeff) override;
+    void setVarLB(unsigned int index, const data::QpNum& lb) override;
+    void setVarUB(unsigned int index, const data::QpNum& ub) override;
+    void changeRhsElement(unsigned int index,
+                          const data::QpNum& value) override;
+    void changeRhsElements(const std::vector<unsigned int>& indices,
+                           const std::vector<data::QpNum>& values) override;
+    void changeRhsElements(const std::vector<int>& indices,
+                           const std::vector<double>& values) override;
 
-	void clear();
+    // Solution, basis, and certificates
+    QpExtSolSolutionStatus solve(unsigned int itLimit = 1000000000U,
+                                 unsigned int timeLimit = 1000000000U) override;
+    data::QpNum getObjValue() override;
+    void getValues(std::vector<data::QpNum>& values) override;
+    void getDuals(std::vector<data::QpNum>& duals) override;
+    void getReducedCosts(std::vector<data::QpNum>& reduced) override;
+    void getDualFarkas(std::vector<data::QpNum>& farkas) override;
+    void getExtendedDuals(std::vector<data::QpNum>& extDuals) override;
+    void getExtendedDualFarkas(
+        std::vector<data::QpNum>& extFarkas) override;
+    void getExtendedDualFarkas(
+        std::vector<data::QpNum>& extFarkas,
+        const data::QpSparseMatrix& constraints,
+        const data::QpSparseMatrix& cuts) override;
+    void getBase(QpExtSolBase& base) const override;
+    void setBase(QpExtSolBase& base) override;
+    void setRayGuess(const std::vector<data::QpNum>& ray) override;
 
-	QpExtSolSolutionStatus getSolutionStatus();
+    // Cut management
+    using Cut = std::pair<std::vector<std::pair<unsigned int, double>>, double>;
+    using CutList = std::vector<Cut>;
+    CutList* CreateCuts(QpExternSolver& externSolver,
+                        int* types, int8_t* assigns, int decLev,
+                        unsigned int initime, int* solu, int* fixs,
+                        int* blcks, int orgN, int cuttype,
+                        int delCuts, double intLB) override;
+    void addCut(const std::vector<data::IndexedElement>& lhs,
+                data::QpRhs::RatioSign sign,
+                const data::QpNum& rhs) override;
+    void removeCuts() override;
+    void removeCut(unsigned int index) override;
+    void removeCutsFromCut(unsigned int startIndex) override;
+    void updateModel() override;
 
-	void * getSolverEnv();
+    // LP data and row-wise matrix retrieval
+    void getQlpFromLpFile(const std::string& filename,
+                          data::Qlp& qlp) override;
+    void getRhs(std::vector<data::QpRhs>& rhs) override;
+    void getLB(std::vector<data::QpNum>& bounds) override;
+    void getUB(std::vector<data::QpNum>& bounds) override;
+    void getObjective(std::vector<data::IndexedElement>& lhs,
+                      bool& doMax, double& offset) override;
+    void getRowLhs(unsigned int row,
+                   std::vector<data::IndexedElement>& lhs) override;
+    void prepareMatrixRowForm() override;
 
-	void * getSolverModel();
+    // Snapshot and lazy-row operations
+    void clearLP_snapshot() override;
+    void clearLP_snapshot(int from) override;
+    void clearLP_snapshot(int from, int to) override;
+    void saveSnapshot() override;
+    void retrieveSnapshot() override;
+    void addLProw_snapshot(const std::vector<data::IndexedElement>& lhs,
+                           const data::QpRhs& rhs) override;
+    void addLPobj_snapshot(const std::vector<data::IndexedElement>& lhs,
+                           const data::QpRhs& rhs) override;
+    int getLProws_snapshot() override;
+    void initInternalLP_snapshot(const data::Qlp& qlp) override;
+    void reinitLPcols_snapshot() override;
+    std::vector<data::IndexedElement>* getCol_snapshot(int column) override;
+    data::IndexedElement getObj_snapshot(int column) override;
+    std::vector<data::IndexedElement>*
+        getRowLhs_snapshot(unsigned int row) override;
+    std::vector<data::QpRhs>* getRowRhs_snapshot() override;
+    bool getLazyRows(std::vector<int>& lazyRows,
+                     std::vector<data::QpNum>& solution,
+                     double eps) override;
+    void setLazyStatus(int row, bool status) override;
+    bool getLazyStatus(int row) override;
+    void setStatus(int row, int status) override;
+    int getStatus(int row) override;
+    int computeStatus(const std::vector<data::IndexedElement>& lhs,
+                      const data::QpRhs& rhs) override;
 
-	void init(const data::Qlp& qlp);
+    // Benders and simplex tableau access
+    void getRowLhsOfTableauByColumn(
+        unsigned int column, std::vector<data::QpNum>& lhs) override;
+    void getBinvArow(unsigned int basisRow,
+                     std::vector<data::QpNum>& binvArow) override;
+    bool getBendersCut(unsigned int stage,
+                       std::vector<data::IndexedElement>& lhs,
+                       data::QpRhs::RatioSign& sign,
+                       data::QpNum& rhs, bool org, void* vpt) override;
+    void getBendersCutNew(unsigned int stage,
+                          std::vector<data::IndexedElement>& lhs,
+                          data::QpRhs::RatioSign& sign,
+                          data::QpNum& rhs, bool check,
+                          std::vector<double>& mRows,
+                          std::vector<double>& lbs,
+                          std::vector<double>& ubs) override;
 
-	void init(const data::QpObjFunc& obj, const std::vector<data::QpVar>& vars, const data::QpSparseMatrix& mat, const std::vector<data::QpRhs>& rhs);
-
-	void init(const std::string& lpfile);
-
-	unsigned int getVariableCount() const;
-
-	unsigned int getRowCount() const;
-
-	unsigned int getCutCount() const;
-
-	unsigned int getNonZeros() const;
-
-	void readFromFile(const std::string&);
-
-	void writeToFile(const std::string&, const std::string&);
-
-	void getBase(QpExtSolBase& base) const;
-
-	void setBase(const QpExtSolBase& base);
-
-	void setRayGuess(const std::vector<data::QpNum>&);
-
-	void adaptToSolverMode(QpExtSolSolverMode m);
-
-	void setVarLB(unsigned int i, const data::QpNum& lb);
-
-	void setVarUB(unsigned int i, const data::QpNum& ub);
-
-	void changeRhsElement(unsigned int i, const data::QpNum& v);
-
-	void changeRhsElements(const std::vector<unsigned int>& indices, const std::vector<data::QpNum>& values);
-
-	extSol::QpExternSolver::QpExtSolSolutionStatus solve(unsigned int itLimit, unsigned int timeLimit);
-
-	data::QpNum getObjValue();
-
-	void getValues(std::vector<data::QpNum>& values);
-
-	void getDuals(std::vector<data::QpNum>& duals);
-
-	void getReducedCosts(std::vector<data::QpNum>& reduced);
-
-	void getDualFarkas(std::vector<data::QpNum>& farkas);
-
-	void getExtendedDuals(std::vector<data::QpNum>& extDuals);
-
-	void getExtendedDualFarkas(std::vector<data::QpNum>& extFarkas, const data::QpSparseMatrix& cons, const data::QpSparseMatrix& cuts);
-
-	void addCut(const std::vector<data::IndexedElement>& lhs, data::QpRhs::RatioSign sign, const data::QpNum& rhs);
-
-	void removeCuts();
-
-	void removeCut(unsigned int index);
-
-	void removeCutsFromCut(unsigned int);
-
-	void updateModel();
-
-	void getQlpFromLpFile(const std::string&, data::Qlp&){
-		throw utils::ExternSolverException("getQlpFromLpFile( ... ) --> NOT YET IMPLEMENTED");
-	}
-
-	//Neue methoden f�r Ulf
-	void getRhs(std::vector<data::QpRhs>&){
-		throw utils::ExternSolverException("getRhs( ... ) --> NOT YET IMPLEMENTED");
-	}
-
-	void getLB(std::vector<data::QpNum>&){
-		throw utils::ExternSolverException("getLB( ... ) --> NOT YET IMPLEMENTED");
-	}
-
-	void getUB(std::vector<data::QpNum>&){
-		throw utils::ExternSolverException("getUB( ... ) --> NOT YET IMPLEMENTED");
-	}
-
-	void getRowLhs(unsigned int, std::vector<data::IndexedElement>&){
-		throw utils::ExternSolverException("getRowLhs( ... ) --> NOT YET IMPLEMENTED");
-	}
-
-	void getRowLhsOfTableauByColumn(unsigned int,std::vector<data::QpNum>&){
-		throw utils::ExternSolverException("getRowLhsOfTableauByColumn( ... ) --> NOT YET IMPLEMENTED");
-	}
-	bool changeObjFuncCoeff(unsigned int index, const data::QpNum& coeff){
-			throw utils::ExternSolverException("getRhs( ... ) --> NOT YET IMPLEMENTED");
-		}
+    // Solver-independent GMI interface
+    bool getAllRows(
+        std::vector<std::vector<data::IndexedElement>>& allrows) override;
+    bool getBasicVariables(std::vector<int>& basicVariables) override;
+    bool getTableauRow(unsigned int basisRow,
+                       std::vector<double>& tableauRow) override;
 
 protected:
-	QpExtSolGrbC(const QpExtSolGrbC&);
-	QpExtSolGrbC& operator=(const QpExtSolGrbC&);
+    QpExtSolGrbC(const QpExtSolGrbC&);
+    QpExtSolGrbC& operator=(const QpExtSolGrbC&);
 
 private:
-	static const std::string LOG_TAG;
-	int error;
-	GRBenv* env;
-	GRBmodel *model;
-	unsigned int origConstraints;
+    static const std::string LOG_TAG;
+    int error;
+    GRBenv* env;
+    GRBmodel* model;
+    unsigned int origConstraints;
 
-
-
+    // Internal LP snapshot storage (as in the other external solvers).
+    std::vector<data::QpRhs> RHSs;
+    std::vector<std::vector<data::IndexedElement>> LHSs;
+    std::vector<data::QpRhs> RHSsSaved;
+    std::vector<std::vector<data::IndexedElement>> LHSsSaved;
+    std::vector<std::vector<data::IndexedElement>> COLs;
+    std::vector<data::IndexedElement> obj_lhs;
+    std::vector<data::IndexedElement> obj_lhs_dense;
+    std::vector<data::IndexedElement> obj_lhs_saved;
+    std::vector<data::IndexedElement> obj_lhs_dense_saved;
+    data::QpRhs obj_rhs;
+    std::vector<int> lazyRows;
+    std::vector<bool> lazyRowIndicator;
+    std::vector<int> indicators;
+    ExtSolverParameters SolveParameters;
 };
-}
-#endif /* (defined USE_CPLEX_CL) || (defined USE_CPLEX_CL_EXACT) */
-#endif /* QPEXTSOLGRBCPP_HPP_ */
+
+} // namespace extSol
+#endif // COMPILE_WITH_GUROBI_C
+#endif // QPEXTSOLGRBC_HPP_

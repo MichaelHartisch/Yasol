@@ -646,8 +646,6 @@ double yInterface::computeCutRatio(vector< pair<unsigned int, double> >& cut) {
 #define isOne_(a) ((a) > 1.0-1e-12 && (a) < 1.0+1e-12)
 #define isZero_(a) ((a) > 0.0-1e-12 && (a) < 0.0+1e-12)
 
-// Cuts must be of type >=
-#include "ExternSolvers/QpExtSolCLP.hpp"
 
 int yInterface::GenerateCutAndBranchCuts( extSol::QpExternSolver& externSolver, vector< vector< data::IndexedElement > > &listOfCutsLhs,
 		       vector< data::QpNum > &listOfCutsRhs, vector<int> &listOfCutsVars,

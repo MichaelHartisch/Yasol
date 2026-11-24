@@ -22,793 +22,1324 @@
 * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
+// Modernized Gurobi C adapter. All Yasol variables are solved as a continuous LP.
+// Requires a local Gurobi installation for advanced simplex-basis routines.
+
 #include "ExternSolvers/QpExtSolGrbC.hpp"
 
 #ifdef COMPILE_WITH_GUROBI_C
 
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <limits>
+#include <numeric>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
 namespace extSol {
+namespace {
 
-const std::string QpExtSolGrbC::LOG_TAG = "QpExternSolverGrb";
-
-QpExtSolGrbC::QpExtSolGrbC() :
-		QpExternSolver(GUROBI_C, DEFAULT), error(0), env(NULL), model(NULL), origConstraints(
-				0) {
-	this->adaptToSolverMode(this->sMode);
+void checked(int rc, GRBmodel* model, const char* operation) {
+    if (!rc) return;
+    std::ostringstream os;
+    os << "Gurobi " << operation << " failed (error " << rc << ")";
+    if (model) {
+        GRBenv* e = GRBgetenv(model);
+        if (e) {
+            const char* msg = GRBgeterrormsg(e);
+            if (msg) os << ": " << msg;
+        }
+    }
+    throw utils::ExternSolverException(os.str());
 }
 
-QpExtSolGrbC::QpExtSolGrbC(const data::Qlp& qlp) :
-		QpExternSolver(GUROBI_C, DEFAULT), error(0), env(NULL), model(NULL), origConstraints(
-				0) {
-	this->init(qlp);
-	this->adaptToSolverMode(this->sMode);
+void checkedEnv(int rc, GRBenv* env, const char* operation) {
+    if (!rc) return;
+    std::ostringstream os;
+    os << "Gurobi " << operation << " failed (error " << rc << ")";
+    if (env) {
+        const char* msg = GRBgeterrormsg(env);
+        if (msg) os << ": " << msg;
+    }
+    throw utils::ExternSolverException(os.str());
 }
 
+void createSilentEnvironment(GRBenv*& environment)
+{
+    checkedEnv(GRBemptyenv(&environment),
+               environment, "create empty environment");
+
+    checkedEnv(GRBsetintparam(
+                   environment, GRB_INT_PAR_OUTPUTFLAG, 0),
+               environment, "disable output");
+
+    checkedEnv(GRBstartenv(environment),
+               environment, "start environment");
+}
+
+char toGurobiSense(data::QpRhs::RatioSign s) {
+    switch (s) {
+    case data::QpRhs::smallerThanOrEqual: return GRB_LESS_EQUAL;
+    case data::QpRhs::greaterThanOrEqual: return GRB_GREATER_EQUAL;
+    case data::QpRhs::equal: return GRB_EQUAL;
+    }
+    throw utils::ExternSolverException("Gurobi: unsupported constraint sense");
+}
+
+data::QpRhs::RatioSign fromGurobiSense(char s) {
+    switch (s) {
+    case GRB_LESS_EQUAL: return data::QpRhs::smallerThanOrEqual;
+    case GRB_GREATER_EQUAL: return data::QpRhs::greaterThanOrEqual;
+    case GRB_EQUAL: return data::QpRhs::equal;
+    }
+    throw utils::ExternSolverException("Gurobi: unsupported constraint sense");
+}
+
+// Bound conversion is needed for data::QpNum values representing infinity.
+double grbBound(double v) {
+    if (std::isinf(v)) return std::signbit(v) ? -GRB_INFINITY : GRB_INFINITY;
+    return std::max(-GRB_INFINITY, std::min(GRB_INFINITY, v));
+}
+
+int toGurobiBasis(int b) {
+    switch (b) {
+    case QpExternSolver::Basic: return 0;
+    case QpExternSolver::AtLower: return -1;
+    case QpExternSolver::AtUpper: return -2;
+    case QpExternSolver::FreeOrSuperbasic: return -3;
+    default:
+        throw utils::ExternSolverException("Gurobi: invalid variable basis status");
+    }
+}
+
+int fromGurobiBasis(int b) {
+    switch (b) {
+    case 0: return QpExternSolver::Basic;
+    case -1: return QpExternSolver::AtLower;
+    case -2: return QpExternSolver::AtUpper;
+    case -3: return QpExternSolver::FreeOrSuperbasic;
+    default:
+        throw utils::ExternSolverException("Gurobi: unknown variable basis status");
+    }
+}
+
+void getDoubleArray(GRBmodel* model, const char* attr, int len,
+                    std::vector<double>& dst) {
+    dst.resize(len);
+    if (len) checked(GRBgetdblattrarray(model, attr, 0, len, dst.data()), model, attr);
+}
+
+void getCharArray(GRBmodel* model, const char* attr, int len,
+                  std::vector<char>& dst) {
+    dst.resize(len);
+    if (len) checked(GRBgetcharattrarray(model, attr, 0, len, dst.data()), model, attr);
+}
+
+} // anonymous namespace
+
+const std::string QpExtSolGrbC::LOG_TAG = "QpExternSolverGrbC";
+
+QpExtSolGrbC::QpExtSolGrbC()
+    : QpExternSolver(GUROBI_C, DEFAULT), error(0), env(nullptr),
+      model(nullptr), origConstraints(0), SolveParameters{} {}
+
+QpExtSolGrbC::QpExtSolGrbC(const data::Qlp& qlp) : QpExtSolGrbC() {
+    init(qlp);
+}
 QpExtSolGrbC::QpExtSolGrbC(const data::QpObjFunc& obj,
-		const std::vector<data::QpVar>& vars, const data::QpSparseMatrix& mat,
-		const std::vector<data::QpRhs>& rhs) :
-		QpExternSolver(GUROBI_C, DEFAULT), error(0), env(NULL), model(NULL), origConstraints(
-				0) {
-	this->init(obj, vars, mat, rhs);
-	this->adaptToSolverMode(this->sMode);
-}
-
-QpExtSolGrbC::QpExtSolGrbC(const std::string& lpfile) :
-		QpExternSolver(GUROBI_C, DEFAULT), error(0), env(NULL), model(NULL), origConstraints(
-				0) {
-	this->init(lpfile);
-	this->adaptToSolverMode(this->sMode);
-}
+                           const std::vector<data::QpVar>& vars,
+                           const data::QpSparseMatrix& mat,
+                           const std::vector<data::QpRhs>& rhs)
+    : QpExtSolGrbC() { init(obj, vars, mat, rhs); }
+QpExtSolGrbC::QpExtSolGrbC(const std::string& filename)
+    : QpExtSolGrbC() { init(filename); }
 
 QpExtSolGrbC::~QpExtSolGrbC() {
-	/* Free model */
-	GRBfreemodel(model);
-	/* Free environment */
-	GRBfreeenv(env);
+    // Destructors must not throw. Gurobi owns the model's environment.
+    if (model) GRBfreemodel(model);
+    if (env) GRBfreeenv(env);
 }
 
 void QpExtSolGrbC::clear() {
-	/* Free model */
-	GRBfreemodel(model);
-	/* Free environment */
-	GRBfreeenv(env);
+    if (model) { GRBfreemodel(model); model = nullptr; }
+    if (env) { GRBfreeenv(env); env = nullptr; }
+    error = 0;
+    origConstraints = 0;
+    RHSs.clear(); LHSs.clear(); RHSsSaved.clear(); LHSsSaved.clear();
+    COLs.clear(); obj_lhs.clear(); obj_lhs_dense.clear();
+    obj_lhs_saved.clear(); obj_lhs_dense_saved.clear();
+    lazyRows.clear(); lazyRowIndicator.clear(); indicators.clear();
 }
 
-void * QpExtSolGrbC::getSolverEnv() {
-	return NULL;
-}
-void * QpExtSolGrbC::getSolverModel() {
-	return NULL;
-}
+void* QpExtSolGrbC::getSolverEnv() { return env; }
+void* QpExtSolGrbC::getSolverModel() { return model; }
 
 void QpExtSolGrbC::init(const data::Qlp& qlp) {
-	std::vector<std::vector<data::IndexedElement> > matrix;
-	qlp.getCoeffMatrix(matrix);
-	this->init(qlp.getObjectiveFunction(), qlp.getQuantifiedVariables(), matrix,
-			qlp.getRhsVec());
+    data::QpSparseMatrix mat;
+    qlp.getCoeffMatrix(mat);
+    init(qlp.getObjectiveFunction(), qlp.getQuantifiedVariables(), mat, qlp.getRhsVec());
+}
+
+void QpExtSolGrbC::init(const data::Qlp& qlp,
+                        data::QpRhs::Responsibility resp) {
+    data::QpSparseMatrix mat;
+    qlp.getCoeffMatrixByResp(mat, resp);
+    init(qlp.getObjectiveFunction(), qlp.getQuantifiedVariables(), mat,
+         qlp.getRhsVecByResp(resp));
 }
 
 void QpExtSolGrbC::init(const data::QpObjFunc& obj,
-		const std::vector<data::QpVar>& vars, const data::QpSparseMatrix& mat,
-		const std::vector<data::QpRhs>& rhs) {
+                        const std::vector<data::QpVar>& vars,
+                        const data::QpSparseMatrix& mat,
+                        const std::vector<data::QpRhs>& rhs) {
+    if (mat.size() != rhs.size())
+        throw utils::ExternSolverException("Gurobi init: matrix/RHS row-count mismatch");
+    clear();
+	createSilentEnvironment(env);
+    try {
+        checkedEnv(GRBnewmodel(env, &model, "yasol_lp", 0, nullptr,
+                               nullptr, nullptr, nullptr, nullptr),
+                   env, "create model");
+        const int n = static_cast<int>(vars.size());
+        const int m = static_cast<int>(rhs.size());
+        std::vector<double> objective(n), lb(n), ub(n);
+        std::vector<char> types(n, GRB_CONTINUOUS);
+        for (int i = 0; i < n; ++i) {
+            objective[i] = obj[i].asDouble();
+            lb[i] = grbBound(vars[i].getLowerBound().asDouble());
+            ub[i] = grbBound(vars[i].getUpperBound().asDouble());
+            if (lb[i] > ub[i])
+                throw utils::ExternSolverException("Gurobi init: invalid variable bounds");
+        }
+        // Deliberately relax all integer/binary variables to continuous.
+        if (n) checked(GRBaddvars(model, n, 0, nullptr, nullptr, nullptr,
+                                  objective.data(), lb.data(), ub.data(),
+                                  types.data(), nullptr), model, "add LP variables");
+        checked(GRBsetintattr(model, GRB_INT_ATTR_MODELSENSE,
+                              obj.getObjective() == data::QpObjFunc::max ? -1 : 1),
+                model, "set objective sense");
+        checked(GRBsetdblattr(model, GRB_DBL_ATTR_OBJCON,
+                              obj.getOffset().asDouble()), model, "set objective offset");
+        checked(GRBupdatemodel(model), model, "update variables");
 
-	this->clear();
-
-	error = GRBloadenv(&env, "gurobi.log");
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught loading environment. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	error = GRBnewmodel(env, &model, "mip1", 0, NULL, NULL, NULL, NULL, NULL);
-
-	//----------------------- Creating CplexWrapper instances ---------------------------->
-	int nRows = rhs.size(), nCols = vars.size(), nNzeros = 0;
-	for (unsigned int i = 0; i < mat.size(); i++) {
-		nNzeros += mat[i].size();
-	}
-
-	std::vector<double> tmpObjCl(nCols, 0);
-	std::vector<double> tmpUbCl(nCols, 0);
-	std::vector<double> tmpLbCl(nCols, 0);
-	std::vector<char> tmpColTypeCl(nCols);
-	std::vector<int> rmatbeg(nRows);
-	std::vector<int> rmatind(nNzeros, 0);
-	std::vector<double> rmatval(nNzeros, 0);
-	std::vector<double> tmpRhsCl(nRows, 0);
-	std::vector<char> tmpSenseCl(nRows);
-
-	//char ** tmpColNameCl = new char*[nCols];
-	//char ** tmpRowNameCl = new char*[nRows];
-
-	unsigned int mip = 0;
-
-	error = GRBsetintattr(model, GRB_INT_ATTR_MODELSENSE,
-			obj.getObjective() == data::QpObjFunc::max ? -1 : 1);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught setting sense. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-
-	for (unsigned int i = 0; i < nCols; i++) {
-		tmpObjCl[i] = obj[i].asDouble();
-		tmpLbCl[i] = vars[i].getLowerBound().asDouble();
-		tmpUbCl[i] = vars[i].getUpperBound().asDouble();
-		//std::string s("");
-		//tmpColNameCl[i] = (char*) s.c_str();
-		switch (vars[i].getNumberSystem()) {
-		case (data::QpVar::real):
-			tmpColTypeCl[i] = GRB_CONTINUOUS;
-			break;
-		case (data::QpVar::generals):
-			tmpColTypeCl[i] = GRB_INTEGER;
-			break;
-		case (data::QpVar::binaries):
-			tmpColTypeCl[i] = GRB_BINARY;
-			break;
-		default:
-			throw utils::ExternSolverException(
-					"Exception caught adding cut. Unsupported Variable NumberSystem.");
-		}
-	}
-
-	error = GRBaddvars(model, nCols, 0, NULL, NULL, NULL, tmpObjCl.data(),
-			tmpLbCl.data(), tmpUbCl.data(), tmpColTypeCl.data(), NULL);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught adding variables. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	this->updateModel();
-
-	unsigned int rmatBeg = 0;
-	for (unsigned int i = 0; i < rhs.size(); i++) {
-		//std::string s("");
-		//	tmpRowNameCl[i] = (char*) s.c_str();
-		tmpRhsCl[i] = rhs[i].getValue().asDouble();
-		switch (rhs[i].getRatioSign()) {
-		case (data::QpRhs::smallerThanOrEqual):
-			tmpSenseCl[i] = GRB_LESS_EQUAL;
-			break;
-		case (data::QpRhs::greaterThanOrEqual):
-			tmpSenseCl[i] = GRB_GREATER_EQUAL;
-			break;
-		case (data::QpRhs::equal):
-			tmpSenseCl[i] = GRB_EQUAL;
-			break;
-		}
-		rmatbeg[i] = rmatBeg;
-		for (unsigned int j = 0; j < mat[i].size(); j++) {
-			rmatind[rmatBeg] = mat[i][j].index;
-			rmatval[rmatBeg] = mat[i][j].value.asDouble();
-			rmatBeg++;
-		}
-	}
-	error = GRBaddconstrs(model, nRows, nNzeros, rmatbeg.data(), rmatind.data(),
-			rmatval.data(), tmpSenseCl.data(), tmpRhsCl.data(), NULL);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught adding variables. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	this->updateModel();
-
-	this->origConstraints = this->getRowCount();
-
-	//delete[] tmpColNameCl;
-	//delete[] tmpRowNameCl;
-
+        std::vector<int> starts(m), indices;
+        std::vector<double> coeffs, rowRhs(m);
+        std::vector<char> senses(m);
+        size_t nnz = 0;
+        for (const auto& row : mat) nnz += row.size();
+        if (nnz > static_cast<size_t>(std::numeric_limits<int>::max()))
+            throw utils::ExternSolverException("Gurobi init: too many nonzeros for GRBaddconstrs");
+        indices.reserve(nnz); coeffs.reserve(nnz);
+        for (int r = 0; r < m; ++r) {
+            starts[r] = static_cast<int>(indices.size());
+            rowRhs[r] = rhs[r].getValue().asDouble();
+            senses[r] = toGurobiSense(rhs[r].getRatioSign());
+            for (const auto& e : mat[r]) {
+                if (e.index >= vars.size())
+                    throw utils::ExternSolverException("Gurobi init: invalid column index");
+                indices.push_back(static_cast<int>(e.index));
+                coeffs.push_back(e.value.asDouble());
+            }
+        }
+        if (m) checked(GRBaddconstrs(model, m, static_cast<int>(nnz), starts.data(),
+                                     indices.empty() ? nullptr : indices.data(),
+                                     coeffs.empty() ? nullptr : coeffs.data(),
+                                     senses.data(), rowRhs.data(), nullptr),
+                       model, "add LP constraints");
+        updateModel();
+        origConstraints = getRowCount();
+        adaptToSolverMode(sMode);
+    } catch (...) { clear(); throw; }
 }
 
-void QpExtSolGrbC::init(const std::string& lpfile) {
-	this->readFromFile(lpfile);
+void QpExtSolGrbC::init(const std::string& filename) { readFromFile(filename); }
+
+void QpExtSolGrbC::readFromFile(const std::string& filename) {
+    clear();
+    error = GRBloadenv(&env, nullptr);
+    checkedEnv(error, env, "load environment");
+    try {
+        checkedEnv(GRBreadmodel(env, filename.c_str(), &model),
+                   env, "read model");
+        updateModel();
+        origConstraints = getRowCount();
+        // Yasol requires LP bases; noncontinuous files must not be solved as MIPs.
+        const int n = static_cast<int>(getVariableCount());
+        if (n) {
+            std::vector<char> types(n, GRB_CONTINUOUS);
+            checked(GRBsetcharattrarray(model, GRB_CHAR_ATTR_VTYPE,
+                                         0, n, types.data()), model,
+                    "relax imported model variables");
+            updateModel();
+        }
+        adaptToSolverMode(sMode);
+    } catch (...) { clear(); throw; }
+}
+
+void QpExtSolGrbC::writeToFile(const std::string& path,
+                               const std::string& name) {
+    if (!model) throw utils::ExternSolverException("Gurobi write: model is null");
+    updateModel();
+    const std::string filename = path + (path.empty() || path.back() == '/' ? "" : "/") + name;
+    checked(GRBwrite(model, filename.c_str()), model, "write model");
 }
 
 unsigned int QpExtSolGrbC::getVariableCount() const {
-	int val;
-	int error = GRBgetintattr(model, GRB_INT_ATTR_NUMVARS, &val);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught getting the number of variables. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	return val;
+    if (!model) return 0;
+    int count = 0;
+    checked(GRBgetintattr(model, GRB_INT_ATTR_NUMVARS, &count), model, "get column count");
+    return static_cast<unsigned int>(count);
 }
-
 unsigned int QpExtSolGrbC::getRowCount() const {
-	int val;
-	int error = GRBgetintattr(model, GRB_INT_ATTR_NUMCONSTRS, &val);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught getting the number of constraints. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	return val;
+    if (!model) return 0;
+    int count = 0;
+    checked(GRBgetintattr(model, GRB_INT_ATTR_NUMCONSTRS, &count), model, "get row count");
+    return static_cast<unsigned int>(count);
 }
-
 unsigned int QpExtSolGrbC::getCutCount() const {
-	return this->getRowCount() - this->origConstraints;
+    const unsigned int rows = getRowCount();
+    return rows > origConstraints ? rows - origConstraints : 0U;
 }
-
 unsigned int QpExtSolGrbC::getNonZeros() const {
-	int val;
-	int error = GRBgetintattr(model, GRB_INT_ATTR_NUMNZS, &val);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught getting the number of constraints. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	return val;
+    if (!model) return 0;
+    int count = 0;
+    checked(GRBgetintattr(model, GRB_INT_ATTR_NUMNZS, &count), model, "get nonzero count");
+    return static_cast<unsigned int>(count);
 }
 
-void QpExtSolGrbC::readFromFile(const std::string& pathToFile) {
-	error = GRBloadenv(&env, "gurobi.log");
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught loading environment. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	error = GRBreadmodel(env, pathToFile.c_str(), &model);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught reading file from disk. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-}
-void QpExtSolGrbC::writeToFile(const std::string& path,
-		const std::string& filename) {
-	std::string file(path);
-	file += filename;
-	error = GRBwrite(model, file.c_str());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught loading environment. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-}
-
-void QpExtSolGrbC::getBase(QpExtSolBase& base) const {
-
-	unsigned int vars = this->getVariableCount();
-	unsigned int cons = this->getRowCount();
-
-	std::vector<int> vs(vars), cs(cons);
-	int error;
-	error = GRBgetintattrarray(model, GRB_INT_ATTR_VBASIS, 0, vars, vs.data());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught getting variable basis status. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-
-	error = GRBgetintattrarray(model, GRB_INT_ATTR_CBASIS, 0, cons, cs.data());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught getting constraints basis status. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-
-	base.variables.resize(vars, -1);
-	base.constraints.resize(cons, -1);
-
-	for (unsigned int i = 0; i < vars; i++) {
-		switch (vs[i]) {
-		case GRB_BASIC:
-			base.variables[i] = extSol::QpExternSolver::Basic;
-			break;
-		case GRB_NONBASIC_LOWER:
-			base.variables[i] = extSol::QpExternSolver::AtLower;
-			break;
-		case GRB_NONBASIC_UPPER:
-			base.variables[i] = extSol::QpExternSolver::AtUpper;
-			break;
-		case GRB_SUPERBASIC:
-			base.variables[i] = extSol::QpExternSolver::FreeOrSuperbasic;
-			break;
-		default:
-			throw utils::ExternSolverException(
-					"Exception caught getting base. Unknown Status: "
-							+ utils::ToolBox::convertToString(vs[i]));
-		}
-
-	}
-
-	for (unsigned int i = 0; i < cons; i++) {
-		switch (cs[i]) {
-		case GRB_BASIC:
-			base.constraints[i] = extSol::QpExternSolver::Basic;
-			break;
-		case GRB_NONBASIC_LOWER:
-			base.constraints[i] = extSol::QpExternSolver::AtLower;
-			break;
-		case GRB_NONBASIC_UPPER:
-			base.constraints[i] = extSol::QpExternSolver::AtUpper;
-			break;
-		case GRB_SUPERBASIC:
-			base.constraints[i] = extSol::QpExternSolver::FreeOrSuperbasic;
-			break;
-		default:
-			throw utils::ExternSolverException(
-					"Exception caught getting base. Unknown Status: "
-							+ utils::ToolBox::convertToString(cs[i]));
-		}
-	}
-
-}
-
-void QpExtSolGrbC::setBase(const QpExtSolBase& base) {
-
-	this->updateModel();
-
-	unsigned int vars = this->getVariableCount();
-	unsigned int cons = this->getRowCount();
-
-	if ((base.constraints.size() != cons) || (base.variables.size() != vars)) {
-		throw utils::ExternSolverException(
-				"QpExtSolCplexC::setBase(const extSol::QpExternSolver::QpExtSolBase& base) -> (base.constraints.size() != this->getRowCount()) || (base.variables.size()!=this->getVariableCount())");
-	}
-
-	std::vector<int> vs(vars), cs(cons);
-
-	for (unsigned int i = 0; i < base.variables.size(); i++) {
-		switch (base.variables[i]) {
-		case extSol::QpExternSolver::Basic:
-			vs[i] = GRB_BASIC;
-			break;
-		case extSol::QpExternSolver::AtLower:
-			vs[i] = GRB_NONBASIC_LOWER;
-			break;
-		case extSol::QpExternSolver::AtUpper:
-			vs[i] = GRB_NONBASIC_UPPER;
-			break;
-		case extSol::QpExternSolver::FreeOrSuperbasic:
-			vs[i] = GRB_SUPERBASIC;
-			break;
-		default:
-			throw utils::ExternSolverException(
-					"Exception caught setting base. Unknown Status: "
-							+ utils::ToolBox::convertToString(
-									base.variables[i]));
-		}
-	}
-
-	for (unsigned int i = 0; i < base.constraints.size(); i++) {
-		switch (base.constraints[i]) {
-		case extSol::QpExternSolver::Basic:
-			cs[i] = GRB_BASIC;
-			break;
-		case extSol::QpExternSolver::AtLower:
-			cs[i] = GRB_NONBASIC_LOWER;
-			break;
-		case extSol::QpExternSolver::AtUpper:
-			cs[i] = GRB_NONBASIC_UPPER;
-			break;
-		case extSol::QpExternSolver::FreeOrSuperbasic:
-			cs[i] = GRB_SUPERBASIC;
-			break;
-		default:
-			throw utils::ExternSolverException(
-					"Exception caught setting base. Unknown Status: "
-							+ utils::ToolBox::convertToString(
-									base.constraints[i]));
-		}
-	}
-
-	error = GRBsetintattrarray(model, GRB_INT_ATTR_VBASIS, 0, vars, vs.data());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught setting variable basis status. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-
-	error = GRBsetintattrarray(model, GRB_INT_ATTR_CBASIS, 0, cons, cs.data());
-	if (error) {
-		std::cout << cons << " " << this->getRowCount() << " " << cs.size()
-				<< std::endl;
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught setting constraints basis status. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-
-}
-
-void QpExtSolGrbC::setRayGuess(const std::vector<data::QpNum>& rayGuess) {
-	throw utils::ExternSolverException(
-			"QpExtSolGrbC::setRayGuess(...) --> not yet implemented");
-}
-
-void QpExtSolGrbC::adaptToSolverMode(QpExtSolSolverMode m) {
-
-	if (!model)
-		return;
-
-	GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_QUAD, 1);
-
-	if (m == DEFAULT) {
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_THREADS, NUM_THREADS);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_INFUNBDINFO, 0);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_PRESOLVE, 1);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_METHOD, GRB_METHOD_AUTO);
-	} else if (m == NBD) {
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_THREADS, NUM_THREADS);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_INFUNBDINFO, 1);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_PRESOLVE, 1);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_METHOD, GRB_METHOD_DUAL);
-
-		if (PARAM_NUMEM > 0) {
-			GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_QUAD, 1);
-		}
-
-		GRBsetdblparam(GRBgetenv(model), GRB_DBL_PAR_OPTIMALITYTOL,
-				PARAM_EPOPT);
-		GRBsetdblparam(GRBgetenv(model), GRB_DBL_PAR_FEASIBILITYTOL,
-				PARAM_EPRHS);
-		GRBsetdblparam(GRBgetenv(model), GRB_DBL_PAR_MARKOWITZTOL, PARAM_EPMRK);
-
-	} else if (m == RELAXER) {
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_THREADS, NUM_THREADS);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_INFUNBDINFO, 0);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_PRESOLVE, 1);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_METHOD, GRB_METHOD_DUAL);
-	} else if (m == PRIMAL) {
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_THREADS, NUM_THREADS);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_INFUNBDINFO, 0);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_PRESOLVE, 1);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_METHOD, GRB_METHOD_PRIMAL);
-	} else if (m == DUAL) {
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_THREADS, NUM_THREADS);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_INFUNBDINFO, 0);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_PRESOLVE, 1);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_METHOD, GRB_METHOD_DUAL);
-	} else if (m == BARRIER) {
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_THREADS, NUM_THREADS);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_INFUNBDINFO, 0);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_PRESOLVE, 1);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_METHOD,
-				GRB_METHOD_BARRIER);
-	} else if (m == BARRIER_NO_CROSS) {
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_THREADS, NUM_THREADS);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_INFUNBDINFO, 0);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_PRESOLVE, 1);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_METHOD,
-				GRB_METHOD_BARRIER);
-		GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_CROSSOVER, 0);
-	} else {
-		throw utils::AlgorithmException(
-				"adaptToSolverMode --> unsupported mode");
-	}
-
-#ifdef DISABLE_GUROBI_OUTPUT
-	error = GRBsetintparam(GRBgetenv(model), GRB_INT_PAR_OUTPUTFLAG, 0);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught setting variable lower bound. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
+void QpExtSolGrbC::adaptToSolverMode(QpExtSolSolverMode mode) {
+    sMode = mode;
+    if (!model) return;
+    GRBenv* e = GRBgetenv(model);
+    int method = 1; // dual simplex: maintain a basis for GMI/reoptimization.
+    bool crossover = true;
+    switch (mode) {
+    case DEFAULT: case NBD: case RELAXER: case DUAL:
+        method = 1; break;
+    case PRIMAL: method = 0; break;
+    case BARRIER: method = 2; break;
+    case BARRIER_NO_CROSS: method = 2; crossover = false; break;
+    default: throw utils::ExternSolverException("Gurobi: unsupported solver mode");
+    }
+    checkedEnv(GRBsetintparam(e, GRB_INT_PAR_METHOD, method), e, "set Method");
+    checkedEnv(GRBsetintparam(e, GRB_INT_PAR_CROSSOVER, crossover ? -1 : 0),
+               e, "set Crossover");
+    checkedEnv(GRBsetintparam(e, GRB_INT_PAR_INFUNBDINFO, 1), e, "set InfUnbdInfo");
+    checkedEnv(GRBsetintparam(e, GRB_INT_PAR_DUALREDUCTIONS, 0), e,
+               "disable ambiguous dual reductions");
+#ifdef NUM_THREADS
+    checkedEnv(GRBsetintparam(e, GRB_INT_PAR_THREADS, NUM_THREADS), e, "set Threads");
 #endif
-
 }
 
-void QpExtSolGrbC::setVarLB(unsigned int i, const data::QpNum& lb) {
-	error = GRBsetdblattrelement(model, GRB_DBL_ATTR_LB, i, lb.asDouble());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught setting variable lower bound. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
+void QpExtSolGrbC::setParameters(const ExtSolverParameters& p) {
+    SolveParameters = p;
 }
 
-void QpExtSolGrbC::setVarUB(unsigned int i, const data::QpNum& ub) {
-	error = GRBsetdblattrelement(model, GRB_DBL_ATTR_UB, i, ub.asDouble());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught setting variable upper bound. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
+bool QpExtSolGrbC::changeObjFuncCoeff(unsigned int col,
+                                      const data::QpNum& coeff) {
+    if (!model || col >= getVariableCount()) return false;
+    return GRBsetdblattrelement(model, GRB_DBL_ATTR_OBJ,
+                                static_cast<int>(col), coeff.asDouble()) == 0;
+}
+void QpExtSolGrbC::setVarLB(unsigned int col, const data::QpNum& lb) {
+    if (col >= getVariableCount())
+        throw utils::ExternSolverException("Gurobi setVarLB: column out of range");
+    checked(GRBsetdblattrelement(model, GRB_DBL_ATTR_LB,
+                                  static_cast<int>(col), grbBound(lb.asDouble())),
+            model, "set lower bound");
+}
+void QpExtSolGrbC::setVarUB(unsigned int col, const data::QpNum& ub) {
+    if (col >= getVariableCount())
+        throw utils::ExternSolverException("Gurobi setVarUB: column out of range");
+    checked(GRBsetdblattrelement(model, GRB_DBL_ATTR_UB,
+                                  static_cast<int>(col), grbBound(ub.asDouble())),
+            model, "set upper bound");
+}
+void QpExtSolGrbC::changeRhsElement(unsigned int row,
+                                    const data::QpNum& rhs) {
+    if (row >= getRowCount())
+        throw utils::ExternSolverException("Gurobi changeRhsElement: row out of range");
+    checked(GRBsetdblattrelement(model, GRB_DBL_ATTR_RHS,
+                                  static_cast<int>(row), rhs.asDouble()),
+            model, "change row RHS");
+}
+void QpExtSolGrbC::changeRhsElements(const std::vector<unsigned int>& rows,
+                                     const std::vector<data::QpNum>& rhs) {
+    if (rows.size() != rhs.size())
+        throw utils::ExternSolverException("Gurobi RHS update: mismatched vectors");
+    std::vector<int> indices(rows.begin(), rows.end());
+    std::vector<double> values(rhs.size());
+    for (size_t i = 0; i < rhs.size(); ++i) values[i] = rhs[i].asDouble();
+    changeRhsElements(indices, values);
+}
+void QpExtSolGrbC::changeRhsElements(const std::vector<int>& rows,
+                                     const std::vector<double>& rhs) {
+    if (rows.size() != rhs.size())
+        throw utils::ExternSolverException("Gurobi RHS update: mismatched vectors");
+    if (!rows.empty()) {
+        for (int r : rows) if (r < 0 || static_cast<unsigned int>(r) >= getRowCount())
+            throw utils::ExternSolverException("Gurobi RHS update: invalid row index");
+        checked(GRBsetdblattrlist(model, GRB_DBL_ATTR_RHS,
+                                   static_cast<int>(rows.size()),
+                                   const_cast<int*>(rows.data()),
+                                   const_cast<double*>(rhs.data())),
+                model, "change row RHS values");
+    }
 }
 
-void QpExtSolGrbC::changeRhsElement(unsigned int i, const data::QpNum& v) {
-	//TODO fix this
-	do {
-		error = GRBsetdblattrelement(model, GRB_DBL_ATTR_RHS, i, v.asDouble());
-		if (error) {
-			this->updateModel();
-			//throw utils::ExternSolverException("Gurobi Exception caught setting rhs element. Error Code: " + utils::ToolBox::convertToString(error));
-		}
-	} while (error);
+QpExternSolver::QpExtSolSolutionStatus QpExtSolGrbC::getSolutionStatus() {
+    if (!model) return UNSOLVED;
+    int s = GRB_LOADED;
+    checked(GRBgetintattr(model, GRB_INT_ATTR_STATUS, &s), model, "get solution status");
+    switch (s) {
+    case GRB_OPTIMAL: return OPTIMAL;
+    case GRB_UNBOUNDED: return UNBOUNDED;
+    case GRB_INFEASIBLE: return INFEASIBLE;
+    case GRB_INF_OR_UNBD: return INForUNB;
+    case GRB_ITERATION_LIMIT: return ABORT_IT_LIM;
+    case GRB_TIME_LIMIT: return ABORT_TIME_LIM;
+    case GRB_CUTOFF: return ABORT_OBJ_LIM;
+    case GRB_SUBOPTIMAL: return NUM_BEST;
+    case GRB_LOADED: return UNSOLVED;
+    case GRB_NUMERIC: {
+        int count = 0;
+        if (!GRBgetintattr(model, GRB_INT_ATTR_SOLCOUNT, &count) && count > 0)
+            return NUM_BEST;
+        return ERROR;
+    }
+    default: return ERROR;
+    }
 }
 
-void QpExtSolGrbC::changeRhsElements(const std::vector<unsigned int>& indices,
-		const std::vector<data::QpNum>& values) {
-	for (unsigned int i = 0; i < indices.size(); i++) {
-		this->changeRhsElement(indices[i], values[i]);
-	}
-}
-
-extSol::QpExternSolver::QpExtSolSolutionStatus QpExtSolGrbC::getSolutionStatus() {
-	int grbStatus;
-	error = GRBgetintattr(model, GRB_INT_ATTR_STATUS, &grbStatus);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught getting solution status. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	switch (grbStatus) {
-	case GRB_OPTIMAL:
-		return extSol::QpExternSolver::OPTIMAL;
-		break;
-	case GRB_UNBOUNDED:
-		return extSol::QpExternSolver::UNBOUNDED;
-		break;
-	case GRB_INFEASIBLE:
-		return extSol::QpExternSolver::INFEASIBLE;
-		break;
-	case GRB_INF_OR_UNBD:
-		return extSol::QpExternSolver::INForUNB;
-		break;
-	case GRB_ITERATION_LIMIT:
-		return extSol::QpExternSolver::ABORT_IT_LIM;
-		break;
-	case GRB_TIME_LIMIT:
-		return extSol::QpExternSolver::ABORT_TIME_LIM;
-		break;
-	default:
-		throw utils::ExternSolverException(
-				"NbdExtStageSolGrbC::solve(..) --> unknown Gurobi solution status code: "
-						+ utils::ToolBox::convertToString(grbStatus));
-
-	}
-	return extSol::QpExternSolver::ERROR;
-}
-
-extSol::QpExternSolver::QpExtSolSolutionStatus QpExtSolGrbC::solve(
-		unsigned int itLimit, unsigned int timeLimit) {
-
-	error = GRBsetdblparam(GRBgetenv(model), GRB_DBL_PAR_ITERATIONLIMIT,
-			itLimit);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught setting iteration limit. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-
-	error = GRBsetdblparam(GRBgetenv(model), GRB_DBL_PAR_TIMELIMIT, timeLimit);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught setting time limit. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-
-	error = GRBoptimize(model);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught solving model. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	return this->getSolutionStatus();
-}
-
-data::QpNum QpExtSolGrbC::getObjValue() {
-	double objval;
-	error = GRBgetdblattr(model, GRB_DBL_ATTR_OBJVAL, &objval);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught getting objective funxction value. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	return objval;
-}
-
-void QpExtSolGrbC::getValues(std::vector<data::QpNum>& values) {
-	std::vector<double> dblvec(this->getVariableCount());
-	error = GRBgetdblattrarray(model, GRB_DBL_ATTR_X, 0, dblvec.size(),
-			dblvec.data());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught getting primal values. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	values.assign(dblvec.begin(), dblvec.end());
-}
-
-void QpExtSolGrbC::getDuals(std::vector<data::QpNum>& duals) {
-	unsigned int cons = this->getRowCount();
-	if (!cons) {
-		duals.clear();
-		return;
-	}
-	std::vector<double> dblvec(cons);
-	error = GRBgetdblattrarray(model, GRB_DBL_ATTR_PI, 0, cons, dblvec.data());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught getting dual values. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	duals.assign(dblvec.begin(), dblvec.end());
-}
-
-void QpExtSolGrbC::getReducedCosts(std::vector<data::QpNum>& reduced) {
-	std::vector<double> dblvec(this->getVariableCount());
-	error = GRBgetdblattrarray(model, GRB_DBL_ATTR_RC, 0, dblvec.size(),
-			dblvec.data());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught getting reduced costs. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	reduced.assign(dblvec.begin(), dblvec.end());
-}
-
-void QpExtSolGrbC::getDualFarkas(std::vector<data::QpNum>& farkas) {
-	unsigned int cons = this->getRowCount();
-	if (!cons) {
-		farkas.clear();
-		return;
-	}
-	std::vector<double> dblvec(cons);
-	error = GRBgetdblattrarray(model, GRB_DBL_ATTR_FARKASDUAL, 0, dblvec.size(),
-			dblvec.data());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught getting dual farkas. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-	farkas.assign(dblvec.begin(), dblvec.end());
-	for (unsigned int i = 0; i < farkas.size(); i++)
-		farkas[i] *= -1.0;
-
-}
-
-void QpExtSolGrbC::getExtendedDuals(std::vector<data::QpNum>& extDuals) {
-	unsigned int vars = this->getVariableCount();
-	unsigned int cons = this->getRowCount();
-
-	this->getDuals(extDuals);
-	data::QpNum::removeSmallValuesFromVec(extDuals);
-
-	extDuals.resize(cons + 2 * vars, 0);
-	std::vector<data::QpNum> tmpSolParts;
-
-	this->getReducedCosts(tmpSolParts);
-	data::QpNum::removeSmallValuesFromVec(tmpSolParts);
-
-	extSol::QpExternSolver::QpExtSolBase base;
-	this->getBase(base);
-	for (unsigned int i = 0, index = 0; i < tmpSolParts.size(); i++) {
-		if (!tmpSolParts[i].isZero()) {
-			if (base.variables[i] == extSol::QpExternSolver::AtLower) {
-				index = i;
-			} else if (base.variables[i] == extSol::QpExternSolver::AtUpper) {
-				index = vars + i;
-			} else {
-				index = i;
-			}
-			extDuals[cons + index] = tmpSolParts[i];
-		}
-	}
-}
-
-void QpExtSolGrbC::getExtendedDualFarkas(std::vector<data::QpNum>& extFarkas,
-		const data::QpSparseMatrix& constraints,
-		const data::QpSparseMatrix& cuts) {
-	unsigned int vars = this->getVariableCount();
-	unsigned int cons = this->getRowCount();
-	std::vector<data::QpNum> boundMultipliers(vars), farkasCertificate;
-	this->getDualFarkas(farkasCertificate);
-	data::QpNum::removeSmallValuesFromVec(farkasCertificate);
-
-	extFarkas = farkasCertificate;
-	extFarkas.resize(cons + 2 * vars, 0);
-	for (unsigned int i = 0; i < boundMultipliers.size(); i++) {
-		boundMultipliers[i].setZero();
-		for (unsigned j = 0; j < constraints[i].size(); j++) {
-			boundMultipliers[i] += (constraints[i][j].value
-					* farkasCertificate[constraints[i][j].index]);
-		}
-		for (unsigned j = 0; j < cuts[i].size(); j++) {
-			boundMultipliers[i] += (cuts[i][j].value
-					* farkasCertificate[cuts[i][j].index]);
-		}
-	}
-	data::QpNum::removeSmallValuesFromVec(boundMultipliers);
-
-	for (unsigned int i = 0; i < boundMultipliers.size(); i++) {
-		if (boundMultipliers[i].isZero())
-			continue;
-		unsigned int index = cons + i;
-		if (boundMultipliers[i] > 0)
-			index += vars;
-		extFarkas[index] = (boundMultipliers[i] *= -1.0);
-	}
-}
-
-void QpExtSolGrbC::addCut(const std::vector<data::IndexedElement>& lhs,
-		data::QpRhs::RatioSign sign, const data::QpNum& rhs) {
-	unsigned int size = lhs.size();
-	std::vector<int> ind(size);
-	std::vector<double> vals(size);
-	char sense;
-	switch (sign) {
-	case (data::QpRhs::smallerThanOrEqual):
-		sense = GRB_LESS_EQUAL;
-		break;
-	case (data::QpRhs::greaterThanOrEqual):
-		sense = GRB_GREATER_EQUAL;
-		break;
-	case (data::QpRhs::equal):
-		sense = GRB_EQUAL;
-		break;
-	default:
-		throw utils::ExternSolverException(
-				"Exception caught adding cut. Unsupported RatioSign in cut.");
-	}
-
-	for (unsigned int i = 0; i < size; i++) {
-		ind[i] = lhs[i].index;
-		vals[i] = lhs[i].value.asDouble();
-	}
-
-	error = GRBaddconstr(model, size, ind.data(), vals.data(), sense,
-			rhs.asDouble(), NULL);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught adding cut. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-}
-
-void QpExtSolGrbC::removeCuts() {
-	std::vector<int> iv(this->getCutCount());
-	for (unsigned int i = 0, size = iv.size(); i < size; i++)
-		iv[i] = this->origConstraints + i;
-	error = GRBdelconstrs(model, iv.size(), iv.data());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught removing cuts. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-}
-
-void QpExtSolGrbC::removeCut(unsigned int index) {
-	std::vector<int> iv;
-	iv.push_back(index);
-	error = GRBdelconstrs(model, 1, iv.data());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught removing single cut. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
-}
-
-void QpExtSolGrbC::removeCutsFromCut(unsigned int startIndex) {
-
-	if (this->getRowCount() <= startIndex)
-		throw utils::ExternSolverException("QpExtSolCLP::removeCut(unsigned int index) --> Index Exception.");
-
-	unsigned int i = 0;
-	unsigned int lastIndex = this->getRowCount() - 1;
-	unsigned int toDelete = 1+lastIndex-startIndex;
-	std::vector<int> iv(toDelete,0);
-	while(startIndex!=lastIndex){
-		iv[i++]=startIndex++;
-	}
-	error = GRBdelconstrs(model, toDelete, iv.data());
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught removing single cut. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
+QpExternSolver::QpExtSolSolutionStatus QpExtSolGrbC::solve(
+        unsigned int itLimit, unsigned int timeLimit) {
+    if (!model) throw utils::ExternSolverException("Gurobi solve: uninitialized model");
+    GRBenv* e = GRBgetenv(model);
+    checkedEnv(GRBsetdblparam(e, GRB_DBL_PAR_ITERATIONLIMIT,
+                                static_cast<double>(itLimit)), e,
+               "set iteration limit");
+    checkedEnv(GRBsetdblparam(e, GRB_DBL_PAR_TIMELIMIT,
+                                static_cast<double>(timeLimit)), e,
+               "set time limit");
+    // Exactly one solve per call. No hand-written basis save/restore.
+    checked(GRBoptimize(model), model, "optimize LP");
+    return getSolutionStatus();
 }
 
 void QpExtSolGrbC::updateModel() {
-	error = GRBupdatemodel(model);
-	if (error) {
-		throw utils::ExternSolverException(
-				"Gurobi Exception caught updating the model. Error Code: "
-						+ utils::ToolBox::convertToString(error));
-	}
+    if (model) checked(GRBupdatemodel(model), model, "update model");
 }
 
+// --------------------------------------------------------------------------
+// Primal/dual solution, basis, and infeasibility certificates.
+// --------------------------------------------------------------------------
+
+data::QpNum QpExtSolGrbC::getObjValue() {
+    double obj = 0.0;
+    checked(GRBgetdblattr(model, GRB_DBL_ATTR_OBJVAL, &obj), model,
+            "get objective value");
+    return obj;
 }
 
+void QpExtSolGrbC::getValues(std::vector<data::QpNum>& values) {
+    std::vector<double> tmp;
+    getDoubleArray(model, GRB_DBL_ATTR_X, static_cast<int>(getVariableCount()), tmp);
+    values.assign(tmp.begin(), tmp.end());
+}
+void QpExtSolGrbC::getDuals(std::vector<data::QpNum>& duals) {
+    std::vector<double> tmp;
+    getDoubleArray(model, GRB_DBL_ATTR_PI, static_cast<int>(getRowCount()), tmp);
+    duals.assign(tmp.begin(), tmp.end());
+}
+void QpExtSolGrbC::getReducedCosts(std::vector<data::QpNum>& reduced) {
+    std::vector<double> tmp;
+    getDoubleArray(model, GRB_DBL_ATTR_RC, static_cast<int>(getVariableCount()), tmp);
+    reduced.assign(tmp.begin(), tmp.end());
+}
+
+void QpExtSolGrbC::getDualFarkas(std::vector<data::QpNum>& farkas) {
+    farkas.clear();
+    if (getSolutionStatus() != INFEASIBLE) return;
+    const int m = static_cast<int>(getRowCount());
+    if (!m) return;
+    std::vector<double> tmp(m);
+    if (GRBgetdblattrarray(model, GRB_DBL_ATTR_FARKASDUAL,
+                           0, m, tmp.data())) return; // No certificate available.
+    // Gurobi FarkasDual is the sign opposite the convention used by Yasol's
+    // CPLEX/CLP extended-certificate calculation.
+    farkas.reserve(m);
+    for (double x : tmp) farkas.emplace_back(-x);
+}
+
+void QpExtSolGrbC::getBase(QpExtSolBase& base) const {
+    base.variables.clear();
+    base.constraints.clear();
+
+    const int n = static_cast<int>(getVariableCount());
+    const int m = static_cast<int>(getRowCount());
+    std::vector<int> vb(n), cb(m);
+    std::vector<char> senses;
+
+    if (n) {
+        int rc = GRBgetintattrarray(
+            model, GRB_INT_ATTR_VBASIS, 0, n, vb.data());
+
+        if (rc == GRB_ERROR_DATA_NOT_AVAILABLE)
+            return;
+
+        checked(rc, model, "get VBasis");
+    }
+
+    if (m) {
+        int rc = GRBgetintattrarray(
+            model, GRB_INT_ATTR_CBASIS, 0, m, cb.data());
+
+        if (rc == GRB_ERROR_DATA_NOT_AVAILABLE)
+            return;
+
+        checked(rc, model, "get CBasis");
+    }
+    getCharArray(model, GRB_CHAR_ATTR_SENSE, m, senses);
+    base.variables.resize(n);
+    base.constraints.resize(m);
+    for (int j = 0; j < n; ++j) base.variables[j] = fromGurobiBasis(vb[j]);
+    for (int i = 0; i < m; ++i) {
+        if (cb[i] == 0)
+            base.constraints[i] = Basic;
+        else if (cb[i] == -1)
+            base.constraints[i] =
+                (senses[i] == GRB_GREATER_EQUAL)
+                    ? AtUpper : AtLower;
+        else
+            throw utils::ExternSolverException(
+                "Gurobi: unexpected CBasis value");
+    }
+}
+
+void QpExtSolGrbC::setBase(QpExtSolBase& base) {
+    updateModel();
+    const int n = static_cast<int>(getVariableCount());
+    const int m = static_cast<int>(getRowCount());
+    if (base.variables.size() != static_cast<size_t>(n) ||
+        base.constraints.size() != static_cast<size_t>(m)) {
+
+#ifdef DEBUG_GUROBI_BASIS
+        std::cerr
+            << "[Gurobi] Skipping incompatible basis:"
+            << " saved=(" << base.variables.size()
+            << "," << base.constraints.size() << ")"
+            << " current=(" << n << "," << m << ")"
+            << std::endl;
 #endif
+        return;
+    }
+
+    bool hasBasis = false;
+
+    if (n > 0) {
+        int basisStatus = 0;
+        const int err = GRBgetintattrelement(
+            model, GRB_INT_ATTR_VBASIS, 0, &basisStatus);
+
+        hasBasis = (err == 0);
+    } else if (m > 0) {
+        int basisStatus = 0;
+        const int err = GRBgetintattrelement(
+            model, GRB_INT_ATTR_CBASIS, 0, &basisStatus);
+
+        hasBasis = (err == 0);
+    }
+
+    if (hasBasis)
+        return;
+
+    // Existing 
+
+    std::vector<int> vb(n), cb(m);
+    int numBasic = 0;
+    for (int j = 0; j < n; ++j) {
+        vb[j] = toGurobiBasis(base.variables[j]);
+        numBasic += vb[j] == 0;
+    }
+    for (int i = 0; i < m; ++i) {
+        cb[i] = base.constraints[i] == Basic ? 0 : -1;
+        if (base.constraints[i] != Basic && base.constraints[i] != AtLower &&
+            base.constraints[i] != AtUpper)
+            throw utils::ExternSolverException("Gurobi setBase: invalid slack status");
+        numBasic += cb[i] == 0;
+    }
+    if (numBasic != m)
+        throw utils::ExternSolverException("Gurobi setBase: invalid number of basic variables");
+    if (n) checked(GRBsetintattrarray(model, GRB_INT_ATTR_VBASIS,
+                                      0, n, vb.data()), model, "set VBasis");
+    if (m) checked(GRBsetintattrarray(model, GRB_INT_ATTR_CBASIS,
+                                      0, m, cb.data()), model, "set CBasis");
+    updateModel();
+}
+
+void QpExtSolGrbC::setRayGuess(const std::vector<data::QpNum>&) {
+    // As in CPLEX and CLP: no solver-independent ray-start facility.
+}
+
+void QpExtSolGrbC::getExtendedDuals(std::vector<data::QpNum>& extDuals) {
+    const unsigned int n = getVariableCount();
+    const unsigned int m = getRowCount();
+    std::vector<data::QpNum> duals, reduced;
+    getDuals(duals);
+    getReducedCosts(reduced);
+    QpExtSolBase base;
+    getBase(base);
+    if (base.variables.size() != n ||
+        base.constraints.size() != m) {
+        throw utils::ExternSolverException("Gurobi getExtendedDuals: no valid simplex basis");
+    }    
+    extDuals.assign(m + 2 * n, 0.0);
+    for (unsigned int i = 0; i < m; ++i) extDuals[i] = duals[i];
+    for (unsigned int j = 0; j < n; ++j) {
+        const double rc = reduced[j].asDouble();
+        if (std::fabs(rc) <= 1e-10) continue;
+        if (base.variables[j] == AtLower) extDuals[m + j] = rc;
+        else if (base.variables[j] == AtUpper) extDuals[m + n + j] = rc;
+        else {
+            throw utils::ExternSolverException(
+                "Gurobi getExtendedDuals: nonzero RC for non-bound variable");
+        }
+    }
+}
+
+void QpExtSolGrbC::getExtendedDualFarkas(
+        std::vector<data::QpNum>& extFarkas) {
+    const unsigned int n = getVariableCount();
+    const unsigned int m = getRowCount();
+    std::vector<data::QpNum> ray;
+    getDualFarkas(ray);
+    if (ray.size() != m) { extFarkas.clear(); return; }
+    std::vector<std::vector<data::IndexedElement>> rows;
+    if (!getAllRows(rows) || rows.size() != m) {
+        extFarkas.clear(); return;
+    }
+    std::vector<double> boundMultipliers(n, 0.0);
+    for (unsigned int i = 0; i < m; ++i) {
+        for (const auto& e : rows[i]) {
+            boundMultipliers[e.index] += ray[i].asDouble() * e.value.asDouble();
+        }
+    }
+    extFarkas.assign(m + 2 * n, 0.0);
+    for (unsigned int i = 0; i < m; ++i) extFarkas[i] = ray[i];
+    // Follow Yasol's existing CPLEX/HiGHS extended Farkas convention.
+    for (unsigned int j = 0; j < n; ++j) {
+        const double v = boundMultipliers[j];
+        if (std::fabs(v) <= 1e-12) continue;
+        if (v > 0.0) extFarkas[m + n + j] = -v;
+        else extFarkas[m + j] = -v;
+    }
+}
+
+void QpExtSolGrbC::getExtendedDualFarkas(
+        std::vector<data::QpNum>& extFarkas,
+        const data::QpSparseMatrix& constraints,
+        const data::QpSparseMatrix& cuts) {
+    const unsigned int n = getVariableCount();
+    const unsigned int m = getRowCount();
+    if (constraints.size() != n || cuts.size() != n)
+        throw utils::ExternSolverException("Gurobi extended Farkas: expected column-wise matrices");
+    std::vector<data::QpNum> ray;
+    getDualFarkas(ray);
+    if (ray.size() != m) { extFarkas.clear(); return; }
+    std::vector<double> values(n, 0.0);
+    for (unsigned int j = 0; j < n; ++j) {
+        for (const auto& e : constraints[j]) {
+            if (e.index >= m) throw utils::ExternSolverException("Gurobi Farkas: row index out of range");
+            values[j] += e.value.asDouble() * ray[e.index].asDouble();
+        }
+        for (const auto& e : cuts[j]) {
+            if (e.index >= m) throw utils::ExternSolverException("Gurobi Farkas: cut index out of range");
+            values[j] += e.value.asDouble() * ray[e.index].asDouble();
+        }
+    }
+    extFarkas.assign(m + 2 * n, 0.0);
+    for (unsigned int i = 0; i < m; ++i) extFarkas[i] = ray[i];
+    for (unsigned int j = 0; j < n; ++j) {
+        if (std::fabs(values[j]) <= 1e-12) continue;
+        if (values[j] > 0.0) extFarkas[m + n + j] = -values[j];
+        else extFarkas[m + j] = -values[j];
+    }
+}
+
+// --------------------------------------------------------------------------
+// Model data and matrix access.
+// --------------------------------------------------------------------------
+
+void QpExtSolGrbC::getRhs(std::vector<data::QpRhs>& rhs) {
+    updateModel();
+    const int m = static_cast<int>(getRowCount());
+    std::vector<double> values;
+    std::vector<char> sense;
+    getDoubleArray(model, GRB_DBL_ATTR_RHS, m, values);
+    getCharArray(model, GRB_CHAR_ATTR_SENSE, m, sense);
+    rhs.resize(m);
+    for (int i = 0; i < m; ++i) {
+        rhs[i].setValue(values[i]);
+        rhs[i].setRatioSign(fromGurobiSense(sense[i]));
+    }
+}
+void QpExtSolGrbC::getLB(std::vector<data::QpNum>& lb) {
+    updateModel();
+    std::vector<double> tmp;
+    getDoubleArray(model, GRB_DBL_ATTR_LB, static_cast<int>(getVariableCount()), tmp);
+    lb.assign(tmp.begin(), tmp.end());
+}
+void QpExtSolGrbC::getUB(std::vector<data::QpNum>& ub) {
+    updateModel();
+    std::vector<double> tmp;
+    getDoubleArray(model, GRB_DBL_ATTR_UB, static_cast<int>(getVariableCount()), tmp);
+    ub.assign(tmp.begin(), tmp.end());
+}
+void QpExtSolGrbC::getObjective(std::vector<data::IndexedElement>& lhs,
+                               bool& doMax, double& offset) {
+    updateModel();
+    int sense = 1;
+    checked(GRBgetintattr(model, GRB_INT_ATTR_MODELSENSE, &sense), model,
+            "get objective sense");
+    checked(GRBgetdblattr(model, GRB_DBL_ATTR_OBJCON, &offset), model,
+            "get objective offset");
+    doMax = (sense < 0);
+    std::vector<double> values;
+    getDoubleArray(model, GRB_DBL_ATTR_OBJ, static_cast<int>(getVariableCount()), values);
+    lhs.clear(); lhs.reserve(values.size());
+    for (unsigned int j = 0; j < values.size(); ++j)
+        lhs.emplace_back(j, values[j]);
+}
+
+bool QpExtSolGrbC::getAllRows(
+        std::vector<std::vector<data::IndexedElement>>& allrows) {
+    allrows.clear();
+    if (!model) return false;
+    updateModel();
+    const int m = static_cast<int>(getRowCount());
+    allrows.resize(m);
+    if (!m) return true;
+    int nnz = 0;
+    if (GRBgetconstrs(model, &nnz, nullptr, nullptr, nullptr, 0, m)) {
+        allrows.clear(); return false;
+    }
+    std::vector<int> start(m), col(nnz);
+    std::vector<double> value(nnz);
+    if (GRBgetconstrs(model, &nnz, start.data(),
+                      col.empty() ? nullptr : col.data(),
+                      value.empty() ? nullptr : value.data(), 0, m)) {
+        allrows.clear(); return false;
+    }
+    for (int i = 0; i < m; ++i) {
+        const int end = (i + 1 < m) ? start[i + 1] : nnz;
+        if (start[i] < 0 || end < start[i] || end > nnz) {
+            allrows.clear(); return false;
+        }
+        auto& row = allrows[i];
+        row.reserve(end - start[i]);
+        for (int k = start[i]; k < end; ++k)
+            row.emplace_back(static_cast<unsigned int>(col[k]), value[k]);
+    }
+    return true;
+}
+
+void QpExtSolGrbC::getRowLhs(unsigned int row,
+                             std::vector<data::IndexedElement>& lhs) {
+    lhs.clear();
+    if (row >= getRowCount())
+        throw utils::ExternSolverException("Gurobi getRowLhs: row out of range");
+    updateModel();
+    int nnz = 0;
+    checked(GRBgetconstrs(model, &nnz, nullptr, nullptr, nullptr,
+                           static_cast<int>(row), 1), model, "query row length");
+    std::vector<int> starts(1), cols(nnz);
+    std::vector<double> vals(nnz);
+    checked(GRBgetconstrs(model, &nnz, starts.data(),
+                           cols.empty() ? nullptr : cols.data(),
+                           vals.empty() ? nullptr : vals.data(),
+                           static_cast<int>(row), 1), model, "get row");
+    lhs.reserve(nnz);
+    for (int k = 0; k < nnz; ++k)
+        lhs.emplace_back(static_cast<unsigned int>(cols[k]), vals[k]);
+}
+
+void QpExtSolGrbC::prepareMatrixRowForm() {
+    // Gurobi exposes compressed sparse row data directly through GRBgetconstrs.
+}
+
+void QpExtSolGrbC::getQlpFromLpFile(const std::string& filename,
+                                   data::Qlp& qlp) {
+    // Import the *original* model here. readFromFile() deliberately relaxes
+    // integer variables for optimization, whereas a QLP import must preserve
+    // their original binary/integer/continuous number systems.
+    QpExtSolGrbC reader;
+    checkedEnv(GRBloadenv(&reader.env, nullptr), reader.env,
+               "create import environment");
+    checkedEnv(GRBreadmodel(reader.env, filename.c_str(), &reader.model),
+               reader.env, "read QLP source model");
+    reader.updateModel();
+    const unsigned int n = reader.getVariableCount();
+    const unsigned int m = reader.getRowCount();
+    std::vector<data::IndexedElement> objective;
+    bool doMax = false;
+    double offset = 0.0;
+    reader.getObjective(objective, doMax, offset);
+    data::QpObjFunc obj;
+    obj.setSize(n);
+    obj.setObjective(doMax ? data::QpObjFunc::max : data::QpObjFunc::min);
+    obj.setOffset(offset);
+    for (const auto& e : objective) obj.setObjElement(e.index, e.value);
+    std::vector<data::QpNum> lbs, ubs;
+    reader.getLB(lbs); reader.getUB(ubs);
+    std::vector<char> variableTypes;
+    getCharArray(reader.model, GRB_CHAR_ATTR_VTYPE,
+                 static_cast<int>(n), variableTypes);
+    std::vector<data::QpVar> vars(n);
+    for (unsigned int j = 0; j < n; ++j) {
+        vars[j].setIndex(j);
+        std::string name = "x_" + std::to_string(j);
+        vars[j].setName(name);
+        vars[j].setQuantifier(data::QpVar::exists);
+        switch (variableTypes[j]) {
+        case GRB_BINARY:
+            vars[j].setNumberType(data::QpVar::binaries);
+            break;
+        case GRB_INTEGER:
+            vars[j].setNumberType(data::QpVar::generals);
+            break;
+        case GRB_CONTINUOUS:
+            vars[j].setNumberType(data::QpVar::real);
+            break;
+        default:
+            throw utils::ExternSolverException(
+                "Gurobi QLP import: unsupported semi-continuous/semi-integer variable");
+        }
+        vars[j].setBounds(lbs[j], ubs[j]);
+    }
+    std::vector<data::QpRhs> rhs;
+    reader.getRhs(rhs);
+    data::QpSparseMatrix mat;
+    if (!reader.getAllRows(mat) || mat.size() != m)
+        throw utils::ExternSolverException("Gurobi: unable to load LP matrix from file");
+    qlp = data::Qlp(obj, vars, mat, rhs);
+}
+
+// --------------------------------------------------------------------------
+// Cuts and model row deletion.
+// --------------------------------------------------------------------------
+
+QpExtSolGrbC::CutList* QpExtSolGrbC::CreateCuts(
+        QpExternSolver&, int*, int8_t*, int, unsigned int,
+        int*, int*, int*, int, int, int, double) {
+    // Like CPLEX/HiGHS/CLP: Yasol's CutAdder handles solver-independent cuts.
+    static CutList result;
+    result.clear();
+    return &result;
+}
+
+void QpExtSolGrbC::addCut(const std::vector<data::IndexedElement>& lhs,
+                          data::QpRhs::RatioSign sign,
+                          const data::QpNum& rhs) {
+    const int n = static_cast<int>(getVariableCount());
+
+    std::vector<std::pair<int, double>> terms;
+    terms.reserve(lhs.size());
+
+    for (const auto& e : lhs) {
+        if (e.index >= static_cast<unsigned int>(n))
+            throw utils::ExternSolverException(
+                "Gurobi addCut: invalid column index");
+
+        const double value = e.value.asDouble();
+
+        if (!std::isfinite(value))
+            throw utils::ExternSolverException(
+                "Gurobi addCut: non-finite coefficient");
+
+        terms.emplace_back(
+            static_cast<int>(e.index), value);
+    }
+
+    // Sort by variable index.
+    std::sort(terms.begin(), terms.end(),
+        [](const auto& a, const auto& b) {
+            return a.first < b.first;
+        });
+
+    std::vector<int> ind;
+    std::vector<double> val;
+
+    ind.reserve(terms.size());
+    val.reserve(terms.size());
+
+    // Combine duplicate variable indices.
+    for (const auto& term : terms) {
+        if (!ind.empty() && ind.back() == term.first) {
+            val.back() += term.second;
+        } else {
+            ind.push_back(term.first);
+            val.push_back(term.second);
+        }
+    }
+
+    // Remove coefficients that cancel exactly.
+    size_t write = 0;
+
+    for (size_t i = 0; i < val.size(); ++i) {
+        if (!std::isfinite(val[i]))
+            throw utils::ExternSolverException(
+                "Gurobi addCut: non-finite combined coefficient");
+
+        if (val[i] != 0.0) {
+            ind[write] = ind[i];
+            val[write] = val[i];
+            ++write;
+        }
+    }
+
+    ind.resize(write);
+    val.resize(write);
+    checked(GRBaddconstr(model, static_cast<int>(ind.size()),
+                          ind.empty() ? nullptr : ind.data(),
+                          val.empty() ? nullptr : val.data(),
+                          toGurobiSense(sign), rhs.asDouble(), nullptr),
+            model, "add cut");
+    // Apply pending edits so row indexing is stable for subsequent removals.
+    updateModel();
+}
+
+void QpExtSolGrbC::removeCuts() {
+    removeCutsFromCut(origConstraints);
+}
+void QpExtSolGrbC::removeCut(unsigned int index) {
+    updateModel();
+    if (index >= getRowCount())
+        throw utils::ExternSolverException("Gurobi removeCut: row out of range");
+    int row = static_cast<int>(index);
+    checked(GRBdelconstrs(model, 1, &row), model, "remove cut");
+    updateModel();
+    // Removing a model row before the original/cut boundary moves that boundary.
+    if (index < origConstraints) --origConstraints;
+}
+void QpExtSolGrbC::removeCutsFromCut(unsigned int startIndex) {
+    updateModel();
+    const unsigned int m = getRowCount();
+    if (startIndex >= m) return;
+    std::vector<int> rows(m - startIndex);
+    std::iota(rows.begin(), rows.end(), static_cast<int>(startIndex));
+    checked(GRBdelconstrs(model, static_cast<int>(rows.size()),
+                           rows.data()), model, "remove cuts");
+    updateModel();
+    if (startIndex < origConstraints) origConstraints = startIndex;
+}
+
+// --------------------------------------------------------------------------
+// Internal LP snapshots (independent of the live optimization model).
+// --------------------------------------------------------------------------
+
+void QpExtSolGrbC::clearLP_snapshot() {
+    LHSs.clear(); RHSs.clear(); COLs.clear();
+    lazyRows.clear(); lazyRowIndicator.clear(); indicators.clear();
+    obj_lhs.clear(); obj_lhs_dense.clear();
+}
+void QpExtSolGrbC::clearLP_snapshot(int from) {
+    const int n = static_cast<int>(RHSs.size());
+    if (from < 0 || from > n)
+        throw utils::ExternSolverException("Gurobi snapshot: invalid first row");
+    LHSs.resize(from); RHSs.resize(from); lazyRowIndicator.resize(from);
+    indicators.resize(from);
+    lazyRows.clear();
+    for (int i = 0; i < from; ++i)
+        if (lazyRowIndicator[i]) lazyRows.push_back(i);
+    COLs.clear();
+}
+void QpExtSolGrbC::clearLP_snapshot(int from, int to) {
+    if (from < 0 || to < from || to >= static_cast<int>(RHSs.size()))
+        throw utils::ExternSolverException("Gurobi snapshot: invalid row range");
+    LHSs.erase(LHSs.begin() + from, LHSs.begin() + to + 1);
+    RHSs.erase(RHSs.begin() + from, RHSs.begin() + to + 1);
+    lazyRowIndicator.erase(lazyRowIndicator.begin() + from,
+                           lazyRowIndicator.begin() + to + 1);
+    if (indicators.size() > static_cast<size_t>(from)) {
+        const int toSafe = std::min(to, static_cast<int>(indicators.size()) - 1);
+        indicators.erase(indicators.begin() + from, indicators.begin() + toSafe + 1);
+    }
+    lazyRows.clear();
+    for (unsigned int i = 0; i < lazyRowIndicator.size(); ++i)
+        if (lazyRowIndicator[i]) lazyRows.push_back(static_cast<int>(i));
+    COLs.clear();
+}
+void QpExtSolGrbC::saveSnapshot() {
+    LHSsSaved = LHSs; RHSsSaved = RHSs;
+    obj_lhs_saved = obj_lhs;
+    obj_lhs_dense_saved = obj_lhs_dense;
+}
+void QpExtSolGrbC::retrieveSnapshot() {
+    LHSs = LHSsSaved; RHSs = RHSsSaved;
+    obj_lhs = obj_lhs_saved;
+    obj_lhs_dense = obj_lhs_dense_saved;
+    // Consistent with the other adapters: reinsert all restored rows into
+    // the initial lazy-row candidate list.
+    lazyRowIndicator.assign(RHSs.size(), true);
+    lazyRows.resize(RHSs.size());
+    std::iota(lazyRows.begin(), lazyRows.end(), 0);
+    indicators.resize(RHSs.size(), 0);
+    for (size_t i = 0; i < RHSs.size(); ++i)
+        indicators[i] = computeStatus(LHSs[i], RHSs[i]);
+    COLs.clear();
+}
+
+void QpExtSolGrbC::addLProw_snapshot(
+        const std::vector<data::IndexedElement>& lhs,
+        const data::QpRhs& rhs) {
+    data::QpRhs normalized = rhs;
+    double factor = 1.0;
+    if (rhs.getRatioSign() == data::QpRhs::greaterThanOrEqual) {
+        factor = -1.0;
+        normalized.setRatioSign(data::QpRhs::smallerThanOrEqual);
+    } else if (rhs.getRatioSign() == data::QpRhs::equal &&
+               !lhs.empty() && lhs.front().value.asDouble() < 0.0) {
+        factor = -1.0;
+    }
+    if (factor < 0.0)
+        normalized.setValue(-rhs.getValue().asDouble());
+    std::vector<data::IndexedElement> row;
+    row.reserve(lhs.size());
+    for (const auto& e : lhs) {
+        const double a = factor * e.value.asDouble();
+        if (std::fabs(a) > 1e-12) row.emplace_back(e.index, a);
+    }
+    LHSs.push_back(std::move(row));
+    RHSs.push_back(normalized);
+    lazyRowIndicator.push_back(true);
+    lazyRows.push_back(static_cast<int>(RHSs.size() - 1));
+    indicators.push_back(computeStatus(LHSs.back(), normalized));
+    COLs.clear();
+}
+
+void QpExtSolGrbC::addLPobj_snapshot(
+        const std::vector<data::IndexedElement>& lhs,
+        const data::QpRhs& rhs) {
+    obj_lhs = lhs;
+    obj_rhs = rhs;
+    const unsigned int n = getVariableCount();
+    obj_lhs_dense.assign(n, data::IndexedElement(0, 0.0));
+    for (const auto& e : obj_lhs) {
+        if (e.index >= n) throw utils::ExternSolverException("Gurobi snapshot objective: invalid column");
+        obj_lhs_dense[e.index] = e;
+    }
+}
+
+void QpExtSolGrbC::initInternalLP_snapshot(const data::Qlp& qlp) {
+    clearLP_snapshot();
+    qlp.getCoeffMatrix(LHSs);
+    RHSs = qlp.getRhsVec();
+    if (LHSs.size() != RHSs.size())
+        throw utils::ExternSolverException("Gurobi snapshot: inconsistent QLP rows");
+    lazyRowIndicator.assign(RHSs.size(), true);
+    lazyRows.resize(RHSs.size());
+    std::iota(lazyRows.begin(), lazyRows.end(), 0);
+    indicators.reserve(RHSs.size());
+    for (size_t i = 0; i < RHSs.size(); ++i)
+        indicators.push_back(computeStatus(LHSs[i], RHSs[i]));
+    obj_lhs.clear();
+    const auto& objective = qlp.getObjectiveFunctionValues();
+    for (unsigned int j = 0; j < objective.size(); ++j)
+        if (!objective[j].isZero()) obj_lhs.emplace_back(j, objective[j]);
+    const unsigned int n = static_cast<unsigned int>(qlp.getVariableCount());
+    obj_lhs_dense.assign(n, data::IndexedElement(0, 0.0));
+    for (const auto& e : obj_lhs) obj_lhs_dense[e.index] = e;
+    COLs.clear();
+}
+
+void QpExtSolGrbC::reinitLPcols_snapshot() {
+    const unsigned int n = getVariableCount();
+    COLs.assign(n, {});
+    for (unsigned int i = 0; i < LHSs.size(); ++i) {
+        const auto& row = LHSs[i];
+        if (row.empty()) continue;
+        // Match the other adapters' sorting column representation:
+        // normalize by the magnitude of the leading row coefficient.
+        const double scale = std::fabs(row.front().value.asDouble());
+        if (scale < 1e-20) continue;
+        for (const auto& e : row) {
+            if (e.index >= n) throw utils::ExternSolverException("Gurobi snapshot: bad column");
+            COLs[e.index].emplace_back(i, e.value.asDouble() / scale);
+        }
+    }
+    for (auto& col : COLs)
+        std::sort(col.begin(), col.end(),
+                  [](const data::IndexedElement& a, const data::IndexedElement& b) {
+                      return a.index < b.index;
+                  });
+}
+
+int QpExtSolGrbC::getLProws_snapshot() { return static_cast<int>(RHSs.size()); }
+std::vector<data::IndexedElement>* QpExtSolGrbC::getCol_snapshot(int col) {
+    if (col < 0 || static_cast<unsigned int>(col) >= getVariableCount())
+        throw utils::ExternSolverException("Gurobi snapshot: column out of range");
+    if (COLs.size() != getVariableCount()) reinitLPcols_snapshot();
+    return &COLs[col];
+}
+data::IndexedElement QpExtSolGrbC::getObj_snapshot(int col) {
+    if (col < 0 || static_cast<size_t>(col) >= obj_lhs_dense.size())
+        return data::IndexedElement(0, 0.0);
+    return obj_lhs_dense[col];
+}
+std::vector<data::IndexedElement>* QpExtSolGrbC::getRowLhs_snapshot(unsigned int row) {
+    return row < LHSs.size() ? &LHSs[row] : nullptr;
+}
+std::vector<data::QpRhs>* QpExtSolGrbC::getRowRhs_snapshot() { return &RHSs; }
+
+bool QpExtSolGrbC::getLazyRows(std::vector<int>& activated,
+                              std::vector<data::QpNum>& solution,
+                              double eps) {
+    activated.clear();
+    if (solution.empty()) return false;
+    std::vector<data::QpNum> lb, ub;
+    getLB(lb); getUB(ub);
+    std::vector<int> remaining;
+    remaining.reserve(lazyRows.size());
+    for (int i : lazyRows) {
+        if (i < 0 || static_cast<size_t>(i) >= RHSs.size() || !lazyRowIndicator[i])
+            continue;
+        double minAx = 0.0, maxAx = 0.0;
+        for (const auto& e : LHSs[i]) {
+            const unsigned int j = e.index;
+            if (j >= lb.size())
+                throw utils::ExternSolverException("Gurobi lazy row: variable out of range");
+            const double a = e.value.asDouble();
+            if (j < solution.size()) {
+                minAx += a * solution[j].asDouble();
+                maxAx += a * solution[j].asDouble();
+            } else if (a >= 0.0) {
+                minAx += a * lb[j].asDouble();
+                maxAx += a * ub[j].asDouble();
+            } else {
+                minAx += a * ub[j].asDouble();
+                maxAx += a * lb[j].asDouble();
+            }
+        }
+        const double b = RHSs[i].getValue().asDouble();
+        const auto sense = RHSs[i].getRatioSign();
+        const double tol = std::max(std::fabs(eps), 1e-9);
+        bool violated = false;
+        if (sense == data::QpRhs::smallerThanOrEqual)
+            violated = minAx > b + tol;
+        else if (sense == data::QpRhs::greaterThanOrEqual)
+            violated = maxAx < b - tol;
+        else
+            violated = minAx > b + tol || maxAx < b - tol;
+        if (violated) {
+            activated.push_back(i);
+            lazyRowIndicator[i] = false;
+        } else remaining.push_back(i);
+    }
+    lazyRows.swap(remaining);
+    return !activated.empty();
+}
+
+void QpExtSolGrbC::setLazyStatus(int row, bool status) {
+    if (row < 0) {
+        lazyRows.clear();
+        std::fill(lazyRowIndicator.begin(), lazyRowIndicator.end(), false);
+        return;
+    }
+    if (static_cast<size_t>(row) >= lazyRowIndicator.size())
+        throw utils::ExternSolverException("Gurobi snapshot: invalid lazy row");
+    if (lazyRowIndicator[row] == status) return;
+    lazyRowIndicator[row] = status;
+    if (status) lazyRows.push_back(row);
+    else lazyRows.erase(std::remove(lazyRows.begin(), lazyRows.end(), row), lazyRows.end());
+}
+bool QpExtSolGrbC::getLazyStatus(int row) {
+    return row >= 0 && static_cast<size_t>(row) < lazyRowIndicator.size()
+               && lazyRowIndicator[row];
+}
+void QpExtSolGrbC::setStatus(int row, int status) {
+    if (row < 0) throw utils::ExternSolverException("Gurobi snapshot: negative row");
+    if (static_cast<size_t>(row) >= indicators.size()) indicators.resize(row + 1, 0);
+    indicators[row] = status;
+}
+int QpExtSolGrbC::getStatus(int row) {
+    if (row < 0 || static_cast<size_t>(row) >= indicators.size()) return 0;
+    return indicators[row];
+}
+int QpExtSolGrbC::computeStatus(
+        const std::vector<data::IndexedElement>& lhs,
+        const data::QpRhs& rhs) {
+    if (rhs.getRatioSign() == data::QpRhs::equal) return 0;
+    const double factor = rhs.getRatioSign() == data::QpRhs::smallerThanOrEqual
+                              ? -1.0 : 1.0;
+    double negCount = 0.0;
+    bool zeroOne = true;
+    for (const auto& e : lhs) {
+        const double a = e.value.asDouble();
+        if (std::fabs(a) > 1e-12 && std::fabs(std::fabs(a) - 1.0) > 1e-12)
+            zeroOne = false;
+        if (factor * a < 0.0) ++negCount;
+    }
+    const double b = factor * rhs.getValue().asDouble();
+    return zeroOne && std::fabs(b - std::floor(b + 0.5)) < 1e-10 &&
+           std::fabs(1.0 - negCount - b) < 1e-12 ? 1 : 0;
+}
+
+// --------------------------------------------------------------------------
+// Simplex basis/tableau interface for CutAdder and Benders utilities.
+// --------------------------------------------------------------------------
+
+bool QpExtSolGrbC::getBasicVariables(std::vector<int>& basicVariables) {
+    basicVariables.clear();
+    if (getSolutionStatus() != OPTIMAL) return false;
+    const int n = static_cast<int>(getVariableCount());
+    const int m = static_cast<int>(getRowCount());
+    if (!m) return true;
+    basicVariables.resize(m);
+    if (GRBgetBasisHead(model, basicVariables.data())) {
+        basicVariables.clear(); return false;
+    }
+    for (int k : basicVariables) {
+        if (k < 0 || k >= n + m) {
+            basicVariables.clear(); return false;
+        }
+    }
+    return true;
+}
+
+bool QpExtSolGrbC::getTableauRow(unsigned int basisRow,
+                                std::vector<double>& tableauRow) {
+    tableauRow.clear();
+    const unsigned int n = getVariableCount();
+    const unsigned int m = getRowCount();
+    if (basisRow >= m || getSolutionStatus() != OPTIMAL) return false;
+    // GRBBinvRowi yields sparse B^-1 [A | slack columns] in native indexing.
+    std::vector<int> ind(n + m);
+    std::vector<double> val(n + m);
+    GRBsvec sparse{};
+    sparse.len = 0;
+    sparse.ind = ind.data();
+    sparse.val = val.data();
+    if (GRBBinvRowi(model, static_cast<int>(basisRow), &sparse)) return false;
+    if (sparse.len < 0 || sparse.len > static_cast<int>(n + m)) return false;
+    tableauRow.assign(n + m, 0.0);
+    for (int i = 0; i < sparse.len; ++i) {
+        if (ind[i] < 0 || ind[i] >= static_cast<int>(n + m)) {
+            tableauRow.clear(); return false;
+        }
+        tableauRow[ind[i]] = val[i];
+    }
+    return true;
+}
+
+void QpExtSolGrbC::getBinvArow(unsigned int basisRow,
+                               std::vector<data::QpNum>& binvArow) {
+    std::vector<double> row;
+    if (!getTableauRow(basisRow, row))
+        throw utils::ExternSolverException("Gurobi: unable to retrieve tableau row");
+    const unsigned int n = getVariableCount();
+    binvArow.assign(row.begin(), row.begin() + n);
+}
+
+void QpExtSolGrbC::getRowLhsOfTableauByColumn(
+        unsigned int column, std::vector<data::QpNum>& lhs) {
+    const unsigned int n = getVariableCount();
+    const unsigned int m = getRowCount();
+    if (column >= n)
+        throw utils::ExternSolverException("Gurobi tableau column: out of range");
+    std::vector<int> basis;
+    if (!getBasicVariables(basis))
+        throw utils::ExternSolverException("Gurobi tableau column: basis unavailable");
+    std::vector<int> inverse(n + m, -1);
+    for (unsigned int i = 0; i < m; ++i)
+        inverse[basis[i]] = static_cast<int>(i);
+    if (inverse[column] < 0)
+        throw utils::ExternSolverException("Gurobi tableau column: variable is not basic");
+    std::vector<double> tableau;
+    if (!getTableauRow(static_cast<unsigned int>(inverse[column]), tableau))
+        throw utils::ExternSolverException("Gurobi tableau column: row unavailable");
+    lhs.clear(); lhs.reserve(n);
+    for (unsigned int j = 0; j < n + m; ++j)
+        if (inverse[j] == -1) lhs.emplace_back(tableau[j]);
+    if (lhs.size() != n)
+        throw utils::ExternSolverException("Gurobi tableau column: invalid basis size");
+}
+
+// --------------------------------------------------------------------------
+// Benders-cut construction uses the same extended dual representation as
+// CPLEX/CLP, without direct coupling to another solver implementation.
+// --------------------------------------------------------------------------
+
+bool QpExtSolGrbC::getBendersCut(
+        unsigned int stage, std::vector<data::IndexedElement>& lhs,
+        data::QpRhs::RatioSign& sign, data::QpNum& rhs,
+        bool /*org*/, void* /*vpt*/) {
+    const auto status = getSolutionStatus();
+    if (status != INFEASIBLE && status != OPTIMAL && status != NUM_BEST &&
+        status != OPTIMAL_INFEAS) return false;
+    std::vector<data::QpRhs> rowrhs;
+    std::vector<data::QpNum> lb, ub;
+    getRhs(rowrhs); getLB(lb); getUB(ub);
+    std::vector<double> b(rowrhs.size()), lbs(lb.size()), ubs(ub.size());
+    for (size_t i = 0; i < b.size(); ++i) b[i] = rowrhs[i].getValue().asDouble();
+    for (size_t j = 0; j < lb.size(); ++j) {
+        lbs[j] = lb[j].asDouble(); ubs[j] = ub[j].asDouble();
+    }
+    getBendersCutNew(stage, lhs, sign, rhs, false, b, lbs, ubs);
+    return true;
+}
+
+void QpExtSolGrbC::getBendersCutNew(
+        unsigned int /*stage*/, std::vector<data::IndexedElement>& lhs,
+        data::QpRhs::RatioSign& sign, data::QpNum& rhs, bool /*check*/,
+        std::vector<double>& mRhs,
+        std::vector<double>& lbs, std::vector<double>& ubs) {
+    lhs.clear();
+    sign = data::QpRhs::greaterThanOrEqual;
+    rhs.setZero();
+    const unsigned int n = getVariableCount();
+    const unsigned int m = getRowCount();
+    if (mRhs.size() != m || lbs.size() != n || ubs.size() != n)
+        throw utils::ExternSolverException("Gurobi Benders: inconsistent input sizes");
+    const auto status = getSolutionStatus();
+    std::vector<data::QpNum> multipliers;
+    if (status == INFEASIBLE) getExtendedDualFarkas(multipliers);
+    else if (status == OPTIMAL || status == NUM_BEST || status == OPTIMAL_INFEAS)
+        getExtendedDuals(multipliers);
+    else throw utils::ExternSolverException("Gurobi Benders: no usable solution");
+    if (multipliers.size() != m + 2 * n)
+        throw utils::ExternSolverException("Gurobi Benders: no extended dual certificate");
+
+    for (unsigned int i = 0; i < m; ++i)
+        rhs += mRhs[i] * multipliers[i].asDouble();
+    for (unsigned int j = 0; j < n; ++j) {
+        if (std::fabs(ubs[j] - lbs[j]) <= 1e-9) continue;
+        const double ml = multipliers[m + j].asDouble();
+        const double mu = multipliers[m + n + j].asDouble();
+        if (std::fabs(ml) > 1e-12) rhs += ml * lbs[j];
+        if (std::fabs(mu) > 1e-12) rhs += mu * ubs[j];
+    }
+    std::vector<std::vector<data::IndexedElement>> rows;
+    if (!getAllRows(rows))
+        throw utils::ExternSolverException("Gurobi Benders: cannot read constraint matrix");
+    std::vector<double> coefficients(n, 0.0);
+    for (unsigned int i = 0; i < m; ++i) {
+        const double lambda = multipliers[i].asDouble();
+        if (std::fabs(lambda) <= 1e-12) continue;
+        for (const auto& e : rows[i])
+            coefficients[e.index] += lambda * e.value.asDouble();
+    }
+    for (unsigned int j = 0; j < n; ++j) {
+        if (std::fabs(ubs[j] - lbs[j]) <= 1e-9 &&
+            std::fabs(coefficients[j]) > 1e-12)
+            lhs.emplace_back(j, coefficients[j]);
+    }
+}
+
+} // namespace extSol
+
+#endif // COMPILE_WITH_GUROBI_C

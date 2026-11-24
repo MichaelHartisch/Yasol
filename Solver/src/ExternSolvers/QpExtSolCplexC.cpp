@@ -2441,7 +2441,7 @@ bool QpExtSolCplexC::getTableauRow(unsigned int basisRow,std::vector<double>& ta
         return false;
     }
 
-    tableauRow.resize(n + m);CPXXbinvarow(iloEnvCl, iloLpCl,basisRow, tableauRow.data());
+    tableauRow.resize(n + m);
 
 	if (CPXXbinvarow(iloEnvCl, iloLpCl, basisRow, tableauRow.data())) {
         tableauRow.clear();

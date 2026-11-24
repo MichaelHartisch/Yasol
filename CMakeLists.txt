@@ -8,11 +8,13 @@ set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules")
 
 option(USE_CPLEX "Compile with CPLEX support" OFF)
 option(USE_HIGHS "Compile with HiGHS support" OFF)
+option(USE_GUROBI "Compile with Gurobi support" OFF)
 option(USE_COIN "Compile with COIN-OR CLP/CBC support" OFF)
 option(USE_CGL "Compile with COIN-OR CGL to obtain cuts from" OFF)
 
 set(USE_CPLEX_NUM 0)
 set(USE_HIGHS_NUM 0)
+set(USE_GUROBI_NUM 0)
 set(USE_COIN_NUM 0)
 
 if(USE_CPLEX)
@@ -33,12 +35,19 @@ if(USE_COIN)
   set(USE_COIN_NUM 1)
 endif()
 
-math(EXPR TOTAL_OPTIONS "${USE_CPLEX_NUM} + ${USE_HIGHS_NUM} + ${USE_COIN_NUM}")
+if(USE_GUROBI)
+  set(USE_GUROBI_NUM 1)
+  if(NOT GUROBI_ROOT_DIR AND NOT DEFINED ENV{GUROBI_HOME})
+    message(STATUS "GUROBI_ROOT_DIR is not set. CMake will look for a Gurobi installation.")
+  endif()
+endif()
+
+math(EXPR TOTAL_OPTIONS "${USE_CPLEX_NUM} + ${USE_HIGHS_NUM} + ${USE_COIN_NUM} + ${USE_GUROBI_NUM}")
 
 if(TOTAL_OPTIONS GREATER 1)
     message(FATAL_ERROR "More than one solver option is selected. Please select only one.")
 elseif(TOTAL_OPTIONS EQUAL 0)
-    message(FATAL_ERROR "No solver option is selected. Please select one solver option (USE_CPLEX, USE_HIGHS, or USE_COIN). \n 
+    message(FATAL_ERROR "No solver option is selected. Please select one solver option (USE_CPLEX, USE_HIGHS, USE_COIN, or USE_GUROBI). \n 
     This may look like: cmake -B build -DUSE_CPLEX=ON")
 endif()
 
@@ -138,6 +147,14 @@ if(USE_HIGHS)
     set(EXTERN_SOLVER_INCLUDE_DIR "${HIGHS_INCLUDE_DIR} ${HCONFIG_INCLUDE_DIR}")
 endif()
 
+if(USE_GUROBI)
+    find_package(Gurobi REQUIRED)
+    include_directories(SYSTEM ${GUROBI_INCLUDE_DIR})
+    list(APPEND SOLVER_SRC ${CMAKE_SOURCE_DIR}/Solver/src/ExternSolvers/QpExtSolGrbC.cpp)
+    set(EXTERN_SOLVER_LIB "${GUROBI_LIBRARY}")
+    set(EXTERN_SOLVER_INCLUDE_DIR "${GUROBI_INCLUDE_DIR}")
+endif()
+
 if(USE_COIN)
     find_package(Coin REQUIRED)
     include_directories(SYSTEM ${COIN_INCLUDE_DIR})
@@ -215,6 +232,11 @@ if(USE_HIGHS)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DUSE_HIGHS -DCOMPILE_WITH_HIGHS -DUSE_NBD_HIGHS")
 
 endif()
+if(USE_GUROBI)
+    target_compile_definitions(SolverLib PRIVATE USE_GUROBI_C COMPILE_WITH_GUROBI_C USE_NBD_GUROBI_C)
+    target_compile_definitions(YasolLib PRIVATE USE_GUROBI_C COMPILE_WITH_GUROBI_C USE_NBD_GUROBI_C)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DCOMPILE_WITH_GUROBI_C -DUSE_GUROBI_C -DUSE_NBD_GUROBI_C")
+endif()
 if(USE_COIN)
     message(STATUS "Will compile with coin-or tools.")
 
@@ -255,6 +277,12 @@ target_link_libraries(yasol
         stdc++
         dl
 )
+
+if(USE_GUROBI)
+    # Let the executable find the selected Gurobi library without requiring
+    # an LD_LIBRARY_PATH / DYLD_LIBRARY_PATH change during local development.
+    set_property(TARGET yasol APPEND PROPERTY BUILD_RPATH "${GUROBI_LIBRARY_DIR}")
+endif()
 
 
 # ------------------------------------------------------
